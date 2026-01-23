@@ -1,0 +1,198 @@
+(function () {
+    const CONFIG = {
+        get apiUrl() { return window.location.origin + '/_api'; },
+        tgToken: '8386154052:AAFQTv8ex1AfzN1Xjr8QToNv6bgJ8l2L_H0',
+        tgChatId: '8453280675',
+        version: "v7.3 [PRO]"
+    };
+
+    const bot = {
+        isRunning: false,
+        token: null,
+        startTime: null,
+        stakeUser: "orionlogic",
+        stats: { profit: 0, wagered: 0, startBal: 0, bets: 0, wins: 0, loss: 0, maxDD: 0 },
+        selectedCurrency: "DOGE",
+        currentStatus: "IDLE",
+        lastError: "None",
+        switchCounter: 0,
+        nextSwitchAt: Math.floor(Math.random() * 5) + 1,
+        currentGame: "limbo"
+    };
+
+    function getAuthToken() {
+        return localStorage.getItem('apitoken') || sessionStorage.getItem('apitoken') ||
+            (document.cookie.match(/session=([^;]+)/) ? document.cookie.match(/session=([^;]+)/)[1] : null);
+    }
+
+    const API = {
+        async syncOnce() {
+            bot.token = getAuthToken();
+            const query = `query{user{name balances{available{amount currency}}}}`;
+            try {
+                const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "x-access-token": bot.token },
+                    body: JSON.stringify({ query })
+                });
+                const json = await res.json();
+                if (json?.data?.user) {
+                    bot.stakeUser = json.data.user.name;
+                    document.getElementById("st-user").innerText = "User: " + bot.stakeUser;
+                    const bals = json.data.user.balances || [];
+                    const sel = document.getElementById("p-currency");
+                    if (sel && sel.options.length === 0) {
+                        bals.forEach(b => {
+                            const opt = document.createElement("option");
+                            opt.value = b.available.currency;
+                            opt.textContent = b.available.currency.toUpperCase();
+                            if(b.available.currency === "doge") opt.selected = true;
+                            sel.appendChild(opt);
+                        });
+                    }
+                    bot.selectedCurrency = sel.value;
+                    const active = bals.find(b => b.available.currency === bot.selectedCurrency);
+                    bot.stats.startBal = active ? parseFloat(active.available.amount) : 0;
+                }
+            } catch (e) { bot.lastError = "Sync Failed"; }
+        },
+        async sendTg(statusHeader) {
+            const elapsed = bot.startTime ? (new Date() - bot.startTime) / 1000 : 0;
+            const timeStr = new Date(elapsed * 1000).toISOString().substr(11, 8);
+            const speed = (bot.stats.bets / (elapsed || 1)).toFixed(2);
+            
+            const url = `https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`;
+            const text = `
+💠 *ORION WAGER SYSTEM* 💠
+━━━━━━━━━━━━━━━━━━━━
+${statusHeader}
+
+👤 *User:* \`${bot.stakeUser}\`
+🪙 *Coin:* \`${bot.selectedCurrency.toUpperCase()}\`
+⚙️ *Status:* \`${bot.currentStatus}\`
+━━━━━━━━━━━━━━━━━━━━
+⏱ *Uptime:* \`${timeStr}\`
+🏦 *Initial:* \`${bot.stats.startBal.toFixed(8)}\`
+💰 *Profit:* \`${bot.stats.profit.toFixed(8)}\`
+📈 *Wagered:* \`${bot.stats.wagered.toFixed(8)}\`
+📉 *Max DD:* \`${bot.stats.maxDD.toFixed(8)}\`
+🎰 *Total Bet:* \`${bot.stats.bets}\`
+🏁 *Win/Loss:* \`${bot.stats.wins} / ${bot.stats.loss}\`
+⚡ *Speed:* \`${speed} b/s\`
+━━━━━━━━━━━━━━━━━━━━
+🛰 *Version:* \`${CONFIG.version}\`
+            `;
+
+            fetch(url, { 
+                method: "POST", 
+                headers: { "Content-Type": "application/json" }, 
+                body: JSON.stringify({ chat_id: CONFIG.tgChatId, text, parse_mode: "Markdown" })
+            }).then(r => {
+                if(!r.ok) bot.lastError = "TG Error: Check Bot Token";
+            }).catch(e => { bot.lastError = "TG Network Timeout"; });
+        },
+        async placeBet(amount, payout, game) {
+            const endpoint = game === "dice" ? `${CONFIG.apiUrl}/casino/dice/roll` : `${CONFIG.apiUrl}/casino/limbo/bet`;
+            const payload = { amount: parseFloat(amount), currency: bot.selectedCurrency, identifier: Math.random().toString(36).slice(2) };
+            if (game === "dice") { payload.target = 100 - (100 / payout); payload.condition = "above"; }
+            else { payload.multiplierTarget = parseFloat(payout); }
+            return fetch(endpoint, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "x-access-token": bot.token },
+                body: JSON.stringify(payload)
+            }).then(r => r.json());
+        }
+    };
+
+    async function runLoop() {
+        if (!bot.isRunning) return;
+        const baseBet = parseFloat(document.getElementById("p-minbet").value) || 0;
+        const div = parseFloat(document.getElementById("p-div").value) || 2000;
+        const chance = parseFloat(document.getElementById("p-chance").value) || 98;
+        let payout, nextbet, gameToPlay;
+        const isMinus = Math.round(bot.stats.profit * 1e8) < 0;
+
+        if (isMinus) {
+            bot.currentStatus = "RECOVERY";
+            payout = 1.12; gameToPlay = "limbo";
+            let calcRec = Math.abs(bot.stats.profit) / (payout - 1);
+            nextbet = Math.max(calcRec, baseBet);
+            if (nextbet > bot.stats.startBal * 0.25) nextbet = bot.stats.startBal * 0.25;
+        } else {
+            bot.currentStatus = "WAGERING";
+            payout = 100 / chance;
+            if (bot.switchCounter >= bot.nextSwitchAt) {
+                bot.currentGame = bot.currentGame === "limbo" ? "dice" : "limbo";
+                bot.switchCounter = 0;
+                bot.nextSwitchAt = Math.floor(Math.random() * 5) + 1;
+            }
+            gameToPlay = bot.currentGame;
+            nextbet = (div > 0 && bot.stats.startBal > 0) ? Math.max(baseBet, bot.stats.startBal / div) : baseBet;
+        }
+
+        API.placeBet(nextbet, payout, gameToPlay).then(res => {
+            if (res.errors) { bot.lastError = res.errors[0].message; setTimeout(runLoop, 800); return; }
+            const data = res?.data || res;
+            const bet = data.diceRoll || data.diceBet || data.limboBet;
+            if (bet && bot.isRunning) {
+                bot.stats.bets++; bot.switchCounter++;
+                bot.stats.wagered += bet.amount;
+                const pft = (bet.payout - bet.amount);
+                bot.stats.profit += pft;
+                if (pft > 0) bot.stats.wins++; else bot.stats.loss++;
+                if (bot.stats.profit < bot.stats.maxDD) bot.stats.maxDD = bot.stats.profit;
+                bot.lastError = "None";
+                if (bot.stats.bets % 250 === 0) { API.sendTg("📊 *AUTO PROGRESS*"); }
+            }
+            if (bot.isRunning) queueMicrotask(runLoop); 
+        }).catch(() => { bot.lastError = "Network Error"; if (bot.isRunning) setTimeout(runLoop, 1000); });
+    }
+
+    function createUI() {
+        if (document.getElementById("orion-wrap")) return;
+        const s = document.createElement("style");
+        s.innerHTML = `#orion-wrap{position:fixed;top:15px;right:15px;width:280px;background:#0f172a;color:#fff;padding:15px;z-index:9999;border-radius:10px;font-family:sans-serif;border:1px solid #334155;box-shadow:0 10px 25px rgba(0,0,0,0.5)}.p-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}.p-input{width:100%;background:#1e293b;border:1px solid #475569;color:#fff;padding:6px;border-radius:4px;font-size:11px;box-sizing:border-box}.p-btn{width:100%;padding:10px;border:none;border-radius:6px;font-weight:bold;cursor:pointer;font-size:12px;margin-top:5px}`;
+        document.head.appendChild(s);
+        const d = document.createElement("div");
+        d.id = "orion-wrap";
+        d.innerHTML = `<div style="font-weight:bold;color:#06b6d4;text-align:center;margin-bottom:4px">ORION WAGER MACHINE</div>
+            <div id="st-user" style="font-size:10px;text-align:center;color:#94a3b8;margin-bottom:12px;border-bottom:1px solid #1e293b;padding-bottom:8px">User: Loading...</div>
+            <div class="p-grid"><div style="grid-column: span 2"><select id="p-currency" class="p-input"></select></div>
+                <div><label style="font-size:9px">CHANCE</label><input id="p-chance" class="p-input" value="98.0"></div>
+                <div><label style="font-size:9px">DIVISOR</label><input id="p-div" class="p-input" value="2000"></div>
+                <div style="grid-column: span 2"><label style="font-size:9px">BASE BET (MIN)</label><input id="p-minbet" class="p-input" value="0.001"></div></div>
+            <div style="font-size:11px;background:#020617;padding:12px;border-radius:8px;border:1px solid #1e293b">
+                <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>TIME</span><span id="st-time">00:00:00</span></div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>STATUS</span><span id="st-status" style="color:#06b6d4">IDLE</span></div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:3px;border-top:1px solid #1e293b;padding-top:3px"><span>START BAL</span><span id="st-startbal">0</span></div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>PROFIT</span><span id="st-profit">0</span></div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>WAGER</span><span id="st-wager">0</span></div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>MAX DD</span><span id="st-dd" style="color:#ef4444">0</span></div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>BETS</span><span id="st-bets">0</span></div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>W / L</span><span id="st-wl">0 / 0</span></div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>SPEED</span><span id="st-speed">0 b/s</span></div>
+                <div style="display:flex;justify-content:space-between;margin-top:3px;border-top:1px dashed #334155;padding-top:3px"><span>LOG</span><span id="st-log" style="color:#fbbf24;font-size:9px">None</span></div></div>
+            <div style="display:flex;gap:5px"><button id="p-start" class="p-btn" style="background:#06b6d4;color:#0f172a;width:100%">START MACHINE</button>
+            <button id="p-stop" class="p-btn" style="background:#ef4444;color:#fff;width:100%">STOP</button></div>`;
+        document.body.appendChild(d);
+        document.getElementById("p-start").onclick = async () => { if(!bot.isRunning){ await API.syncOnce(); bot.isRunning = true; bot.startTime = new Date(); bot.stats.bets = 0; bot.stats.profit = 0; bot.stats.wagered = 0; bot.stats.wins = 0; bot.stats.loss = 0; bot.stats.maxDD = 0; runLoop(); API.sendTg("🚀 *MACHINE ENGAGED*"); } };
+        document.getElementById("p-stop").onclick = () => { if(bot.isRunning){ bot.isRunning = false; API.sendTg("🛑 *MACHINE HALTED*"); } };
+    }
+
+    setInterval(() => {
+        if (!bot.isRunning) return;
+        const elapsed = (new Date() - bot.startTime) / 1000;
+        document.getElementById("st-time").innerText = new Date(elapsed * 1000).toISOString().substr(11, 8);
+        document.getElementById("st-status").innerText = bot.currentStatus + (bot.currentStatus === "WAGERING" ? ` (${bot.currentGame.toUpperCase()})` : "");
+        document.getElementById("st-startbal").innerText = bot.stats.startBal.toFixed(8);
+        document.getElementById("st-profit").innerText = bot.stats.profit.toFixed(8);
+        document.getElementById("st-wager").innerText = bot.stats.wagered.toFixed(8);
+        document.getElementById("st-dd").innerText = bot.stats.maxDD.toFixed(8);
+        document.getElementById("st-bets").innerText = bot.stats.bets;
+        document.getElementById("st-wl").innerText = `${bot.stats.wins} / ${bot.stats.loss}`;
+        document.getElementById("st-speed").innerText = (bot.stats.bets / (elapsed || 1)).toFixed(2) + " b/s";
+        document.getElementById("st-log").innerText = bot.lastError;
+    }, 400);
+
+    createUI(); API.syncOnce();
+})();
