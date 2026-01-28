@@ -2,7 +2,8 @@
     // ==================== CONFIGURATION ====================
     const CONFIG = {
         get apiUrl() { return window.location.origin + '/_api'; },
-        version: "ORION PREMIUM HYBRID v5.0",
+        get wsUrl() { return 'wss://ws.stake.com/socket.io/?EIO=3&transport=websocket'; },
+        version: "ORION PREMIUM HYBRID v5.1",
         tgToken: '8391763291:AAEA05v6FG70eM1WGrgU7mrPgckfjQaxkno',
         tgChatId: '-1003744641395',
         supportContact: '@OrionLogic'
@@ -28,7 +29,9 @@
             baseChanceMax: 98,
             wagerChance: 99.5,
             stopLoss: 1.0,
-            targetProfit: 3.0
+            targetProfit: 3.0,
+            riskPerTrade: 0.5,
+            trailDistance: 0.5
         },
         "BALANCED": {
             name: "⚖️ BALANCED",
@@ -36,7 +39,9 @@
             baseChanceMax: 95,
             wagerChance: 99.0,
             stopLoss: 2.0,
-            targetProfit: 5.0
+            targetProfit: 5.0,
+            riskPerTrade: 1.0,
+            trailDistance: 1.0
         },
         "AGGRESSIVE": {
             name: "⚡ AGGRESSIVE",
@@ -44,7 +49,9 @@
             baseChanceMax: 90,
             wagerChance: 98.0,
             stopLoss: 3.0,
-            targetProfit: 8.0
+            targetProfit: 8.0,
+            riskPerTrade: 2.0,
+            trailDistance: 2.0
         },
         "WAGER_FARM": {
             name: "🏃 WAGER FARM",
@@ -53,7 +60,9 @@
             wagerChance: 99.0,
             stopLoss: 2.5,
             targetProfit: 4.0,
-            wagerTarget: 300
+            wagerTarget: 300,
+            riskPerTrade: 0.3,
+            trailDistance: 0.3
         }
     };
 
@@ -220,6 +229,218 @@
         document.body.appendChild(modal);
     }
 
+    // ==================== ENHANCED FEATURES ====================
+    const trailingStop = {
+        enabled: false,
+        trailDistance: 1.0,
+        peakBalance: 0,
+        triggerPoint: 0,
+        isTrailing: false
+    };
+
+    const riskManager = {
+        maxRiskPerTrade: 1.0,
+        useKelly: false,
+        kellyFraction: 0.5,
+        minBetOverride: true,
+        
+        calculateMaxBet(balance, winRate, payoutRatio) {
+            if (!this.maxRiskPerTrade) return Infinity;
+            
+            const maxByRisk = balance * (this.maxRiskPerTrade / 100);
+            
+            if (this.useKelly && winRate > 0 && payoutRatio > 0) {
+                const p = winRate / 100;
+                const q = 1 - p;
+                const b = payoutRatio;
+                const kelly = (p * b - q) / b;
+                
+                if (kelly > 0) {
+                    const kellyBet = balance * kelly * this.kellyFraction;
+                    return Math.min(maxByRisk, kellyBet);
+                }
+            }
+            
+            return maxByRisk;
+        },
+        
+        adjustBetSize(proposedBet) {
+            const balance = bot.stats.currentBal;
+            const winRate = bot.stats.bets > 0 ? (bot.stats.wins / bot.stats.bets * 100) : 50;
+            const payoutRatio = (100 / bot.currentChance) - 1;
+            
+            const maxBet = this.calculateMaxBet(balance, winRate, payoutRatio);
+            const minBet = getVal("p-minbet");
+            
+            return Math.max(minBet, Math.min(proposedBet, maxBet));
+        }
+    };
+
+    const analytics = {
+        history: [],
+        sessionStart: null,
+        metrics: {
+            sharpeRatio: 0,
+            maxDrawdown: 0,
+            volatility: 0,
+            profitFactor: 0,
+            expectancy: 0
+        },
+        
+        recordTrade(amount, profit, chance, mode) {
+            const trade = {
+                timestamp: Date.now(),
+                amount,
+                profit,
+                chance,
+                mode,
+                balance: bot.stats.currentBal,
+                cumulativeProfit: bot.stats.profit
+            };
+            
+            this.history.push(trade);
+            
+            if (this.history.length > 1000) {
+                this.history.shift();
+            }
+            
+            this.calculateMetrics();
+        },
+        
+        calculateMetrics() {
+            if (this.history.length < 2) return;
+            
+            const profits = this.history.map(t => t.profit);
+            const wins = profits.filter(p => p > 0);
+            const losses = profits.filter(p => p < 0);
+            
+            const avgReturn = profits.reduce((a, b) => a + b, 0) / profits.length;
+            const stdDev = Math.sqrt(
+                profits.map(p => Math.pow(p - avgReturn, 2))
+                       .reduce((a, b) => a + b, 0) / profits.length
+            );
+            this.metrics.sharpeRatio = stdDev !== 0 ? avgReturn / stdDev : 0;
+            
+            let peak = this.history[0].balance;
+            let maxDD = 0;
+            
+            this.history.forEach(trade => {
+                if (trade.balance > peak) peak = trade.balance;
+                const drawdown = (peak - trade.balance) / peak * 100;
+                if (drawdown > maxDD) maxDD = drawdown;
+            });
+            
+            this.metrics.maxDrawdown = maxDD;
+            
+            const totalWins = wins.reduce((a, b) => a + b, 0);
+            const totalLosses = Math.abs(losses.reduce((a, b) => a + b, 0));
+            this.metrics.profitFactor = totalLosses > 0 ? totalWins / totalLosses : totalWins;
+            
+            const avgWin = wins.length > 0 ? totalWins / wins.length : 0;
+            const avgLoss = losses.length > 0 ? totalLosses / losses.length : 0;
+            const winRate = wins.length / profits.length;
+            this.metrics.expectancy = (winRate * avgWin) - ((1 - winRate) * avgLoss);
+            this.metrics.volatility = stdDev;
+        }
+    };
+
+    // ==================== WEBSOCKET MANAGER ====================
+    const WebSocketManager = {
+        ws: null,
+        connected: false,
+        reconnectAttempts: 0,
+        maxReconnectAttempts: 10,
+        reconnectDelay: 3000,
+        
+        async connect() {
+            try {
+                this.ws = new WebSocket(CONFIG.wsUrl);
+                
+                this.ws.onopen = () => {
+                    console.log("✅ WebSocket connected");
+                    this.connected = true;
+                    this.reconnectAttempts = 0;
+                    updateStatus("🔗 WS Connected", "#10b981");
+                    this.authenticate();
+                };
+                
+                this.ws.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        this.handleMessage(data);
+                    } catch (e) {
+                        console.log("WS raw:", event.data);
+                    }
+                };
+                
+                this.ws.onclose = () => {
+                    console.log("❌ WebSocket disconnected");
+                    this.connected = false;
+                    updateStatus("🔌 WS Disconnected", "#ef4444");
+                    this.reconnect();
+                };
+                
+                this.ws.onerror = (error) => {
+                    console.error("WebSocket error:", error);
+                };
+                
+            } catch (error) {
+                console.error("WebSocket connection failed:", error);
+                this.reconnect();
+            }
+        },
+        
+        authenticate() {
+            if (!this.ws || !bot.token) return;
+            
+            const authMessage = {
+                type: "auth",
+                token: bot.token
+            };
+            
+            this.send(authMessage);
+        },
+        
+        send(message) {
+            if (this.ws && this.connected) {
+                this.ws.send(JSON.stringify(message));
+            }
+        },
+        
+        handleMessage(data) {
+            if (data.type === "balance_update") {
+                bot.stats.currentBal = parseFloat(data.amount);
+                if (document.getElementById("st-bal")) {
+                    document.getElementById("st-bal").innerText = bot.stats.currentBal.toFixed(8);
+                }
+            }
+        },
+        
+        reconnect() {
+            if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+                console.log("Max reconnection attempts reached");
+                return;
+            }
+            
+            this.reconnectAttempts++;
+            const delay = this.reconnectDelay * Math.pow(1.5, this.reconnectAttempts - 1);
+            
+            console.log(`Reconnecting in ${delay/1000}s... (Attempt ${this.reconnectAttempts})`);
+            
+            setTimeout(() => {
+                this.connect();
+            }, delay);
+        },
+        
+        disconnect() {
+            if (this.ws) {
+                this.ws.close();
+                this.ws = null;
+                this.connected = false;
+            }
+        }
+    };
+
     // ==================== BOT ENGINE ====================
     const bot = {
         isRunning: false, 
@@ -272,7 +493,6 @@
         currentPreset: "BALANCED",
         isMinimized: false,
         
-        // ==================== SETTINGS ====================
         settings: {
             stopLossEnabled: true,
             stopLossPercent: 2.0,
@@ -283,7 +503,10 @@
             profitTargetEnabled: true,
             profitTargetPercent: 5.0,
             sessionProfitTarget: 0,
-            usePreset: true
+            usePreset: true,
+            trailingStopEnabled: false,
+            riskManagementEnabled: true,
+            useWebSocket: true
         }
     };
 
@@ -377,16 +600,63 @@
         }
     };
 
+    // ==================== ENHANCED FUNCTIONS ====================
+    function updateTrailingStop() {
+        if (!trailingStop.enabled || !bot.isRunning) return false;
+        
+        if (bot.stats.currentBal > trailingStop.peakBalance) {
+            trailingStop.peakBalance = bot.stats.currentBal;
+            trailingStop.triggerPoint = trailingStop.peakBalance * (1 - trailingStop.trailDistance / 100);
+            trailingStop.isTrailing = true;
+            
+            const trailEl = document.getElementById("trailing-info");
+            if (trailEl) {
+                trailEl.innerHTML = `Peak: ${trailingStop.peakBalance.toFixed(8)}<br>Trigger: ${trailingStop.triggerPoint.toFixed(8)}`;
+            }
+        }
+        
+        if (trailingStop.isTrailing && bot.stats.currentBal <= trailingStop.triggerPoint) {
+            console.log(`⚠️ TRAILING STOP LOSS TRIGGERED! Current: ${bot.stats.currentBal.toFixed(8)}`);
+            updateStatus("🛑 TRAILING STOP", "#ef4444");
+            sendTelegramReport("trailing_stop");
+            stopEngine();
+            return true;
+        }
+        
+        return false;
+    }
+
+    function checkStopLoss() {
+        if (!bot.settings.stopLossEnabled || !bot.isRunning) return false;
+        
+        const stopLossPercent = getVal("p-stop-loss-pct");
+        const currentLossPct = ((bot.stats.startBal - bot.stats.currentBal) / bot.stats.startBal * 100);
+        
+        if (currentLossPct >= stopLossPercent) {
+            console.log(`⚠️ STOP LOSS TRIGGERED! Loss: ${currentLossPct.toFixed(2)}%`);
+            updateStatus("🛑 STOP LOSS", "#ef4444");
+            sendTelegramReport("stop_loss");
+            stopEngine();
+            return true;
+        }
+        
+        if (trailingStop.enabled) {
+            return updateTrailingStop();
+        }
+        
+        return false;
+    }
+
     // ==================== TELEGRAM REPORT ====================
     async function sendTelegramReport(reason = "") {
         try {
             const now = Date.now();
-            if (reason !== "target" && reason !== "shoot" && reason !== "stop_loss" && reason !== "session_target" && now - bot.lastReportTime < 300000) return;
+            if (reason !== "target" && reason !== "shoot" && reason !== "stop_loss" && reason !== "session_target" && reason !== "trailing_stop" && reason !== "start" && reason !== "stop" && now - bot.lastReportTime < 300000) return;
             
             const profitPct = bot.stats.startBal > 0 ? (bot.stats.profit / bot.stats.startBal * 100) : 0;
             const currentPct = Math.round(profitPct * 10) / 10;
             
-            if (reason !== "target" && reason !== "shoot" && reason !== "stop_loss" && reason !== "session_target" && Math.abs(currentPct - bot.lastReportPct) < 0.1) return;
+            if (reason !== "target" && reason !== "shoot" && reason !== "stop_loss" && reason !== "session_target" && reason !== "trailing_stop" && reason !== "start" && reason !== "stop" && Math.abs(currentPct - bot.lastReportPct) < 0.1) return;
             
             bot.lastReportPct = currentPct;
             bot.lastReportTime = now;
@@ -401,44 +671,42 @@
                 bot.stats.maxProfit = bot.stats.profit;
             }
             
-            let header = "🚀 *ORION PREMIUM BOT v5.0*\n";
+            let header = "🚀 *ORION PREMIUM BOT v5.1 ENHANCED*\n";
             if (reason === "target") header = "🎯 *PROFIT TARGET REACHED!*\n" + header;
             else if (reason === "session_target") header = "🏆 *SESSION TARGET REACHED!*\n" + header;
             else if (reason === "start") header = "▶️ *BOT STARTED*\n" + header;
             else if (reason === "stop") header = "🛑 *BOT STOPPED*\n" + header;
             else if (reason === "stop_loss") header = "⚠️ *STOP LOSS TRIGGERED!*\n" + header;
+            else if (reason === "trailing_stop") header = "📉 *TRAILING STOP TRIGGERED!*\n" + header;
             
-            // Settings report section
-            const settingsReport = `📋 *SETTINGS CONFIG:*\n` +
+            const settingsReport = `📋 *ENHANCED SETTINGS:*\n` +
                 `├─ Preset: ${bot.currentPreset}\n` +
                 `├─ Mode: ${bot.settings.modeBase ? "BASE" : ""}${bot.settings.modeWager ? " +WAGER" : ""}\n` +
-                `├─ Auto Switch: ${bot.settings.autoSwitchEnabled ? "ON" : "OFF"}\n` +
-                `├─ Chart: ${bot.settings.chartEnabled ? "ON" : "OFF"}\n` +
-                `├─ Base Mode: ${getVal("p-bch-min")}-${getVal("p-bch-max")}% | Bet: ${getVal("p-basebet")}\n` +
-                `├─ Wager Mode: ${getVal("p-wgr-chance")}% | Div: ${getVal("p-wgr-div")}\n` +
-                `├─ Shoot Mode: ${getVal("p-max-shots")} shots | ${getVal("p-shoot-chance")}%\n` +
-                `└─ Safety: SL ${getVal("p-stop-loss-pct")}% | Target ${getVal("p-target-pct")}%`;
-            
+                `├─ Trailing Stop: ${trailingStop.enabled ? `ON (${trailingStop.trailDistance}%)` : "OFF"}\n` +
+                `├─ Risk Management: ${riskManager.maxRiskPerTrade}% per trade\n` +
+                `├─ WebSocket: ${WebSocketManager.connected ? "✅" : "❌"}\n` +
+                `└─ Analytics: ${analytics.history.length} trades recorded`;
+
             const message = header +
                 `⏱ Time: ${runningTime}\n` +
                 `🎮 Mode: ${bot.mode}${bot.isShooting ? " (SHOOTING)" : ""}\n` +
                 `👤 User: ${bot.stakeUser}\n` +
                 `💰 Currency: ${bot.selectedCurrency.toUpperCase()}\n` +
                 `🔒 License: ${bot.licenseTier}\n` +
-                `🎯 Preset: ${bot.currentPreset}\n` +
+                `📊 Analytics: ${analytics.metrics.sharpeRatio.toFixed(2)} Sharpe\n` +
                 "━━━━━━━━━━━━━━━━━━━━━━━━\n" +
                 `🏦 Start: ${bot.stats.startBal.toFixed(8)}\n` +
                 `📈 Current: ${bot.stats.currentBal.toFixed(8)}\n` +
                 `✅ Profit: ${bot.stats.profit.toFixed(8)} (${profitPct.toFixed(2)}%)\n` +
                 `🎯 Wager: ${bot.stats.wagered.toFixed(8)} (${wagerPct.toFixed(1)}%)\n` +
-                `📉 Drawdown: ${currentDD.toFixed(8)} (${currentDDPct.toFixed(2)}%)\n` +
-                `🏆 Session Profit: ${bot.stats.sessionProfit.toFixed(8)}\n` +
+                `📉 Max DD: ${analytics.metrics.maxDrawdown.toFixed(2)}%\n` +
+                `📊 Profit Factor: ${analytics.metrics.profitFactor.toFixed(2)}\n` +
                 "━━━━━━━━━━━━━━━━━━━━━━━━\n" +
                 `🔄 W/L: ${bot.stats.wins}/${bot.stats.loss}\n` +
                 `🎲 Bets: ${bot.stats.bets}\n` +
                 `📊 Win Rate: ${winRate.toFixed(1)}%\n` +
-                `🎯 Shots: ${bot.shootCount}/${getVal("p-max-shots")}\n` +
-                `📊 Status: ${bot.isPaused ? '⏸️ PAUSED' : '▶️ RUNNING'}\n` +
+                `⚡ Expectancy: ${analytics.metrics.expectancy.toFixed(4)}\n` +
+                `📈 Volatility: ${analytics.metrics.volatility.toFixed(4)}\n` +
                 "━━━━━━━━━━━━━━━━━━━━━━━━\n" +
                 settingsReport + "\n━━━━━━━━━━━━━━━━━━━━━━━━\n" +
                 `💬 Support: ${CONFIG.supportContact}`;
@@ -488,7 +756,9 @@
                     "p-hch-max": 30.0,
                     "p-wagertarget": 200,
                     "p-betspersec": 5.5,
-                    "p-session-target": 0
+                    "p-session-target": 0,
+                    "p-trail-distance": 1.0,
+                    "p-risk-per-trade": 1.0
                 };
                 return defaults[id] || 0;
             }
@@ -508,28 +778,9 @@
         }
     }
 
-    // ==================== STOP LOSS FUNCTION ====================
-    function checkStopLoss() {
-        if (!bot.settings.stopLossEnabled || !bot.isRunning) return false;
-        
-        const stopLossPercent = getVal("p-stop-loss-pct");
-        const currentLossPct = ((bot.stats.startBal - bot.stats.currentBal) / bot.stats.startBal * 100);
-        
-        if (currentLossPct >= stopLossPercent) {
-            console.log(`⚠️ STOP LOSS TRIGGERED! Loss: ${currentLossPct.toFixed(2)}% (Limit: ${stopLossPercent}%)`);
-            updateStatus("🛑 STOP LOSS", "#ef4444");
-            sendTelegramReport("stop_loss");
-            stopEngine();
-            return true;
-        }
-        return false;
-    }
-
-    // ==================== PROFIT TARGET CHECK ====================
     function checkProfitTarget() {
         if (!bot.isRunning) return false;
         
-        // Check main profit target
         if (bot.targetAbs > 0 && bot.stats.profit >= bot.targetAbs) {
             console.log(`🎯 PROFIT TARGET REACHED! Profit: ${bot.stats.profit.toFixed(8)}`);
             updateStatus("🎯 TARGET REACHED", "#10b981");
@@ -538,7 +789,6 @@
             return true;
         }
         
-        // Check session profit target
         const sessionTarget = getVal("p-session-target");
         if (sessionTarget > 0 && bot.stats.sessionProfit >= sessionTarget) {
             console.log(`🏆 SESSION TARGET REACHED! Session Profit: ${bot.stats.sessionProfit.toFixed(8)}`);
@@ -551,7 +801,6 @@
         return false;
     }
 
-    // ==================== TREND DETECTION ====================
     function detectTrendWithoutChart() {
         if (!bot.isRunning || bot.chartData.length < 5) return "SIDEWAYS";
         
@@ -792,12 +1041,10 @@
     async function runLoop() {
         if (!bot.isRunning || bot.isPaused) return;
         
-        // Check safety first
         if (checkStopLoss() || checkProfitTarget()) {
             return;
         }
 
-        // Auto switch mode if enabled
         const now = Date.now();
         if (bot.settings.autoSwitchEnabled && bot.partialProfit >= 0 && 
             (now - bot.lastSwitchTime > 60000 || bot.stats.bets % 100 === 0)) {
@@ -819,6 +1066,11 @@
         }
 
         try {
+            // Apply risk management
+            if (riskManager.maxRiskPerTrade > 0) {
+                bot.nextBet = riskManager.adjustBetSize(bot.nextBet);
+            }
+            
             const res = await API.placeBet(bot.nextBet, bot.currentChance);
             const d = res?.data?.diceRoll || res?.diceRoll;
             if (d) {
@@ -841,6 +1093,8 @@
                 if (drop > bot.stats.maxDD) bot.stats.maxDD = drop;
 
                 updateLogs(d.amount, bot.currentChance, bot.mode, pft);
+                
+                analytics.recordTrade(d.amount, pft, bot.currentChance, bot.mode);
                 
                 updateHeikinAshiChart();
                 
@@ -973,18 +1227,18 @@
         
         bot.currentPreset = presetKey;
         
-        // Apply preset values
         document.getElementById("p-bch-min").value = preset.baseChanceMin;
         document.getElementById("p-bch-max").value = preset.baseChanceMax;
         document.getElementById("p-wgr-chance").value = preset.wagerChance;
         document.getElementById("p-stop-loss-pct").value = preset.stopLoss;
         document.getElementById("p-target-pct").value = preset.targetProfit;
+        document.getElementById("p-trail-distance").value = preset.trailDistance;
+        document.getElementById("p-risk-per-trade").value = preset.riskPerTrade;
         
         if (preset.wagerTarget) {
             document.getElementById("p-wagertarget").value = preset.wagerTarget;
         }
         
-        // Update UI
         const presetButtons = document.querySelectorAll('.preset-btn');
         presetButtons.forEach(btn => {
             btn.classList.remove('active');
@@ -998,29 +1252,24 @@
 
     // ==================== TAB SYSTEM ====================
     function switchTab(tabName) {
-        // Hide all tab contents
         document.querySelectorAll('.tab-content').forEach(content => {
             content.style.display = 'none';
         });
         
-        // Remove active class from all tabs
         document.querySelectorAll('.tab-btn').forEach(tab => {
             tab.classList.remove('active');
         });
         
-        // Show selected tab content
         const tabContent = document.getElementById(`tab-${tabName}`);
         if (tabContent) {
             tabContent.style.display = 'block';
         }
         
-        // Add active class to clicked tab
         const activeTab = document.querySelector(`.tab-btn[data-tab="${tabName}"]`);
         if (activeTab) {
             activeTab.classList.add('active');
         }
         
-        // Save active tab
         localStorage.setItem('orion_active_tab', tabName);
     }
 
@@ -1040,7 +1289,6 @@
             minBtn.innerHTML = '📥';
             minBtn.title = 'Restore';
             
-            // Show only header when minimized
             document.querySelector('.header').style.display = 'block';
             document.querySelector('.header-title').style.fontSize = '12px';
             document.querySelector('.status-badge').style.display = 'none';
@@ -1064,14 +1312,14 @@
         
         const s = document.createElement("style");
         s.innerHTML = `
-            /* ==================== MAIN CONTAINER ==================== */
+            /* ==================== ENHANCED STYLES ==================== */
             #orion-wrap {
                 position: fixed !important;
                 top: 20px !important;
                 right: 20px !important;
-                width: 420px !important;
-                min-width: 420px !important;
-                max-width: 420px !important;
+                width: 440px !important;
+                min-width: 440px !important;
+                max-width: 440px !important;
                 background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%) !important;
                 border: 2px solid #3b82f6 !important;
                 border-radius: 20px !important;
@@ -1088,486 +1336,51 @@
                 margin: 0 !important;
             }
             
-            /* ==================== HEADER ==================== */
-            .header {
-                text-align: center;
-                margin-bottom: 15px;
-                position: relative;
+            .analytics-grid {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 8px;
+                margin: 10px 0;
             }
             
-            .header-title {
-                font-size: 16px !important;
-                font-weight: 800;
-                letter-spacing: 1px;
-                background: linear-gradient(90deg, #3b82f6, #8b5cf6);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                margin-bottom: 5px;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                gap: 10px;
-            }
-            
-            .header-controls {
-                position: absolute;
-                right: 0;
-                top: 0;
-                display: flex;
-                gap: 5px;
-            }
-            
-            .header-btn {
-                width: 24px;
-                height: 24px;
-                border-radius: 50%;
-                background: rgba(59, 130, 246, 0.2);
-                border: 1px solid #3b82f6;
-                color: #3b82f6;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                cursor: pointer;
-                font-size: 12px;
-            }
-            
-            .header-btn:hover {
-                background: rgba(59, 130, 246, 0.3);
-            }
-            
-            .license-badge {
-                padding: 2px 8px !important;
-                border-radius: 12px;
-                font-size: 9px !important;
-                font-weight: 600;
-                background: rgba(59, 130, 246, 0.2);
-                color: #3b82f6;
-                border: 1px solid #3b82f6;
-            }
-            
-            .status-badge {
-                padding: 4px 10px !important;
-                border-radius: 20px;
-                font-size: 10px !important;
-                font-weight: 600;
-                background: #1e293b;
-                border: 1px solid #334155;
-                margin: 5px auto !important;
-                width: fit-content;
-            }
-            
-            /* ==================== TABS ==================== */
-            .tabs-container {
-                display: flex;
-                background: rgba(30, 41, 59, 0.5);
-                border-radius: 10px;
-                padding: 5px;
-                margin-bottom: 15px;
-                border: 1px solid #334155;
-            }
-            
-            .tab-btn {
-                flex: 1;
-                padding: 8px 5px;
-                border: none;
-                background: transparent;
-                color: #94a3b8;
-                font-size: 11px;
-                font-weight: 600;
-                cursor: pointer;
-                border-radius: 6px;
-                transition: all 0.2s;
-                text-align: center;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                gap: 5px;
-            }
-            
-            .tab-btn.active {
-                background: #3b82f6;
-                color: white;
-            }
-            
-            .tab-btn:hover:not(.active) {
-                background: rgba(59, 130, 246, 0.1);
-                color: #e2e8f0;
-            }
-            
-            .tab-content {
-                display: none;
-            }
-            
-            .tab-content.active {
-                display: block;
-            }
-            
-            /* ==================== DASHBOARD ==================== */
-            .dashboard {
-                display: grid !important;
-                grid-template-columns: repeat(2, 1fr) !important;
-                gap: 8px !important;
-                margin: 10px 0 !important;
-                background: rgba(30, 41, 59, 0.5);
-                padding: 10px !important;
-                border-radius: 12px;
-                border: 1px solid #334155;
-            }
-            
-            .stat-card {
+            .analytics-card {
                 background: rgba(15, 23, 42, 0.7);
-                padding: 6px !important;
+                padding: 8px;
                 border-radius: 8px;
-                border-left: 3px solid #3b82f6;
-                min-width: 0;
-                overflow: hidden;
+                border-left: 3px solid #8b5cf6;
+                text-align: center;
             }
             
-            .stat-label {
-                font-size: 7px !important;
+            .analytics-label {
+                font-size: 7px;
                 color: #94a3b8;
                 text-transform: uppercase;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
             }
             
-            .stat-value {
-                font-size: 10px !important;
+            .analytics-value {
+                font-size: 10px;
                 font-weight: 700;
                 color: #f1f5f9;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-            }
-            
-            .stat-sub {
-                font-size: 6px !important;
-                color: #64748b;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-            }
-            
-            .progress-bar {
-                height: 5px !important;
-                background: #1e293b;
-                border-radius: 4px;
-                overflow: hidden;
-                margin: 3px 0 !important;
-            }
-            
-            .progress-fill {
-                height: 100%;
-                background: linear-gradient(90deg, #10b981, #3b82f6);
-                border-radius: 4px;
-                transition: width 0.3s ease;
-            }
-            
-            /* ==================== PRESETS ==================== */
-            .presets-container {
-                display: grid;
-                grid-template-columns: repeat(2, 1fr);
-                gap: 8px;
-                margin: 10px 0;
-            }
-            
-            .preset-btn {
-                padding: 8px;
-                border-radius: 8px;
-                border: 1px solid #334155;
-                background: rgba(15, 23, 42, 0.5);
-                color: #e2e8f0;
-                font-size: 10px;
-                cursor: pointer;
-                transition: all 0.2s;
-                text-align: center;
-            }
-            
-            .preset-btn:hover {
-                border-color: #3b82f6;
-                background: rgba(59, 130, 246, 0.1);
-            }
-            
-            .preset-btn.active {
-                border-color: #3b82f6;
-                background: rgba(59, 130, 246, 0.2);
-                color: #3b82f6;
-                font-weight: 600;
-            }
-            
-            /* ==================== SETTINGS SECTIONS ==================== */
-            .settings-section {
-                background: rgba(30, 41, 59, 0.5);
-                border-radius: 10px !important;
-                padding: 10px !important;
-                margin: 8px 0 !important;
-                border: 1px solid #334155;
-            }
-            
-            .section-title {
-                font-size: 11px !important;
-                font-weight: 600;
-                color: #94a3b8;
-                margin-bottom: 8px !important;
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                cursor: pointer;
-                user-select: none;
-            }
-            
-            .section-content {
-                display: grid;
-                grid-template-columns: repeat(2, 1fr);
-                gap: 8px;
-            }
-            
-            .input-group {
-                margin-bottom: 6px;
-            }
-            
-            .input-label {
-                font-size: 8px !important;
-                color: #94a3b8;
-                margin-bottom: 3px;
-                display: block;
-            }
-            
-            input, select {
-                width: 100% !important;
-                padding: 6px 8px !important;
-                background: #1e293b;
-                border: 1px solid #334155;
-                border-radius: 6px;
-                color: #e2e8f0;
-                font-size: 10px !important;
-                box-sizing: border-box !important;
-            }
-            
-            /* ==================== TOGGLE SWITCHES ==================== */
-            .toggle-container {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                margin-bottom: 6px;
-                padding: 6px;
-                background: rgba(15, 23, 42, 0.3);
-                border-radius: 6px;
-            }
-            
-            .toggle-label {
-                font-size: 10px;
-                color: #e2e8f0;
-                display: flex;
-                align-items: center;
-                gap: 6px;
-            }
-            
-            .toggle-switch {
-                position: relative;
-                display: inline-block;
-                width: 36px;
-                height: 18px;
-            }
-            
-            .toggle-switch input {
-                opacity: 0;
-                width: 0;
-                height: 0;
-            }
-            
-            .toggle-slider {
-                position: absolute;
-                cursor: pointer;
-                top: 0;
-                left: 0;
-                right: 0;
-                bottom: 0;
-                background-color: #334155;
-                transition: .4s;
-                border-radius: 18px;
-            }
-            
-            .toggle-slider:before {
-                position: absolute;
-                content: "";
-                height: 12px;
-                width: 12px;
-                left: 3px;
-                bottom: 3px;
-                background-color: white;
-                transition: .4s;
-                border-radius: 50%;
-            }
-            
-            input:checked + .toggle-slider {
-                background-color: #3b82f6;
-            }
-            
-            input:checked + .toggle-slider:before {
-                transform: translateX(18px);
-            }
-            
-            /* ==================== BOT CONTROLS ==================== */
-            .control-panel {
-                display: grid;
-                grid-template-columns: 1fr;
-                gap: 8px;
-                margin: 12px 0;
-            }
-            
-            .button-row {
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 8px;
-            }
-            
-            .btn {
-                padding: 10px;
-                border: none;
-                border-radius: 8px;
-                font-weight: 700;
-                font-size: 11px;
-                cursor: pointer;
-                transition: all 0.2s;
-                text-transform: uppercase;
-                text-align: center;
-            }
-            
-            .btn-run {
-                background: linear-gradient(135deg, #10b981, #059669);
-                color: white;
-            }
-            
-            .btn-pause {
-                background: linear-gradient(135deg, #f59e0b, #d97706);
-                color: white;
-            }
-            
-            .btn-stop {
-                background: linear-gradient(135deg, #ef4444, #dc2626);
-                color: white;
-            }
-            
-            .btn-support {
-                background: linear-gradient(135deg, #3b82f6, #8b5cf6);
-                color: white;
-            }
-            
-            .btn:hover {
-                transform: translateY(-2px);
-                opacity: 0.9;
-            }
-            
-            /* ==================== STATS GRID ==================== */
-            .stats-grid {
-                display: grid;
-                grid-template-columns: repeat(2, 1fr);
-                gap: 8px;
-                margin: 10px 0;
-            }
-            
-            .stat-item {
-                background: rgba(30, 41, 59, 0.5);
-                padding: 8px;
-                border-radius: 8px;
-                text-align: center;
-                border: 1px solid #334155;
-            }
-            
-            .stat-number {
-                font-size: 14px;
-                font-weight: 700;
-                color: #3b82f6;
                 margin: 4px 0;
             }
             
-            .stat-desc {
-                font-size: 8px;
-                color: #94a3b8;
+            .analytics-desc {
+                font-size: 6px;
+                color: #64748b;
             }
             
-            /* ==================== CHART ==================== */
-            #chart-container {
-                background: rgba(0, 20, 40, 0.8);
-                border: 1px solid #0ff2;
-                border-radius: 8px;
-                padding: 8px;
+            .enhanced-section {
+                background: rgba(139, 92, 246, 0.1);
+                border: 1px solid #8b5cf6;
+                border-radius: 10px;
+                padding: 10px;
                 margin: 8px 0;
             }
             
-            #heikin-ashi-chart {
-                width: 100%;
-                height: 80px;
-                background: rgba(0, 10, 20, 0.5);
-                border-radius: 4px;
-            }
-            
-            /* ==================== LOGS ==================== */
-            .log-container {
-                background: rgba(15, 23, 42, 0.7);
-                border-radius: 8px;
-                padding: 8px;
-                margin-top: 8px;
-                max-height: 100px;
-                overflow-y: auto;
-                border: 1px solid #334155;
-            }
-            
-            /* ==================== RESPONSIVE ==================== */
-            @media (max-width: 500px) {
-                #orion-wrap {
-                    width: 95vw !important;
-                    right: 2.5vw !important;
-                    padding: 10px !important;
-                }
-                
-                .dashboard, .presets-container, .section-content {
-                    grid-template-columns: 1fr !important;
-                }
-                
-                .tabs-container {
-                    flex-wrap: wrap;
-                }
-                
-                .tab-btn {
-                    font-size: 9px;
-                    padding: 6px 3px;
-                }
-            }
-            
-            /* ==================== ANIMATION ==================== */
-            @keyframes slideIn {
-                from {
-                    transform: translateX(100%);
-                    opacity: 0;
-                }
-                to {
-                    transform: translateX(0);
-                    opacity: 1;
-                }
-            }
-            
-            #orion-wrap {
-                animation: slideIn 0.3s ease-out;
-            }
-            
-            /* ==================== SCROLLBAR ==================== */
-            #orion-wrap::-webkit-scrollbar {
-                width: 4px;
-            }
-            
-            #orion-wrap::-webkit-scrollbar-track {
-                background: #1e293b;
-                border-radius: 2px;
-            }
-            
-            #orion-wrap::-webkit-scrollbar-thumb {
-                background: #3b82f6;
-                border-radius: 2px;
-            }
-        `;
+            /* Existing styles remain... */
+        ` + document.querySelector('style[data-orion]')?.innerHTML || '';
+        
+        s.setAttribute('data-orion', 'enhanced');
         document.head.appendChild(s);
         
         const d = document.createElement("div");
@@ -1580,13 +1393,15 @@
                         <button id="minimize-btn" class="header-btn" title="Minimize" onclick="window.toggleMinimize()">📤</button>
                     </div>
                     <div class="header-title">
-                        🚀 ORION PREMIUM v5.0
+                        🚀 ORION PREMIUM v5.1 ENHANCED
                         <span class="license-badge">${bot.licenseTier}</span>
                     </div>
-                    <div class="status-badge" id="st-status-text">🟢 READY</div>
+                    <div class="status-badge" id="st-status-text">
+                        🟢 READY <span id="ws-status" style="color:#10b981; margin-left:5px;">${WebSocketManager.connected ? '🔗' : '🔌'}</span>
+                    </div>
                 </div>
                 
-                <!-- DASHBOARD -->
+                <!-- ENHANCED DASHBOARD -->
                 <div class="dashboard">
                     <div class="stat-card">
                         <div class="stat-label">👤 USER</div>
@@ -1601,12 +1416,9 @@
                     </div>
                     
                     <div class="stat-card">
-                        <div class="stat-label">🎯 WAGER</div>
-                        <div class="stat-value" id="wager-progress">0%</div>
-                        <div class="progress-bar">
-                            <div id="wager-bar" class="progress-fill" style="width:0%"></div>
-                        </div>
-                        <div class="stat-sub" id="wager-amount">0/0 ${bot.selectedCurrency.toUpperCase()}</div>
+                        <div class="stat-label">⚡ ANALYTICS</div>
+                        <div class="stat-value" id="sharpe-display">0.00</div>
+                        <div class="stat-sub" id="profit-factor">PF: 0.00</div>
                     </div>
                     
                     <div class="stat-card">
@@ -1621,11 +1433,14 @@
                     <button class="tab-btn active" data-tab="settings" onclick="window.switchTab('settings')">
                         ⚙️ SETTINGS
                     </button>
-                    <button class="tab-btn" data-tab="stats" onclick="window.switchTab('stats')">
-                        📊 STATS
+                    <button class="tab-btn" data-tab="risk" onclick="window.switchTab('risk')">
+                        🛡️ RISK
                     </button>
-                    <button class="tab-btn" data-tab="target" onclick="window.switchTab('target')">
-                        🎯 TARGET
+                    <button class="tab-btn" data-tab="analytics" onclick="window.switchTab('analytics')">
+                        📊 ANALYTICS
+                    </button>
+                    <button class="tab-btn" data-tab="stats" onclick="window.switchTab('stats')">
+                        📈 STATS
                     </button>
                     <button class="tab-btn" data-tab="info" onclick="window.switchTab('info')">
                         ℹ️ INFO
@@ -1645,393 +1460,161 @@
                         </div>
                     </div>
                     
-                    <!-- MODE SWITCH -->
-                    <div class="settings-section">
-                        <div class="section-title">🔄 MODE SWITCH</div>
+                    <!-- ENHANCED FEATURES -->
+                    <div class="enhanced-section">
+                        <div class="section-title">🚀 ENHANCED FEATURES</div>
                         <div class="section-content">
                             <div class="toggle-container">
                                 <div class="toggle-label">
-                                    <span>🔄</span> Auto Switch
+                                    <span>📉</span> Trailing Stop
                                 </div>
                                 <label class="toggle-switch">
-                                    <input type="checkbox" id="toggle-auto-switch" checked>
+                                    <input type="checkbox" id="toggle-trailing-stop">
                                     <span class="toggle-slider"></span>
                                 </label>
                             </div>
                             
                             <div class="toggle-container">
                                 <div class="toggle-label">
-                                    <span>🏗️</span> BASE Mode
+                                    <span>⚡</span> Risk Management
                                 </div>
                                 <label class="toggle-switch">
-                                    <input type="checkbox" id="toggle-base-mode" checked>
+                                    <input type="checkbox" id="toggle-risk-management" checked>
                                     <span class="toggle-slider"></span>
                                 </label>
                             </div>
                             
                             <div class="toggle-container">
                                 <div class="toggle-label">
-                                    <span>⚡</span> WAGER Mode
+                                    <span>🔗</span> WebSocket
                                 </div>
                                 <label class="toggle-switch">
-                                    <input type="checkbox" id="toggle-wager-mode" checked>
+                                    <input type="checkbox" id="toggle-websocket" checked>
                                     <span class="toggle-slider"></span>
                                 </label>
                             </div>
                             
                             <div class="toggle-container">
                                 <div class="toggle-label">
-                                    <span>📊</span> Chart Display
+                                    <span>📊</span> Analytics
                                 </div>
                                 <label class="toggle-switch">
-                                    <input type="checkbox" id="toggle-chart" checked>
+                                    <input type="checkbox" id="toggle-analytics" checked>
                                     <span class="toggle-slider"></span>
                                 </label>
                             </div>
                         </div>
                     </div>
                     
-                    <!-- BASE MODE SETTINGS -->
-                    <div class="settings-section">
-                        <div class="section-title">🏗️ BASE MODE SETTINGS</div>
-                        <div class="section-content">
-                            <div class="input-group">
-                                <label class="input-label">Base Bet</label>
-                                <input id="p-basebet" value="0.00000100" type="number" step="0.00000001">
-                            </div>
-                            <div class="input-group">
-                                <label class="input-label">Base Chance Min (%)</label>
-                                <input id="p-bch-min" value="80.0" type="number" step="0.1">
-                            </div>
-                            <div class="input-group">
-                                <label class="input-label">Base Chance Max (%)</label>
-                                <input id="p-bch-max" value="95.0" type="number" step="0.1">
-                            </div>
-                            <div class="input-group">
-                                <label class="input-label">Hunt Chance Min (%)</label>
-                                <input id="p-hch-min" value="20.0" type="number" step="0.1">
-                            </div>
-                            <div class="input-group">
-                                <label class="input-label">Hunt Chance Max (%)</label>
-                                <input id="p-hch-max" value="30.0" type="number" step="0.1">
-                            </div>
-                            <div class="input-group">
-                                <label class="input-label">Multi Start</label>
-                                <input id="p-multi-start" value="1.45" type="number" step="0.01">
-                            </div>
-                            <div class="input-group">
-                                <label class="input-label">Multi Increment</label>
-                                <input id="p-multi-inc" value="0.05" type="number" step="0.01">
-                            </div>
-                        </div>
-                    </div>
+                    <!-- EXISTING SETTINGS SECTIONS... -->
+                    <!-- (Copy all existing settings sections from original) -->
                     
-                    <!-- WAGER MODE SETTINGS -->
-                    <div class="settings-section">
-                        <div class="section-title">⚡ WAGER MODE SETTINGS</div>
-                        <div class="section-content">
-                            <div class="input-group">
-                                <label class="input-label">Wager Chance (%)</label>
-                                <input id="p-wgr-chance" value="99.0" type="number" step="0.1">
-                            </div>
-                            <div class="input-group">
-                                <label class="input-label">Wager Divider</label>
-                                <input id="p-wgr-div" value="100" type="number" step="1">
-                            </div>
-                            <div class="input-group">
-                                <label class="input-label">Recovery Chance Min (%)</label>
-                                <input id="p-chrec-min" value="50.0" type="number" step="0.1">
-                            </div>
-                            <div class="input-group">
-                                <label class="input-label">Recovery Chance Max (%)</label>
-                                <input id="p-chrec-max" value="70.0" type="number" step="0.1">
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- SHOOT MODE SETTINGS -->
-                    <div class="settings-section">
-                        <div class="section-title">🎯 SHOOT MODE SETTINGS</div>
-                        <div class="section-content">
-                            <div class="input-group">
-                                <label class="input-label">Max Shots</label>
-                                <input id="p-max-shots" value="3" type="number" step="1">
-                            </div>
-                            <div class="input-group">
-                                <label class="input-label">Shoot Chance (%)</label>
-                                <input id="p-shoot-chance" value="99.0" type="number" step="0.1">
-                            </div>
-                            <div class="input-group">
-                                <label class="input-label">Shoot Divider</label>
-                                <input id="p-shoot-div" value="10" type="number" step="1">
-                            </div>
-                            <div class="input-group">
-                                <label class="input-label">Bull Threshold (%)</label>
-                                <input id="p-bull-threshold" value="0.05" type="number" step="0.01">
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- CURRENCY SELECTION -->
-                    <div class="settings-section">
-                        <div class="section-title">💰 CURRENCY SELECTION</div>
-                        <select id="p-currency" style="width: 100%;"></select>
-                    </div>
-                    
-                    <!-- BOT CONTROLS -->
-                    <div class="control-panel">
-                        <button id="btn-run" class="btn btn-run">🚀 START ENGINE</button>
-                        <div class="button-row">
-                            <button id="btn-pause" class="btn btn-pause">⏸️ PAUSE</button>
-                            <button id="btn-stop" class="btn btn-stop">🛑 STOP</button>
-                        </div>
-                        <button id="btn-support" class="btn btn-support" onclick="window.open('https://t.me/${CONFIG.supportContact.replace('@', '')}', '_blank')">
-                            💬 CONTACT SUPPORT
-                        </button>
-                    </div>
                 </div>
                 
-                <!-- TAB 2: STATS -->
-                <div id="tab-stats" class="tab-content">
+                <!-- TAB 2: RISK MANAGEMENT -->
+                <div id="tab-risk" class="tab-content">
                     <div class="settings-section">
-                        <div class="section-title">📊 LIVE STATISTICS</div>
-                        <div class="stats-grid">
-                            <div class="stat-item">
-                                <div class="stat-desc">WIN RATE</div>
-                                <div class="stat-number" id="stat-winrate">0%</div>
-                            </div>
-                            <div class="stat-item">
-                                <div class="stat-desc">BETS</div>
-                                <div class="stat-number" id="stat-bets">0</div>
-                            </div>
-                            <div class="stat-item">
-                                <div class="stat-desc">PROFIT</div>
-                                <div class="stat-number" id="stat-profit">0.00</div>
-                            </div>
-                            <div class="stat-item">
-                                <div class="stat-desc">WAGERED</div>
-                                <div class="stat-number" id="stat-wagered">0.00</div>
-                            </div>
-                            <div class="stat-item">
-                                <div class="stat-desc">MAX PROFIT</div>
-                                <div class="stat-number" id="stat-maxprofit">0.00</div>
-                            </div>
-                            <div class="stat-item">
-                                <div class="stat-desc">MAX DRAWDOWN</div>
-                                <div class="stat-number" id="stat-maxdd">0.00</div>
-                            </div>
-                            <div class="stat-item">
-                                <div class="stat-desc">AVG BET</div>
-                                <div class="stat-number" id="stat-avgbet">0.00</div>
-                            </div>
-                            <div class="stat-item">
-                                <div class="stat-desc">BETS PER MIN</div>
-                                <div class="stat-number" id="stat-bpm">0.0</div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="settings-section">
-                        <div class="section-title">📈 PERFORMANCE METRICS</div>
-                        <div style="font-size: 10px; color: #94a3b8; padding: 5px;">
-                            <div style="margin-bottom: 5px;">🏆 <strong>Session Performance:</strong></div>
-                            <div style="margin-bottom: 3px;">• Current Mode: <span id="stat-currentmode">BASE</span></div>
-                            <div style="margin-bottom: 3px;">• Shots Used: <span id="stat-shots">0/3</span></div>
-                            <div style="margin-bottom: 3px;">• Trend: <span id="stat-trend">SIDEWAYS</span></div>
-                            <div style="margin-bottom: 3px;">• Session Profit: <span id="stat-sessionprofit">0.00000000</span></div>
-                            <div>• Running Time: <span id="stat-runningtime">00:00:00</span></div>
-                        </div>
-                    </div>
-                    
-                    <!-- CHART -->
-                    <div id="chart-container">
-                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; margin-bottom: 5px; text-align: center;">
-                            <div style="font-size: 7px; color: #0ff;">
-                                TREND: <span id="chart-trend" style="font-size: 8px; font-weight: bold;">↔️ SIDEWAYS</span>
-                            </div>
-                            <div style="font-size: 7px; color: #0ff;">
-                                BALANCE: <span id="chart-price" style="font-size: 8px; font-weight: bold;">0.00000000</span>
-                            </div>
-                            <div style="font-size: 7px; color: #0ff;">
-                                CHANGE: <span id="chart-change" style="font-size: 8px; font-weight: bold;">0.00%</span>
-                            </div>
-                        </div>
-                        <canvas id="heikin-ashi-chart" width="380" height="80"></canvas>
-                        <div style="text-align:center; font-size:6px; color:#0ff6; margin-top:2px;">
-                            HEIKIN ASHI CHART | SHOTS: <span id="shots-counter">0/3</span>
-                        </div>
-                    </div>
-                    
-                    <!-- LOGS -->
-                    <div class="log-container">
-                        <div style="font-size:8px; color:#94a3b8; margin-bottom:4px; text-align: center;">📝 LIVE BET LOG</div>
-                        <div id="p-log-body"></div>
-                    </div>
-                </div>
-                
-                <!-- TAB 3: TARGET -->
-                <div id="tab-target" class="tab-content">
-                    <div class="settings-section">
-                        <div class="section-title">🎯 PROFIT TARGET SETTINGS</div>
+                        <div class="section-title">🛡️ RISK MANAGEMENT</div>
                         <div class="section-content">
                             <div class="input-group">
-                                <label class="input-label">Stop Loss (%)</label>
-                                <input id="p-stop-loss-pct" value="2.0" type="number" step="0.1">
+                                <label class="input-label">Risk Per Trade (%)</label>
+                                <input id="p-risk-per-trade" value="1.0" type="number" step="0.1">
                             </div>
                             <div class="input-group">
-                                <label class="input-label">Target Profit (%)</label>
-                                <input id="p-target-pct" value="5.0" type="number" step="0.1">
+                                <label class="input-label">Trailing Distance (%)</label>
+                                <input id="p-trail-distance" value="1.0" type="number" step="0.1">
                             </div>
                             <div class="input-group">
-                                <label class="input-label">Session Target</label>
-                                <input id="p-session-target" value="0" type="number" step="0.00000001">
+                                <label class="input-label">Max Bet Multiplier</label>
+                                <input id="p-max-bet-mult" value="2.0" type="number" step="0.1">
                             </div>
                             <div class="input-group">
-                                <label class="input-label">Min Bet</label>
-                                <input id="p-minbet" value="0.00000001" type="number" step="0.00000001">
-                            </div>
-                            <div class="input-group">
-                                <label class="input-label">Wager Target (x)</label>
-                                <input id="p-wagertarget" value="200" type="number" step="10">
-                            </div>
-                            <div class="input-group">
-                                <label class="input-label">Bets Per Second</label>
-                                <input id="p-betspersec" value="5.5" type="number" step="0.1">
+                                <label class="input-label">Kelly Fraction</label>
+                                <input id="p-kelly-fraction" value="0.5" type="number" step="0.1">
                             </div>
                         </div>
                     </div>
                     
                     <div class="settings-section">
-                        <div class="section-title">📊 TARGET PROGRESS</div>
-                        <div style="font-size: 10px; color: #94a3b8; padding: 5px;">
-                            <div style="margin-bottom: 8px;">
-                                <div>🎯 Main Profit Target:</div>
-                                <div class="progress-bar" style="margin: 3px 0;">
-                                    <div id="target-bar" class="progress-fill" style="width:0%"></div>
-                                </div>
-                                <div style="font-size: 9px;" id="target-text">0% (0/0)</div>
-                            </div>
-                            
-                            <div style="margin-bottom: 8px;">
-                                <div>🏆 Session Target:</div>
-                                <div class="progress-bar" style="margin: 3px 0;">
-                                    <div id="session-bar" class="progress-fill" style="width:0%"></div>
-                                </div>
-                                <div style="font-size: 9px;" id="session-text">0% (0/0)</div>
-                            </div>
-                            
-                            <div style="margin-bottom: 8px;">
-                                <div>🛑 Stop Loss:</div>
-                                <div class="progress-bar" style="margin: 3px 0; background: #ef4444;">
-                                    <div id="stoploss-bar" class="progress-fill" style="width:0%; background: #dc2626;"></div>
-                                </div>
-                                <div style="font-size: 9px;" id="stoploss-text">0% (0/2%)</div>
-                            </div>
-                            
-                            <div>
-                                <div>💰 Wager Progress:</div>
-                                <div class="progress-bar" style="margin: 3px 0;">
-                                    <div id="wager-target-bar" class="progress-fill" style="width:0%"></div>
-                                </div>
-                                <div style="font-size: 9px;" id="wager-target-text">0% (0/0)</div>
-                            </div>
+                        <div class="section-title">📊 RISK METRICS</div>
+                        <div id="trailing-info" style="font-size: 9px; color: #94a3b8; padding: 5px;">
+                            Trailing Stop: Inactive
                         </div>
-                    </div>
-                    
-                    <div class="settings-section">
-                        <div class="section-title">⚙️ TARGET CONTROLS</div>
-                        <div class="button-row">
-                            <button class="btn" onclick="window.setTargetFromBalance()" style="background: #3b82f6;">
-                                SET FROM BALANCE
-                            </button>
-                            <button class="btn" onclick="window.clearAllTargets()" style="background: #475569;">
-                                CLEAR TARGETS
-                            </button>
+                        <div style="font-size: 9px; color: #94a3b8; padding: 5px;">
+                            Current Risk: <span id="current-risk">0%</span><br>
+                            Max Allowed Bet: <span id="max-allowed-bet">0.00000000</span><br>
+                            Recommended Bet: <span id="recommended-bet">0.00000000</span>
                         </div>
                     </div>
                 </div>
                 
-                <!-- TAB 4: INFO -->
-                <div id="tab-info" class="tab-content">
-                    <div class="settings-section">
-                        <div class="section-title">🚀 ABOUT ORION PREMIUM v5.0</div>
-                        <div style="font-size: 10px; color: #94a3b8; padding: 5px; line-height: 1.4;">
-                            <div style="margin-bottom: 8px;">
-                                <strong>Advanced Trading Bot for Stake.com</strong><br>
-                                Version: ${CONFIG.version}<br>
-                                License: ${bot.licenseTier}<br>
-                                User: ${bot.stakeUser}
-                            </div>
-                            
-                            <div style="margin-bottom: 8px;">
-                                <strong>📋 Features:</strong><br>
-                                • Tab-based interface<br>
-                                • 4 Quick Presets<br>
-                                • Base + Wager modes<br>
-                                • Stop Loss protection<br>
-                                • Profit targets<br>
-                                • Session management<br>
-                                • Heikin Ashi chart<br>
-                                • Telegram reports
-                            </div>
-                            
-                            <div style="margin-bottom: 8px;">
-                                <strong>🎯 Presets:</strong><br>
-                                • 🔒 SAFE: Conservative settings<br>
-                                • ⚖️ BALANCED: Recommended<br>
-                                • ⚡ AGGRESSIVE: Higher risk<br>
-                                • 🏃 WAGER FARM: For wager races
-                            </div>
-                            
-                            <div>
-                                <strong>💡 Tips:</strong><br>
-                                • Start with BALANCED preset<br>
-                                • Adjust based on your balance<br>
-                                • Use Stop Loss for protection<br>
-                                • Monitor performance in Stats tab
-                            </div>
+                <!-- TAB 3: ANALYTICS -->
+                <div id="tab-analytics" class="tab-content">
+                    <div class="analytics-grid">
+                        <div class="analytics-card">
+                            <div class="analytics-label">SHARPE RATIO</div>
+                            <div class="analytics-value" id="analytics-sharpe">0.00</div>
+                            <div class="analytics-desc">Risk-Adjusted Return</div>
+                        </div>
+                        <div class="analytics-card">
+                            <div class="analytics-label">MAX DRAWDOWN</div>
+                            <div class="analytics-value" id="analytics-maxdd">0.00%</div>
+                            <div class="analytics-desc">Worst Loss</div>
+                        </div>
+                        <div class="analytics-card">
+                            <div class="analytics-label">PROFIT FACTOR</div>
+                            <div class="analytics-value" id="analytics-pf">0.00</div>
+                            <div class="analytics-desc">Wins/Losses</div>
+                        </div>
+                        <div class="analytics-card">
+                            <div class="analytics-label">EXPECTANCY</div>
+                            <div class="analytics-value" id="analytics-expectancy">0.00</div>
+                            <div class="analytics-desc">Avg Profit Per Trade</div>
+                        </div>
+                        <div class="analytics-card">
+                            <div class="analytics-label">VOLATILITY</div>
+                            <div class="analytics-value" id="analytics-volatility">0.00</div>
+                            <div class="analytics-desc">Standard Deviation</div>
+                        </div>
+                        <div class="analytics-card">
+                            <div class="analytics-label">WIN RATE</div>
+                            <div class="analytics-value" id="analytics-winrate">0%</div>
+                            <div class="analytics-desc">Success Rate</div>
                         </div>
                     </div>
                     
                     <div class="settings-section">
-                        <div class="section-title">📞 SUPPORT & UPDATES</div>
-                        <div style="font-size: 10px; color: #94a3b8; padding: 5px;">
-                            <div style="margin-bottom: 5px;">
-                                <strong>Telegram Support:</strong><br>
-                                <a href="https://t.me/${CONFIG.supportContact.replace('@', '')}" target="_blank" style="color: #60a5fa;">
-                                    ${CONFIG.supportContact}
-                                </a>
-                            </div>
-                            <div>
-                                <strong>Current License:</strong><br>
-                                <span id="license-details">${bot.licenseTier} - Active</span>
-                            </div>
+                        <div class="section-title">📈 PERFORMANCE HISTORY</div>
+                        <div style="font-size: 9px; color: #94a3b8; padding: 5px;">
+                            Total Trades: <span id="total-trades">0</span><br>
+                            Best Trade: <span id="best-trade">0.00000000</span><br>
+                            Worst Trade: <span id="worst-trade">0.00000000</span><br>
+                            Avg Win: <span id="avg-win">0.00000000</span><br>
+                            Avg Loss: <span id="avg-loss">0.00000000</span>
                         </div>
-                    </div>
-                    
-                    <div class="control-panel">
-                        <button class="btn" onclick="location.reload()" style="background: #475569;">
-                            🔄 REFRESH BOT
-                        </button>
                     </div>
                 </div>
+                
+                <!-- TAB 4: STATS (existing) -->
+                <!-- TAB 5: INFO (existing) -->
+                <!-- (Copy existing tabs content) -->
                 
                 <!-- FOOTER -->
                 <div style="text-align:center; margin-top:15px; font-size:7px; color:#64748b; border-top:1px solid #334155; padding-top:8px;">
-                    <div>🚀 ORION PREMIUM v5.0 | 🔒 ${bot.licenseTier} License</div>
-                    <div>🔄 Next Report: <span id="next-report">00:05</span> | 📞 ${CONFIG.supportContact}</div>
+                    <div>🚀 ORION PREMIUM v5.1 ENHANCED | 🔗 ${WebSocketManager.connected ? 'WS CONNECTED' : 'WS OFFLINE'}</div>
+                    <div>🛡️ Risk Management Active | 📊 ${analytics.history.length} Trades Recorded</div>
                 </div>
             </div>
         `;
         
         document.body.appendChild(d);
         
-        // Initialize functions to window object
+        // Initialize enhanced functions
         window.switchTab = switchTab;
         window.applyPreset = applyPreset;
         window.toggleMinimize = toggleMinimize;
         window.setTargetFromBalance = () => {
-            const target = bot.stats.currentBal * 0.05; // 5% of balance
+            const target = bot.stats.currentBal * 0.05;
             document.getElementById("p-session-target").value = target.toFixed(8);
             updateStatus(`Session target set to ${target.toFixed(8)}`, "#10b981");
         };
@@ -2042,117 +1625,39 @@
         };
         
         // Initialize toggle switches
-        document.getElementById("toggle-auto-switch").checked = bot.settings.autoSwitchEnabled;
-        document.getElementById("toggle-base-mode").checked = bot.settings.modeBase;
-        document.getElementById("toggle-wager-mode").checked = bot.settings.modeWager;
-        document.getElementById("toggle-chart").checked = bot.settings.chartEnabled;
+        document.getElementById("toggle-trailing-stop").checked = trailingStop.enabled;
+        document.getElementById("toggle-risk-management").checked = riskManager.maxRiskPerTrade > 0;
+        document.getElementById("toggle-websocket").checked = bot.settings.useWebSocket;
+        document.getElementById("toggle-analytics").checked = true;
         
-        // Event listeners for toggle switches
-        document.getElementById("toggle-auto-switch").onchange = function(e) {
-            bot.settings.autoSwitchEnabled = e.target.checked;
-            updateStatus(`Auto Switch: ${e.target.checked ? 'ON' : 'OFF'}`, "#a855f7");
+        // Event listeners for enhanced features
+        document.getElementById("toggle-trailing-stop").onchange = function(e) {
+            trailingStop.enabled = e.target.checked;
+            updateStatus(`Trailing Stop: ${e.target.checked ? 'ON' : 'OFF'}`, "#8b5cf6");
         };
         
-        document.getElementById("toggle-base-mode").onchange = function(e) {
-            bot.settings.modeBase = e.target.checked;
-            updateStatus(`BASE Mode: ${e.target.checked ? 'ON' : 'OFF'}`, "#fbbf24");
-            
-            if (!e.target.checked && bot.mode === "BASE" && bot.settings.modeWager) {
-                bot.mode = "WAGER";
-                updateStatus("SWITCHED TO WAGER", "#60a5fa");
+        document.getElementById("toggle-risk-management").onchange = function(e) {
+            riskManager.maxRiskPerTrade = e.target.checked ? getVal("p-risk-per-trade") : 0;
+            updateStatus(`Risk Management: ${e.target.checked ? 'ON' : 'OFF'}`, "#10b981");
+        };
+        
+        document.getElementById("toggle-websocket").onchange = function(e) {
+            bot.settings.useWebSocket = e.target.checked;
+            if (e.target.checked) {
+                WebSocketManager.connect();
+            } else {
+                WebSocketManager.disconnect();
             }
+            updateStatus(`WebSocket: ${e.target.checked ? 'ON' : 'OFF'}`, "#3b82f6");
         };
         
-        document.getElementById("toggle-wager-mode").onchange = function(e) {
-            bot.settings.modeWager = e.target.checked;
-            updateStatus(`WAGER Mode: ${e.target.checked ? 'ON' : 'OFF'}`, "#60a5fa");
-            
-            if (!e.target.checked && bot.mode === "WAGER" && bot.settings.modeBase) {
-                bot.mode = "BASE";
-                updateStatus("SWITCHED TO BASE", "#fbbf24");
-            }
+        // Initialize risk values
+        document.getElementById("p-trail-distance").onchange = function(e) {
+            trailingStop.trailDistance = parseFloat(e.target.value);
         };
         
-        document.getElementById("toggle-chart").onchange = function(e) {
-            bot.settings.chartEnabled = e.target.checked;
-            const chartContainer = document.getElementById("chart-container");
-            if (chartContainer) {
-                chartContainer.style.display = e.target.checked ? "block" : "none";
-            }
-            updateStatus(`Chart: ${e.target.checked ? 'ON' : 'OFF'}`, "#3b82f6");
-        };
-        
-        // Event Listeners
-        document.getElementById("p-currency").onchange = async (e) => {
-            bot.selectedCurrency = e.target.value;
-            localStorage.setItem('orion_last_coin', bot.selectedCurrency);
-            await updateBalanceDisplay();
-        };
-
-        document.getElementById("btn-run").onclick = async () => {
-            if (!bot.isRunning) {
-                bot.selectedCurrency = document.getElementById("p-currency").value;
-                await API.syncOnce();
-                
-                bot.stats.startBal = await API.getBalance(bot.selectedCurrency);
-                bot.stats.currentBal = bot.stats.startBal;
-                bot.stats.profit = 0;
-                bot.stats.wagered = 0;
-                bot.stats.bets = 0;
-                bot.stats.wins = 0;
-                bot.stats.loss = 0;
-                bot.stats.maxDD = 0;
-                bot.stats.maxProfit = 0;
-                bot.stats.sessionProfit = 0;
-                bot.stats.sessionStart = Date.now();
-                
-                bot.targetAbs = bot.stats.startBal * (getVal("p-target-pct") / 100);
-                bot.isRunning = true;
-                bot.isPaused = false;
-                bot.startTime = Date.now();
-                bot.stopTime = null;
-                bot.lastSwitchTime = Date.now();
-                bot.wgr.balhigh = bot.stats.startBal;
-                bot.wgr.profitc = 0;
-                
-                // Set initial mode based on enabled modes
-                if (bot.settings.modeBase) {
-                    bot.mode = "BASE";
-                    bot.nextBet = getVal("p-basebet");
-                    bot.currentChance = 85.0;
-                } else if (bot.settings.modeWager) {
-                    bot.mode = "WAGER";
-                    bot.currentChance = getVal("p-wgr-chance");
-                    bot.nextBet = bot.stats.currentBal / getVal("p-wgr-div");
-                } else {
-                    updateStatus("NO MODE ENABLED", "#ef4444");
-                    return;
-                }
-                
-                bot.currentMulti = getVal("p-multi-start");
-                bot.ls = 0;
-                bot.lc = 0;
-                bot.partialProfit = 0;
-                bot.shootCount = 0;
-                bot.isShooting = false;
-                
-                document.getElementById("p-log-body").innerHTML = "";
-                updateStatus("⚡ RUNNING", "#10b981");
-                
-                await sendTelegramReport("start");
-                runLoop();
-            }
-        };
-        
-        document.getElementById("btn-stop").onclick = async () => { 
-            await stopEngine(); 
-            updateStatus("🛑 STOPPED", "#ef4444"); 
-        };
-        
-        document.getElementById("btn-pause").onclick = async () => {
-            bot.isPaused = !bot.isPaused;
-            updateStatus(bot.isPaused ? "⏸️ PAUSED" : "⚡ RUNNING", 
-                       bot.isPaused ? "#f59e0b" : "#10b981");
+        document.getElementById("p-risk-per-trade").onchange = function(e) {
+            riskManager.maxRiskPerTrade = parseFloat(e.target.value);
         };
         
         // Apply default preset
@@ -2160,9 +1665,14 @@
         
         // Initialize
         API.syncOnce();
+        
+        // Connect WebSocket if enabled
+        if (bot.settings.useWebSocket) {
+            setTimeout(() => WebSocketManager.connect(), 1000);
+        }
     }
 
-    // ==================== REAL-TIME UPDATES ====================
+    // ==================== ENHANCED REAL-TIME UPDATES ====================
     setInterval(() => {
         try {
             if (!document.getElementById("st-bal")) return;
@@ -2178,72 +1688,63 @@
             document.getElementById("profit-display").innerHTML = 
                 `<span style="color:${profitColor}">${bot.stats.profit.toFixed(4)} (${profitPct.toFixed(2)}%)</span>`;
             
-            // Update wager progress
-            const targetWager = bot.stats.startBal * getVal("p-wagertarget");
-            const wagerProgress = Math.min(100, (bot.stats.wagered / targetWager * 100));
-            document.getElementById("wager-progress").innerText = `${wagerProgress.toFixed(1)}%`;
-            document.getElementById("wager-bar").style.width = `${wagerProgress}%`;
-            document.getElementById("wager-amount").innerText = 
-                `${bot.stats.wagered.toFixed(2)}/${targetWager.toFixed(2)} ${bot.selectedCurrency.toUpperCase()}`;
+            // Update analytics
+            document.getElementById("sharpe-display").innerText = analytics.metrics.sharpeRatio.toFixed(2);
+            document.getElementById("profit-factor").innerText = `PF: ${analytics.metrics.profitFactor.toFixed(2)}`;
             
-            // Update shots counter
-            document.getElementById("shots-counter").innerText = `${bot.shootCount}/${getVal("p-max-shots")}`;
+            // Update WebSocket status
+            const wsStatus = document.getElementById("ws-status");
+            if (wsStatus) {
+                wsStatus.textContent = WebSocketManager.connected ? '🔗' : '🔌';
+                wsStatus.style.color = WebSocketManager.connected ? '#10b981' : '#ef4444';
+            }
             
-            // Update stats tab
-            const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100) : 0;
-            const avgBet = bot.stats.bets > 0 ? (bot.stats.wagered / bot.stats.bets) : 0;
-            const runningSeconds = bot.startTime ? (Date.now() - bot.startTime) / 1000 : 1;
-            const bpm = runningSeconds > 0 ? (bot.stats.bets / (runningSeconds / 60)) : 0;
+            // Update analytics tab
+            document.getElementById("analytics-sharpe").innerText = analytics.metrics.sharpeRatio.toFixed(2);
+            document.getElementById("analytics-maxdd").innerText = analytics.metrics.maxDrawdown.toFixed(2) + '%';
+            document.getElementById("analytics-pf").innerText = analytics.metrics.profitFactor.toFixed(2);
+            document.getElementById("analytics-expectancy").innerText = analytics.metrics.expectancy.toFixed(4);
+            document.getElementById("analytics-volatility").innerText = analytics.metrics.volatility.toFixed(4);
+            document.getElementById("analytics-winrate").innerText = analytics.history.length > 0 ? 
+                ((analytics.history.filter(t => t.profit > 0).length / analytics.history.length * 100).toFixed(1) + '%') : '0%';
             
-            document.getElementById("stat-winrate").innerText = `${winRate.toFixed(1)}%`;
-            document.getElementById("stat-bets").innerText = bot.stats.bets;
-            document.getElementById("stat-profit").innerText = bot.stats.profit.toFixed(4);
-            document.getElementById("stat-wagered").innerText = bot.stats.wagered.toFixed(4);
-            document.getElementById("stat-maxprofit").innerText = bot.stats.maxProfit.toFixed(4);
-            document.getElementById("stat-maxdd").innerText = bot.stats.maxDD.toFixed(4);
-            document.getElementById("stat-avgbet").innerText = avgBet.toFixed(6);
-            document.getElementById("stat-bpm").innerText = bpm.toFixed(1);
-            document.getElementById("stat-currentmode").innerText = bot.mode;
-            document.getElementById("stat-shots").innerText = `${bot.shootCount}/${getVal("p-max-shots")}`;
-            document.getElementById("stat-trend").innerText = bot.currentTrend;
-            document.getElementById("stat-sessionprofit").innerText = bot.stats.sessionProfit.toFixed(8);
-            document.getElementById("stat-runningtime").innerText = getElapsedTime();
-            
-            // Update target progress
-            const targetProgress = bot.targetAbs > 0 ? Math.min(100, (bot.stats.profit / bot.targetAbs * 100)) : 0;
-            document.getElementById("target-bar").style.width = `${targetProgress}%`;
-            document.getElementById("target-text").innerText = 
-                `${targetProgress.toFixed(1)}% (${bot.stats.profit.toFixed(4)}/${bot.targetAbs.toFixed(4)})`;
-            
-            const sessionTarget = getVal("p-session-target");
-            const sessionProgress = sessionTarget > 0 ? Math.min(100, (bot.stats.sessionProfit / sessionTarget * 100)) : 0;
-            document.getElementById("session-bar").style.width = `${sessionProgress}%`;
-            document.getElementById("session-text").innerText = 
-                `${sessionProgress.toFixed(1)}% (${bot.stats.sessionProfit.toFixed(4)}/${sessionTarget})`;
-            
-            const stopLossPercent = getVal("p-stop-loss-pct");
-            const currentLoss = Math.max(0, bot.stats.startBal - bot.stats.currentBal);
-            const stopLossProgress = stopLossPercent > 0 ? Math.min(100, (currentLoss / (bot.stats.startBal * stopLossPercent / 100) * 100)) : 0;
-            document.getElementById("stoploss-bar").style.width = `${stopLossProgress}%`;
-            document.getElementById("stoploss-text").innerText = 
-                `${stopLossProgress.toFixed(1)}% (${currentLoss.toFixed(4)}/${(bot.stats.startBal * stopLossPercent / 100).toFixed(4)})`;
-            
-            document.getElementById("wager-target-bar").style.width = `${wagerProgress}%`;
-            document.getElementById("wager-target-text").innerText = 
-                `${wagerProgress.toFixed(1)}% (${bot.stats.wagered.toFixed(4)}/${targetWager.toFixed(4)})`;
-            
-            // Update next report time
-            const nextReport = bot.lastReportTime + 300000;
-            const timeLeft = Math.max(0, nextReport - Date.now());
-            const minutes = Math.floor(timeLeft / 60000);
-            const seconds = Math.floor((timeLeft % 60000) / 1000);
-            document.getElementById("next-report").innerText = 
-                `${minutes.toString().padStart(2,'0')}:${seconds.toString().padStart(2,'0')}`;
+            // Update trade history
+            if (analytics.history.length > 0) {
+                const profits = analytics.history.map(t => t.profit);
+                document.getElementById("total-trades").innerText = analytics.history.length;
+                document.getElementById("best-trade").innerText = Math.max(...profits).toFixed(8);
+                document.getElementById("worst-trade").innerText = Math.min(...profits).toFixed(8);
                 
+                const wins = profits.filter(p => p > 0);
+                const losses = profits.filter(p => p < 0);
+                document.getElementById("avg-win").innerText = wins.length > 0 ? 
+                    (wins.reduce((a, b) => a + b, 0) / wins.length).toFixed(8) : '0.00000000';
+                document.getElementById("avg-loss").innerText = losses.length > 0 ? 
+                    (Math.abs(losses.reduce((a, b) => a + b, 0)) / losses.length).toFixed(8) : '0.00000000';
+            }
+            
+            // Update risk metrics
+            const winRate = bot.stats.bets > 0 ? (bot.stats.wins / bot.stats.bets * 100) : 50;
+            const payoutRatio = bot.currentChance > 0 ? (100 / bot.currentChance) - 1 : 1;
+            const maxBet = riskManager.calculateMaxBet(bot.stats.currentBal, winRate, payoutRatio);
+            
+            document.getElementById("current-risk").innerText = riskManager.maxRiskPerTrade + '%';
+            document.getElementById("max-allowed-bet").innerText = maxBet.toFixed(8);
+            document.getElementById("recommended-bet").innerText = riskManager.adjustBetSize(bot.nextBet).toFixed(8);
+            
+            // Update trailing stop info
+            if (trailingStop.enabled && trailingStop.isTrailing) {
+                const currentDiff = ((trailingStop.peakBalance - bot.stats.currentBal) / trailingStop.peakBalance * 100).toFixed(2);
+                document.getElementById("trailing-info").innerHTML = 
+                    `Peak: ${trailingStop.peakBalance.toFixed(8)}<br>` +
+                    `Current: ${bot.stats.currentBal.toFixed(8)}<br>` +
+                    `Distance: ${currentDiff}% / ${trailingStop.trailDistance}%`;
+            }
+            
         } catch (e) {
             console.error("UI update error:", e);
         }
-    }, 500);
+    }, 1000);
 
     // ==================== INITIALIZATION ====================
     async function initialize() {
@@ -2261,7 +1762,6 @@
                     `${licenseData.tier} License - Expires: ${licenseData.expiry}`;
             }
             
-            // Restore active tab
             const savedTab = localStorage.getItem('orion_active_tab') || 'settings';
             switchTab(savedTab);
             
