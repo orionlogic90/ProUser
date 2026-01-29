@@ -194,8 +194,8 @@
             type: "DEFENSIVE",
             baseChance: 88,
             phases: 3,
-            betMultiplier: 0.01, // 1% of balance
-            condition: "loss < 0.02", // Loss < 2%
+            betMultiplier: 0.01,
+            condition: "loss < 0.02",
             exitCondition: "balance >= baseline",
             description: "Safe recovery with clear boundaries"
         },
@@ -205,7 +205,7 @@
             type: "AGGRESSIVE",
             baseChance: 70,
             phases: 2,
-            betMultiplier: 0.015, // 1.5% of balance
+            betMultiplier: 0.015,
             condition: "loss >= 0.02 OR volatility > 0.6",
             exitCondition: "single win OR 2 attempts",
             description: "Aggressive recovery for volatile markets"
@@ -216,7 +216,7 @@
             type: "STEADY",
             baseChance: 85,
             phases: 4,
-            betMultiplier: 0.008, // 0.8% of balance
+            betMultiplier: 0.008,
             condition: "any loss",
             exitCondition: "loss recovered OR max phases",
             description: "Steady dollar-cost averaging approach"
@@ -227,8 +227,8 @@
             type: "URGENT",
             baseChance: 82,
             phases: 3,
-            maxTime: 180000, // 3 minutes
-            betMultiplier: 0.02, // 2% of balance
+            maxTime: 180000,
+            betMultiplier: 0.02,
             condition: "loss > 0.03 OR timePressure",
             exitCondition: "time's up OR target reached",
             description: "Time-limited recovery for emergencies"
@@ -329,8 +329,8 @@
             modeDuration: 0,
             modeHistory: [],
             performance: {
-                BASE: { profit: 0, bets: 0, winRate: 0 },
-                WAGER: { profit: 0, bets: 0, winRate: 0 }
+                BASE: { profit: 0, bets: 0, winRate: 0, wins: 0 },
+                WAGER: { profit: 0, bets: 0, winRate: 0, wins: 0 }
             },
             shouldSwitch: function() {
                 if (this.modeHistory.length < 5) return false;
@@ -356,7 +356,7 @@
                 this.performance[mode].winRate = this.performance[mode].bets > 0 ?
                     (this.performance[mode].wins / this.performance[mode].bets * 100) : 0;
                 
-                this.modeHistory.push({ mode, win, profit, time: Date.now() });
+                this.modeHistory.push({ mode: mode, win: win, profit: profit, time: Date.now() });
                 if (this.modeHistory.length > 50) this.modeHistory.shift();
             }
         }
@@ -452,7 +452,7 @@
     };
 
     // ==================== TELEGRAM REPORT ====================
-    async function sendTelegramReport(reason = "") {
+    async function sendTelegramReport(reason) {
         try {
             const now = Date.now();
             
@@ -535,7 +535,7 @@
                 `🎯 *Wagered:* ${bot.stats.wagered.toFixed(8)} (${wagerPct.toFixed(1)}%)\n` +
                 `📉 *Drawdown:* ${currentDD.toFixed(8)} (${currentDDPct.toFixed(2)}%)\n` +
                 `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-                (bot.recovery.active ? `🔄 *Recovery Phase:* ${bot.recovery.currentPhase}/${bot.recovery.totalPhases}\n` : ``) +
+                (bot.recovery.active ? `🔄 *Recovery Phase:* ${bot.recovery.currentPhase}/${bot.recovery.totalPhases}\n` : "") +
                 `🔄 *W/L:* ${bot.stats.wins}/${bot.stats.loss}\n` +
                 `🎲 *Bets:* ${bot.stats.bets}\n` +
                 `📊 *Win Rate:* ${winRate.toFixed(1)}%\n` +
@@ -589,7 +589,7 @@
         
         const recent = bot.rotation.modeHistory.slice(-10);
         const wins = recent.filter(r => r.win).length;
-        const expectedWins = recent.filter(r => r.mode === "WAGER").length * 0.99; // Assuming 99% chance
+        const expectedWins = recent.filter(r => r.mode === "WAGER").length * 0.99;
         
         return Math.abs(wins - expectedWins) / 10;
     }
@@ -1048,11 +1048,11 @@
         await updateBalanceDisplay();
     }
 
-    function updateStatus(text, color = "#0ff") {
+    function updateStatus(text, color) {
         const el = document.getElementById("st-status-text");
         if (el) {
             el.innerText = text;
-            el.style.color = color;
+            el.style.color = color || "#0ff";
         }
     }
 
@@ -1078,7 +1078,7 @@
             <span>${pft.toFixed(5)}</span>
         `;
         logBox.prepend(row);
-        if (logBox.children.length > 10) logBox.lastChild.remove();
+        if (logBox.children.length > 10) logBox.removeChild(logBox.lastChild);
     }
 
     function getElapsedTime() {
@@ -1089,24 +1089,36 @@
     }
 
     function updateRecoveryUI() {
+        const recoveryStatus = document.getElementById("recovery-status");
+        const recoveryPhase = document.getElementById("recovery-phase");
+        const recoveryProgress = document.getElementById("recovery-progress");
+        const recoveryProgressText = document.getElementById("recovery-progress-text");
+        
+        if (!recoveryStatus || !recoveryPhase || !recoveryProgress) return;
+        
         if (!bot.recovery.active) {
-            document.getElementById("recovery-status").innerText = "INACTIVE";
-            document.getElementById("recovery-phase").innerText = "0/0";
-            document.getElementById("recovery-progress").style.width = "0%";
+            recoveryStatus.innerText = "INACTIVE";
+            recoveryPhase.innerText = "0/0";
+            recoveryProgress.style.width = "0%";
+            if (recoveryProgressText) recoveryProgressText.innerText = "0%";
             return;
         }
         
-        document.getElementById("recovery-status").innerText = bot.recovery.strategy.name;
-        document.getElementById("recovery-phase").innerText = `${bot.recovery.currentPhase}/${bot.recovery.totalPhases}`;
+        recoveryStatus.innerText = bot.recovery.strategy.name;
+        recoveryPhase.innerText = `${bot.recovery.currentPhase}/${bot.recovery.totalPhases}`;
         
-        const phaseProgress = (bot.recovery.phaseProfit / (bot.recovery.targetProfit / bot.recovery.totalPhases)) * 100;
-        const totalProgress = ((bot.recovery.currentPhase - 1) * 100 / bot.recovery.totalPhases) + (phaseProgress / bot.recovery.totalPhases);
-        document.getElementById("recovery-progress").style.width = `${Math.min(100, totalProgress)}%`;
+        const phaseTarget = bot.recovery.targetProfit / bot.recovery.totalPhases;
+        const phaseProgress = phaseTarget > 0 ? (bot.recovery.phaseProfit / phaseTarget) * 100 : 0;
+        const totalProgress = ((bot.recovery.currentPhase - 1) * (100 / bot.recovery.totalPhases)) + (phaseProgress / bot.recovery.totalPhases);
+        recoveryProgress.style.width = `${Math.min(100, totalProgress)}%`;
+        if (recoveryProgressText) recoveryProgressText.innerText = `${Math.round(totalProgress)}%`;
     }
 
     // ==================== UI CREATION ====================
     function createUI() {
-        if (document.getElementById("orion-wrap")) document.getElementById("orion-wrap").remove();
+        if (document.getElementById("orion-wrap")) {
+            document.getElementById("orion-wrap").remove();
+        }
         
         const s = document.createElement("style");
         s.innerHTML = `
@@ -2035,7 +2047,7 @@
                 bot.startTime = Date.now();
                 bot.stopTime = null;
                 bot.lastSwitchTime = Date.now();
-                bot.lastReportTime = Date.now(); // Reset report timer
+                bot.lastReportTime = Date.now();
                 
                 // Reset rotation system
                 bot.rotation.performance = {
@@ -2074,7 +2086,8 @@
                 bot.shootCount = 0;
                 bot.isShooting = false;
                 
-                document.getElementById("p-log-body").innerHTML = "";
+                const logBody = document.getElementById("p-log-body");
+                if (logBody) logBody.innerHTML = "";
                 updateStatus("⚡ RUNNING", "#10b981");
                 
                 // Send START report
@@ -2120,17 +2133,14 @@
             
             // Update mode
             document.getElementById("current-mode").innerText = bot.mode + (bot.isShooting ? " 🎯" : "") + (bot.recovery.active ? " 🔄" : "");
-            document.getElementById("mode-stats").innerHTML =
-                `AI: ${bot.rotation.performance[bot.mode]?.winRate?.toFixed(1) || 0}%`;
+            const modeStatsEl = document.getElementById("mode-stats");
+            if (modeStatsEl) {
+                modeStatsEl.innerHTML = `AI: ${bot.rotation.performance[bot.mode]?.winRate?.toFixed(1) || 0}%`;
+            }
             
             // Update stats
             document.getElementById("wl-ratio").innerText = `${bot.stats.wins}/${bot.stats.loss}`;
             document.getElementById("st-time").innerText = getElapsedTime();
-            
-            // Update sessions counter
-            const maxSessions = getVal("p-max-sessions");
-            document.getElementById("sessions-counter")?.innerText =
-                `${bot.session.currentSession}/${maxSessions > 0 ? maxSessions : '∞'}`;
             
             // Update wager progress
             const targetWager = bot.stats.startBal * getVal("p-wagertarget");
@@ -2150,13 +2160,6 @@
             
             // Update recovery UI
             updateRecoveryUI();
-            
-            // Update recovery progress text
-            if (bot.recovery.active) {
-                const phaseProgress = (bot.recovery.phaseProfit / (bot.recovery.targetProfit / bot.recovery.totalPhases)) * 100;
-                const totalProgress = ((bot.recovery.currentPhase - 1) * 100 / bot.recovery.totalPhases) + (phaseProgress / bot.recovery.totalPhases);
-                document.getElementById("recovery-progress-text").innerText = `${Math.round(totalProgress)}%`;
-            }
             
             // Update next report time
             const nextReport = bot.lastReportTime + 300000;
