@@ -1,10 +1,8 @@
 (function () {
-    'use strict';
-
     // ==================== CONFIGURATION ====================
     const CONFIG = {
         get apiUrl() { return window.location.origin + '/_api'; },
-        version: "ORION PREMIUM v4.2",
+        version: "ORION PREMIUM v4.3",
         tgToken: '8391763291:AAEA05v6FG70eM1WGrgU7mrPgckfjQaxkno',
         tgChatId: '-1003744641395',
         supportContact: '@OrionLogic'
@@ -19,8 +17,7 @@
         "brokenpips": { tier: "PREMIUM", expiry: "2026-02-26" },
         "aynus": { tier: "PREMIUM", expiry: "2026-02-26" },
         "terbaik444": { tier: "PREMIUM", expiry: "2026-01-30" },
-        "k4pitiang": { tier: "PREMIUM", expiry: "2026-02-26" },
-        "test": { tier: "TEST", expiry: "2099-12-31" } // For testing
+        "k4pitiang": { tier: "PREMIUM", expiry: "2026-02-26" }
     };
 
     // ==================== LICENSE VALIDATION ====================
@@ -29,57 +26,26 @@
 
     async function validateLicense() {
         try {
-            console.log("🔐 Validating license...");
-            
-            // Try multiple token sources
-            const token = localStorage.getItem('_token') || 
-                         localStorage.getItem('apitoken') || 
-                         localStorage.getItem('token') || 
-                         (document.cookie.match(/(^| )session=([^;]+)/) ? 
-                          document.cookie.match(/(^| )session=([^;]+)/)[2] : null);
+            const token = localStorage.getItem('apitoken') || 
+                         (document.cookie.match(/session=([^;]+)/) ? 
+                          document.cookie.match(/session=([^;]+)/)[1] : null);
 
             if (!token) {
                 showLicenseModal("Please login to Stake.com first");
                 return false;
             }
 
-            console.log("Token found, fetching user info...");
-            
             const response = await fetch(`${CONFIG.apiUrl}/graphql`, {
                 method: "POST",
                 headers: { 
                     "Content-Type": "application/json",
                     "x-access-token": token 
                 },
-                body: JSON.stringify({ 
-                    query: `query {
-                        user {
-                            name
-                            balances {
-                                available {
-                                    amount
-                                    currency
-                                }
-                            }
-                        }
-                    }` 
-                })
+                body: JSON.stringify({ query: `query{user{name}}` })
             });
 
-            if (!response.ok) {
-                throw new Error(`API response: ${response.status}`);
-            }
-
             const data = await response.json();
-            
-            if (data.errors) {
-                console.error("GraphQL errors:", data.errors);
-                showLicenseModal("API Error: " + data.errors[0].message);
-                return false;
-            }
-            
             const username = data?.data?.user?.name?.toLowerCase();
-            console.log("Username retrieved:", username);
 
             if (!username) {
                 showLicenseModal("Cannot retrieve username");
@@ -91,11 +57,7 @@
             
             if (!licenseData) {
                 showLicenseModal(
-                    `<div style="text-align: center;">
-                        <h3 style="color: #ef4444;">❌ ACCESS DENIED</h3>
-                        <p>Username <strong>${username}</strong> is not whitelisted.</p>
-                        <p style="font-size: 12px; color: #94a3b8;">Contact: ${CONFIG.supportContact}</p>
-                    </div>`,
+                    `Username <strong>${username}</strong> is not whitelisted.`, 
                     true
                 );
                 return false;
@@ -104,11 +66,7 @@
             const expiryDate = new Date(licenseData.expiry);
             if (new Date() > expiryDate) {
                 showLicenseModal(
-                    `<div style="text-align: center;">
-                        <h3 style="color: #f59e0b;">⚠️ LICENSE EXPIRED</h3>
-                        <p>License expired on ${expiryDate.toLocaleDateString()}.</p>
-                        <p style="font-size: 12px; color: #94a3b8;">Contact: ${CONFIG.supportContact}</p>
-                    </div>`,
+                    `License expired on ${expiryDate.toLocaleDateString()}.`, 
                     true
                 );
                 return false;
@@ -117,125 +75,60 @@
             console.log(`✅ License validated: ${username} (${licenseData.tier})`);
             
             // Send load report
-            try {
-                await sendTelegramReport("load");
-            } catch (e) {
-                console.warn("Failed to send Telegram report:", e);
-            }
+            await sendTelegramReport("load");
             
             return true;
 
         } catch (error) {
             console.error("License validation error:", error);
-            showLicenseModal(
-                `<div style="text-align: center;">
-                    <h3 style="color: #ef4444;">⚠️ CONNECTION ERROR</h3>
-                    <p>${error.message}</p>
-                    <p style="font-size: 12px; color: #94a3b8;">Please refresh the page and try again.</p>
-                </div>`
-            );
+            showLicenseModal("Connection error. Please refresh.");
             return false;
         }
     }
 
-    // ==================== LICENSE MODAL ====================
-    function showLicenseModal(message, isError = false) {
-        // Remove existing modal
-        const existingModal = document.getElementById('orion-license-modal');
-        if (existingModal) existingModal.remove();
+    // ==================== D'ALEMBERT RECOVERY SYSTEM ====================
+    const DallembertRecovery = {
+        levels: [
+            { // Level 1-5
+                min: 1, max: 5,
+                chance: { min: 25, max: 35 },
+                betMultiplier: 1.2,
+                description: "Aggressive recovery"
+            },
+            { // Level 6-10
+                min: 6, max: 10,
+                chance: { min: 45, max: 55 },
+                betMultiplier: 1.5,
+                description: "Moderate recovery"
+            },
+            { // Level 11-15
+                min: 11, max: 15,
+                chance: { min: 77, max: 87 },
+                betMultiplier: 2.0,
+                description: "Conservative recovery"
+            }
+        ],
         
-        const modal = document.createElement('div');
-        modal.id = 'orion-license-modal';
-        modal.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(15, 23, 42, 0.95);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 10000;
-            backdrop-filter: blur(10px);
-        `;
+        getLevelSettings(lossStreak) {
+            for (const level of this.levels) {
+                if (lossStreak >= level.min && lossStreak <= level.max) {
+                    return level;
+                }
+            }
+            // Default to highest level if beyond
+            return this.levels[this.levels.length - 1];
+        },
         
-        modal.innerHTML = `
-            <div style="
-                background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-                border: 2px solid ${isError ? '#ef4444' : '#3b82f6'};
-                border-radius: 20px;
-                padding: 30px;
-                max-width: 400px;
-                width: 90%;
-                text-align: center;
-                box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
-            ">
-                <div style="font-size: 48px; margin-bottom: 20px;">
-                    ${isError ? '❌' : '🔒'}
-                </div>
-                <div style="
-                    font-size: 24px;
-                    font-weight: 700;
-                    margin-bottom: 10px;
-                    background: linear-gradient(90deg, #3b82f6, #8b5cf6);
-                    -webkit-background-clip: text;
-                    -webkit-text-fill-color: transparent;
-                ">
-                    ORION PREMIUM v4.2
-                </div>
-                <div style="
-                    color: #e2e8f0;
-                    margin-bottom: 25px;
-                    line-height: 1.6;
-                ">
-                    ${message}
-                </div>
-                <div style="
-                    display: flex;
-                    gap: 15px;
-                    justify-content: center;
-                    margin-top: 25px;
-                ">
-                    <button onclick="location.reload()" style="
-                        padding: 12px 25px;
-                        background: linear-gradient(135deg, #3b82f6, #2563eb);
-                        border: none;
-                        border-radius: 10px;
-                        color: white;
-                        font-weight: 600;
-                        cursor: pointer;
-                        transition: all 0.3s;
-                    ">
-                        🔄 Refresh
-                    </button>
-                    <button onclick="window.open('https://t.me/${CONFIG.supportContact.replace('@', '')}', '_blank')" style="
-                        padding: 12px 25px;
-                        background: linear-gradient(135deg, #10b981, #059669);
-                        border: none;
-                        border-radius: 10px;
-                        color: white;
-                        font-weight: 600;
-                        cursor: pointer;
-                        transition: all 0.3s;
-                    ">
-                        💬 Support
-                    </button>
-                </div>
-                <div style="
-                    margin-top: 20px;
-                    font-size: 11px;
-                    color: #64748b;
-                ">
-                    🔒 Premium Bot System • ⚡ Version ${CONFIG.version}
-                </div>
-            </div>
-        `;
+        calculateBet(baseBet, lossStreak, level) {
+            return baseBet * level.betMultiplier * Math.pow(1.1, lossStreak);
+        },
         
-        document.body.appendChild(modal);
-    }
+        calculateChance(level) {
+            return Math.random() * (level.chance.max - level.chance.min) + level.chance.min;
+        }
+    };
 
-    // ==================== BOT STATE MANAGEMENT ====================
+    // ==================== BOT ENGINE ====================
     const bot = {
         isRunning: false,
         isPaused: false,
@@ -243,6 +136,8 @@
         token: null,
         stakeUser: "Loading...",
         startTime: null,
+        stopTime: null,
+        lastSwitchTime: null,
         stats: {
             profit: 0,
             wagered: 0,
@@ -252,19 +147,33 @@
             wins: 0,
             loss: 0,
             maxDD: 0,
+            maxProfit: 0,
             sessionProfit: 0,
             sessionWagered: 0,
             sessionBets: 0,
             sessionStartBal: 0,
+            peakBalance: 0,
+            sessionsCompleted: 0,
+            totalProfit: 0,
+            totalWagered: 0,
             baseModeProfit: 0,
-            wagerModeProfit: 0
+            wagerModeProfit: 0,
+            longestWinStreak: 0,
+            longestLossStreak: 0,
+            currentWinStreak: 0,
+            currentLossStreak: 0,
+            biggestWin: 0,
+            biggestLoss: 0,
+            totalSessions: 0,
+            profitableSessions: 0,
+            losingSessions: 0
         },
         selectedCurrency: localStorage.getItem('orion_last_coin') || "usdt",
         nextBet: 0,
         currentChance: 0,
         currentMulti: 0,
-        ls: 0,
-        lc: 0,
+        ls: 0, // loss streak
+        lc: 0, // loss count
         bcount: 0,
         partialProfit: 0,
         targetAbs: 0,
@@ -275,146 +184,99 @@
             balhigh: 0,
             profitc: 0,
             betload: 0,
-            lossStreak: 0
+            lossStreak: 0,
+            recoveryActive: false,
+            recoveryLevel: 0,
+            recoveryWins: 0,
+            recoveryTarget: 0,
+            originalLoss: 0
         },
+        
+        lastReportPct: 0,
+        lastReportTime: 0,
         
         licenseTier: "PREMIUM",
         supportContact: CONFIG.supportContact,
         
         // Session Management
         session: {
+            targetProfit: 0,
+            stopLoss: 0,
+            targetWager: 0,
+            maxSessions: 20, // Default 20 sessions
             currentSession: 1,
-            maxSessions: 20
+            sessionHistory: [],
+            trailingStop: {
+                enabled: true,
+                activation: 0.5,
+                distance: 0.2,
+                activated: false,
+                peak: 0
+            }
         }
     };
 
     // ==================== API FUNCTIONS ====================
     const API = {
         async syncOnce() {
-            console.log("🔄 Syncing user data...");
-            
-            // Try multiple token sources
-            bot.token = localStorage.getItem('_token') || 
-                       localStorage.getItem('apitoken') || 
-                       localStorage.getItem('token') ||
-                       (document.cookie.match(/(^| )session=([^;]+)/) ? 
-                        document.cookie.match(/(^| )session=([^;]+)/)[2] : null);
-            
-            if (!bot.token) {
-                console.error("No authentication token found");
-                showToast("Please login to Stake.com", "error");
-                return;
-            }
-            
+            bot.token = localStorage.getItem('apitoken') || (document.cookie.match(/session=([^;]+)/) ? document.cookie.match(/session=([^;]+)/)[1] : null);
             try {
-                const response = await fetch(`${CONFIG.apiUrl}/graphql`, {
+                const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",
                         "x-access-token": bot.token
                     },
                     body: JSON.stringify({
-                        query: `query {
-                            user {
-                                name
-                                balances {
-                                    available {
-                                        amount
-                                        currency
-                                    }
-                                }
-                            }
-                        }`
+                        query: `query{user{name balances{available{amount currency}}}}`
                     })
                 });
-
-                if (!response.ok) {
-                    throw new Error(`API response: ${response.status}`);
-                }
-
-                const data = await response.json();
-                
-                if (data.errors) {
-                    console.error("GraphQL errors:", data.errors);
-                    throw new Error(data.errors[0].message);
-                }
-                
-                if (data?.data?.user) {
-                    bot.stakeUser = data.data.user.name;
-                    const bals = data.data.user.balances || [];
-                    const currencySelect = document.getElementById("p-currency");
+                const json = await res.json();
+                if (json?.data?.user) {
+                    bot.stakeUser = json.data.user.name;
+                    const bals = json.data.user.balances || [];
+                    const sel = document.getElementById("p-currency");
                     
-                    if (currencySelect) {
-                        const currentSelected = currencySelect.value || bot.selectedCurrency;
-                        currencySelect.innerHTML = "";
-                        
-                        bals.forEach(b => {
-                            const balance = parseFloat(b.available.amount);
-                            const opt = new Option(
-                                `${b.available.currency.toUpperCase()} (${balance.toFixed(2)})`,
-                                b.available.currency
-                            );
-                            if (b.available.currency === currentSelected) opt.selected = true;
-                            currencySelect.add(opt);
-                        });
-                        
-                        bot.selectedCurrency = currencySelect.value;
-                        console.log(`Selected currency: ${bot.selectedCurrency}`);
-                    }
+                    const currentSelected = sel.value || bot.selectedCurrency;
+                    sel.innerHTML = "";
+
+                    bals.forEach(b => {
+                        const opt = new Option(
+                            `${b.available.currency.toUpperCase()} (${parseFloat(b.available.amount).toFixed(2)})`,
+                            b.available.currency
+                        );
+                        if(b.available.currency === currentSelected) opt.selected = true;
+                        sel.add(opt);
+                    });
+                    bot.selectedCurrency = sel.value;
                     
-                    await this.updateBalanceDisplay();
-                    showToast("✅ Account synced successfully", "success");
+                    await updateBalanceDisplay();
                 }
-            } catch (error) {
-                console.error("Sync error:", error);
-                showToast(`Sync failed: ${error.message}`, "error");
+            } catch (e) {
+                console.error("Sync Error:", e);
             }
         },
 
-        async getBalance(currency) {
-            if (!bot.token) return 0;
-            
+        async getBalance(coin) {
             try {
-                const response = await fetch(`${CONFIG.apiUrl}/graphql`, {
+                const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",
                         "x-access-token": bot.token
                     },
                     body: JSON.stringify({
-                        query: `query {
-                            user {
-                                balances {
-                                    available {
-                                        amount
-                                        currency
-                                    }
-                                }
-                            }
-                        }`
+                        query: `query{user{balances{available{amount currency}}}}`
                     })
                 });
-
-                const data = await response.json();
-                const balances = data?.data?.user?.balances || [];
-                const currencyBalance = balances.find(b => 
-                    b?.available?.currency?.toLowerCase() === currency.toLowerCase()
+                const json = await res.json();
+                const active = json.data.user.balances.find(
+                    b => b.available.currency.toLowerCase() === coin.toLowerCase()
                 );
-                
-                return currencyBalance ? parseFloat(currencyBalance.available.amount) : 0;
-            } catch (error) {
-                console.error("Balance fetch error:", error);
+                return active ? parseFloat(active.available.amount) : 0;
+            } catch (e) {
+                console.error("Balance Error:", e);
                 return 0;
-            }
-        },
-
-        async updateBalanceDisplay() {
-            if (bot.isRunning) return;
-            
-            const balance = await this.getBalance(bot.selectedCurrency);
-            bot.stats.currentBal = balance;
-            if (bot.stats.startBal === 0) {
-                bot.stats.startBal = balance;
             }
         },
 
@@ -426,11 +288,8 @@
                 condition: "above",
                 identifier: Math.random().toString(36).slice(2)
             };
-            
-            console.log(`Placing bet: ${amount} at ${chance}% chance`);
-            
             try {
-                const response = await fetch(`${CONFIG.apiUrl}/casino/dice/roll`, {
+                const r = await fetch(`${CONFIG.apiUrl}/casino/dice/roll`, {
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",
@@ -438,25 +297,444 @@
                     },
                     body: JSON.stringify(payload)
                 });
-
-                if (!response.ok) {
-                    throw new Error(`Bet failed: ${response.status}`);
-                }
-
-                return await response.json();
+                return r.json();
             } catch (error) {
-                console.error("Bet error:", error);
+                console.error("Bet Error:", error);
                 throw error;
             }
         }
     };
 
-    // ==================== UTILITY FUNCTIONS ====================
+    // ==================== TELEGRAM REPORT ====================
+    async function sendTelegramReport(reason) {
+        try {
+            const now = Date.now();
+            
+            // Send report for all specified reasons
+            if (reason === "load" || reason === "start" || reason === "stop" || reason === "target" ||
+                reason === "stoploss" || reason === "session_end" || reason === "max_sessions" || 
+                reason === "recovery_start" || reason === "recovery_complete" || reason === "mode_switch") {
+                // Send immediately for special events
+            } else if (now - bot.lastReportTime < 300000) { // 5 minutes = 300000 ms
+                return; // Skip if not yet 5 minutes
+            }
+            
+            bot.lastReportTime = now;
+            
+            const runningTime = getElapsedTime();
+            const currentDD = bot.stats.startBal - bot.stats.currentBal;
+            const currentDDPct = bot.stats.startBal > 0 ? (currentDD / bot.stats.startBal * 100) : 0;
+            const wagerPct = bot.stats.startBal > 0 ? (bot.stats.wagered / bot.stats.startBal * 100) : 0;
+            const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100) : 0;
+            const sessionProfitPct = bot.stats.sessionStartBal > 0 ?
+                (bot.stats.sessionProfit / bot.stats.sessionStartBal * 100) : 0;
+            
+            let header = "";
+            let emoji = "🚀";
+            
+            switch(reason) {
+                case "load":
+                    header = "📱 *BOT LOADED*";
+                    emoji = "📱";
+                    break;
+                case "start":
+                    header = "▶️ *BOT STARTED*";
+                    emoji = "▶️";
+                    break;
+                case "stop":
+                    header = "🛑 *BOT STOPPED*";
+                    emoji = "🛑";
+                    break;
+                case "target":
+                    header = "🎯 *TARGET REACHED*";
+                    emoji = "🎯";
+                    break;
+                case "stoploss":
+                    header = "⛔ *STOP LOSS HIT*";
+                    emoji = "⛔";
+                    break;
+                case "session_end":
+                    header = "🏁 *SESSION COMPLETED*";
+                    emoji = "🏁";
+                    break;
+                case "max_sessions":
+                    header = "📊 *MAX SESSIONS REACHED*";
+                    emoji = "📊";
+                    break;
+                case "recovery_start":
+                    header = "🔄 *D'ALEMBERT RECOVERY STARTED*";
+                    emoji = "🔄";
+                    break;
+                case "recovery_complete":
+                    header = "✅ *RECOVERY COMPLETE*";
+                    emoji = "✅";
+                    break;
+                case "mode_switch":
+                    header = "🔄 *MODE SWITCHED*";
+                    emoji = "🔄";
+                    break;
+                case "session_start":
+                    header = "🚀 *NEW SESSION STARTED*";
+                    emoji = "🚀";
+                    break;
+                default:
+                    header = "📊 *REGULAR REPORT*";
+                    emoji = "📊";
+            }
+            
+            const message =
+                `${emoji} ${header}\n` +
+                `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+                `👤 *User:* ${bot.stakeUser}\n` +
+                `💰 *Currency:* ${bot.selectedCurrency.toUpperCase()}\n` +
+                `🔒 *License:* ${bot.licenseTier}\n` +
+                `🎮 *Mode:* ${bot.mode}${bot.wgr.recoveryActive ? " (D'ALEMBERT LVL " + bot.wgr.recoveryLevel + ")" : ""}\n` +
+                `⏱ *Time:* ${runningTime}\n` +
+                `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+                `🏦 *Start Balance:* ${bot.stats.startBal.toFixed(8)}\n` +
+                `📈 *Current Balance:* ${bot.stats.currentBal.toFixed(8)}\n` +
+                `✅ *Total Profit:* ${bot.stats.profit.toFixed(8)}\n` +
+                `📊 *Session P/L:* ${bot.stats.sessionProfit.toFixed(8)} (${sessionProfitPct.toFixed(2)}%)\n` +
+                `🎯 *Wagered:* ${bot.stats.wagered.toFixed(8)} (${wagerPct.toFixed(1)}%)\n` +
+                `📉 *Drawdown:* ${currentDD.toFixed(8)} (${currentDDPct.toFixed(2)}%)\n` +
+                `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+                (bot.wgr.recoveryActive ? 
+                    `🔄 *Recovery Level:* ${bot.wgr.recoveryLevel}\n` +
+                    `📉 *Loss Streak:* ${bot.wgr.lossStreak}\n` +
+                    `🎯 *Chance:* ${bot.currentChance.toFixed(1)}%\n` : "") +
+                `🔄 *W/L:* ${bot.stats.wins}/${bot.stats.loss}\n` +
+                `🎲 *Bets:* ${bot.stats.bets}\n` +
+                `📊 *Win Rate:* ${winRate.toFixed(1)}%\n` +
+                `📈 *Session:* ${bot.session.currentSession}/${bot.session.maxSessions || '∞'}\n` +
+                `🏆 *Profitable Sessions:* ${bot.stats.profitableSessions}/${bot.stats.totalSessions}\n` +
+                `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+                `📊 *Status:* ${bot.isRunning ? (bot.isPaused ? '⏸️ PAUSED' : '▶️ RUNNING') : '🛑 STOPPED'}\n\n` +
+                `💬 *Support:* ${CONFIG.supportContact}\n` +
+                `⚡ *Version:* ${CONFIG.version}`;
+
+            const url = `https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`;
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    chat_id: CONFIG.tgChatId,
+                    text: message,
+                    parse_mode: 'Markdown'
+                })
+            });
+            
+            console.log(`${emoji} Telegram report sent (${reason})`);
+            
+        } catch (error) {
+            console.error('Telegram report error:', error);
+        }
+    }
+
+    // ==================== SESSION MANAGEMENT ====================
+    function startNewSession() {
+        // Save previous session data
+        if (bot.stats.sessionStartBal > 0) {
+            const sessionData = {
+                sessionNumber: bot.session.currentSession,
+                startBalance: bot.stats.sessionStartBal,
+                endBalance: bot.stats.currentBal,
+                profit: bot.stats.sessionProfit,
+                profitPct: (bot.stats.sessionProfit / bot.stats.sessionStartBal * 100),
+                bets: bot.stats.sessionBets,
+                wins: bot.stats.wins - (bot.stats.totalSessions > 0 ? bot.session.sessionHistory[bot.session.sessionHistory.length-1]?.totalWins || 0 : 0),
+                duration: Date.now() - bot.startTime
+            };
+            
+            bot.session.sessionHistory.push(sessionData);
+            
+            // Update session stats
+            if (bot.stats.sessionProfit > 0) {
+                bot.stats.profitableSessions++;
+            } else {
+                bot.stats.losingSessions++;
+            }
+            bot.stats.totalSessions++;
+        }
+        
+        // Start new session
+        bot.session.currentSession++;
+        bot.stats.sessionStartBal = bot.stats.currentBal;
+        bot.stats.sessionProfit = 0;
+        bot.stats.sessionWagered = 0;
+        bot.stats.sessionBets = 0;
+        
+        // Reset trailing stop for new session
+        bot.session.trailingStop.peak = bot.stats.currentBal;
+        bot.session.trailingStop.activated = false;
+        
+        updateStatus(`🚀 SESSION ${bot.session.currentSession} STARTED`, "#3b82f6");
+        sendTelegramReport("session_start");
+        
+        // Log session start
+        updateLogs(0, 0, "SESSION", 0, `Session ${bot.session.currentSession} started`);
+    }
+
+    function checkSessionCompletion() {
+        const sessionTargetPct = getVal("p-session-target");
+        const sessionStopLossPct = getVal("p-session-stoploss");
+        const sessionProfitPct = bot.stats.sessionProfit / bot.stats.sessionStartBal * 100;
+        
+        // Check session target
+        if (sessionProfitPct >= sessionTargetPct) {
+            completeSession("TARGET");
+            return true;
+        }
+        
+        // Check session stop loss
+        if (sessionProfitPct <= -sessionStopLossPct) {
+            completeSession("STOP LOSS");
+            return true;
+        }
+        
+        return false;
+    }
+
+    function completeSession(reason) {
+        const sessionData = {
+            sessionNumber: bot.session.currentSession,
+            startBalance: bot.stats.sessionStartBal,
+            endBalance: bot.stats.currentBal,
+            profit: bot.stats.sessionProfit,
+            profitPct: (bot.stats.sessionProfit / bot.stats.sessionStartBal * 100),
+            bets: bot.stats.sessionBets,
+            duration: Date.now() - bot.startTime,
+            reason: reason
+        };
+        
+        bot.session.sessionHistory.push(sessionData);
+        
+        // Update session stats
+        if (bot.stats.sessionProfit > 0) {
+            bot.stats.profitableSessions++;
+        } else {
+            bot.stats.losingSessions++;
+        }
+        bot.stats.totalSessions++;
+        
+        // Check if should start new session
+        const maxSessions = getVal("p-max-sessions");
+        if (maxSessions > 0 && bot.session.currentSession >= maxSessions) {
+            // Max sessions reached, stop bot
+            stopEngine();
+            updateStatus("📊 MAX SESSIONS REACHED", "#8b5cf6");
+            sendTelegramReport("max_sessions");
+            return;
+        }
+        
+        // Start new session automatically
+        setTimeout(() => {
+            startNewSession();
+        }, 1000);
+    }
+
+    // ==================== TRAILING STOP MANAGEMENT ====================
+    function updateTrailingStop() {
+        if (!bot.session.trailingStop.enabled) return;
+        
+        const currentProfitPct = bot.stats.sessionProfit / bot.stats.sessionStartBal * 100;
+        
+        // Update peak
+        if (bot.stats.currentBal > bot.session.trailingStop.peak) {
+            bot.session.trailingStop.peak = bot.stats.currentBal;
+        }
+        
+        // Activate trailing if profit threshold reached
+        if (!bot.session.trailingStop.activated && currentProfitPct >= bot.session.trailingStop.activation) {
+            bot.session.trailingStop.activated = true;
+            updateStatus("📈 TRAILING ACTIVATED", "#fbbf24");
+            updateLogs(0, 0, "TRAILING", 0, "Trailing stop activated");
+        }
+        
+        // Check trailing stop
+        if (bot.session.trailingStop.activated) {
+            const distanceFromPeak = (bot.session.trailingStop.peak - bot.stats.currentBal) / bot.session.trailingStop.peak * 100;
+            
+            if (distanceFromPeak > bot.session.trailingStop.distance) {
+                // Stop loss hit via trailing
+                updateStatus("⛔ TRAILING STOP HIT", "#ef4444");
+                updateLogs(0, 0, "TRAILING", 0, `Trailing stop triggered: ${distanceFromPeak.toFixed(2)}% drop`);
+                
+                // Complete current session
+                completeSession("TRAILING STOP");
+                return true;
+            }
+        }
+        
+        return false;
+    }
+
+    // ==================== SMART MODE MANAGEMENT ====================
+    function shouldRotateToWager() {
+        // Jangan rotate ke wager jika masih minus di base mode
+        if (bot.stats.baseModeProfit < 0) {
+            return false;
+        }
+        
+        // Jangan rotate jika loss streak tinggi di base mode
+        if (bot.stats.currentLossStreak >= 3) {
+            return false;
+        }
+        
+        // Rotate jika base mode sudah profit dan wager mode available
+        if (bot.stats.baseModeProfit > 0 && bot.stats.bets >= 10) {
+            return true;
+        }
+        
+        return false;
+    }
+
+    function shouldRotateToBase() {
+        // Jika di wager mode dan loss streak tinggi (>12) atau loss 3x lipat
+        if (bot.mode === "WAGER") {
+            if (bot.wgr.lossStreak >= 12) {
+                return true;
+            }
+            
+            // Jika loss sudah 3x lipat dari loss awal recovery
+            if (bot.wgr.recoveryActive && Math.abs(bot.wgr.profitc) >= Math.abs(bot.wgr.originalLoss) * 3) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+
+    function rotateMode(newMode) {
+        const oldMode = bot.mode;
+        bot.mode = newMode;
+        bot.lastSwitchTime = Date.now();
+        
+        // Reset mode-specific stats
+        if (newMode === "BASE") {
+            // Reset base mode
+            bot.currentChance = Math.random() * (getVal("p-bch-max") - getVal("p-bch-min")) + getVal("p-bch-min");
+            bot.nextBet = getVal("p-basebet");
+            bot.currentMulti = getVal("p-multi-start");
+            bot.ls = 0;
+            bot.lc = 0;
+            bot.partialProfit = 0;
+            
+            // Reset wager recovery
+            bot.wgr.recoveryActive = false;
+            bot.wgr.lossStreak = 0;
+            bot.wgr.recoveryLevel = 0;
+        } else if (newMode === "WAGER") {
+            // Reset wager mode
+            bot.currentChance = getVal("p-wgr-chance");
+            bot.nextBet = bot.stats.currentBal / getVal("p-wgr-div");
+            bot.wgr.balhigh = bot.stats.currentBal;
+            bot.wgr.profitc = 0;
+            bot.wgr.ctwin = 0;
+            bot.wgr.recoveryActive = false;
+            bot.wgr.lossStreak = 0;
+            bot.wgr.recoveryLevel = 0;
+        }
+        
+        updateStatus(`🔄 SWITCHED → ${newMode}`, "#8b5cf6");
+        updateLogs(0, 0, "MODE", 0, `Switched from ${oldMode} to ${newMode}`);
+        sendTelegramReport("mode_switch");
+    }
+
+    // ==================== D'ALEMBERT RECOVERY FUNCTIONS ====================
+    function startDallembertRecovery() {
+        if (bot.mode !== "WAGER") return false;
+        
+        bot.wgr.recoveryActive = true;
+        bot.wgr.originalLoss = bot.wgr.profitc;
+        bot.wgr.recoveryLevel = 1;
+        bot.wgr.recoveryWins = 0;
+        bot.wgr.lossStreak = 0;
+        
+        // Set initial recovery settings
+        updateDallembertRecovery();
+        
+        updateStatus(`🔄 D'ALEMBERT RECOVERY LVL ${bot.wgr.recoveryLevel}`, "#f59e0b");
+        updateLogs(0, 0, "RECOVERY", 0, "D'Alembert recovery started");
+        sendTelegramReport("recovery_start");
+        
+        return true;
+    }
+
+    function updateDallembertRecovery() {
+        if (!bot.wgr.recoveryActive) return;
+        
+        const levelSettings = DallembertRecovery.getLevelSettings(bot.wgr.lossStreak);
+        bot.wgr.recoveryLevel = Math.floor((bot.wgr.lossStreak - 1) / 5) + 1;
+        
+        // Calculate chance based on level
+        bot.currentChance = DallembertRecovery.calculateChance(levelSettings);
+        
+        // Calculate bet amount
+        const baseBet = bot.stats.currentBal / getVal("p-wgr-div");
+        bot.nextBet = DallembertRecovery.calculateBet(baseBet, bot.wgr.lossStreak, levelSettings);
+        
+        // Ensure minimum bet
+        const minBet = getVal("p-minbet");
+        bot.nextBet = Math.max(bot.nextBet, minBet);
+        
+        // Update recovery UI
+        updateRecoveryUI();
+    }
+
+    function handleRecoveryWin() {
+        if (!bot.wgr.recoveryActive) return;
+        
+        bot.wgr.recoveryWins++;
+        bot.wgr.lossStreak = Math.max(0, bot.wgr.lossStreak - 2);
+        
+        // Check if recovery complete
+        if (bot.wgr.profitc >= 0) {
+            completeRecovery(true);
+        } else {
+            updateDallembertRecovery();
+        }
+    }
+
+    function handleRecoveryLoss() {
+        if (!bot.wgr.recoveryActive) return;
+        
+        bot.wgr.lossStreak++;
+        
+        // Check if should switch to base mode
+        if (shouldRotateToBase()) {
+            rotateMode("BASE");
+            return;
+        }
+        
+        updateDallembertRecovery();
+    }
+
+    function completeRecovery(success) {
+        bot.wgr.recoveryActive = false;
+        bot.wgr.lossStreak = 0;
+        bot.wgr.recoveryLevel = 0;
+        
+        // Reset to normal wager mode
+        bot.currentChance = getVal("p-wgr-chance");
+        bot.nextBet = bot.stats.currentBal / getVal("p-wgr-div");
+        
+        if (success) {
+            updateStatus("✅ RECOVERY COMPLETE", "#10b981");
+            updateLogs(0, 0, "RECOVERY", 0, "Recovery completed successfully");
+            sendTelegramReport("recovery_complete");
+        } else {
+            updateStatus("❌ RECOVERY FAILED", "#ef4444");
+            updateLogs(0, 0, "RECOVERY", 0, "Recovery failed");
+        }
+        
+        updateRecoveryUI();
+    }
+
+    // ==================== BOT LOGIC FUNCTIONS ====================
     function getVal(id) {
         try {
             const el = document.getElementById(id);
             if (!el) {
-                // Default values
                 const defaults = {
                     "p-minbet": 0.00000001,
                     "p-target-pct": 5.0,
@@ -469,10 +747,22 @@
                     "p-bch-max": 95.0,
                     "p-hch-min": 20.0,
                     "p-hch-max": 30.0,
+                    "p-wagertarget": 200,
                     "p-stoploss-pct": 5.0,
                     "p-session-target": 10.0,
                     "p-session-stoploss": 5.0,
-                    "p-max-sessions": 20
+                    "p-max-sessions": 20,
+                    "p-trailing-enabled": 1,
+                    "p-trailing-activation": 0.5,
+                    "p-trailing-distance": 0.2,
+                    "p-dallembert-level1-min": 25,
+                    "p-dallembert-level1-max": 35,
+                    "p-dallembert-level2-min": 45,
+                    "p-dallembert-level2-max": 55,
+                    "p-dallembert-level3-min": 77,
+                    "p-dallembert-level3-max": 87,
+                    "p-chrec-min": 50.0,
+                    "p-chrec-max": 70.0
                 };
                 return defaults[id] || 0;
             }
@@ -483,149 +773,38 @@
         }
     }
 
-    function showToast(message, type = "info") {
-        const toast = document.createElement("div");
-        toast.style.cssText = `
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            padding: 12px 20px;
-            background: ${type === "error" ? "#ef4444" : type === "success" ? "#10b981" : "#3b82f6"};
-            color: white;
-            border-radius: 10px;
-            z-index: 10001;
-            font-size: 14px;
-            font-weight: 500;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-            animation: slideIn 0.3s ease;
-        `;
-        
-        toast.innerHTML = `
-            ${type === "success" ? "✅" : type === "error" ? "❌" : "ℹ️"} 
-            ${message}
-        `;
-        
-        document.body.appendChild(toast);
-        
-        setTimeout(() => {
-            toast.style.animation = "slideOut 0.3s ease";
-            setTimeout(() => toast.remove(), 300);
-        }, 3000);
-        
-        // Add animation styles
-        if (!document.getElementById("toast-styles")) {
-            const style = document.createElement("style");
-            style.id = "toast-styles";
-            style.textContent = `
-                @keyframes slideIn {
-                    from { transform: translateX(100%); opacity: 0; }
-                    to { transform: translateX(0); opacity: 1; }
-                }
-                @keyframes slideOut {
-                    from { transform: translateX(0); opacity: 1; }
-                    to { transform: translateX(100%); opacity: 0; }
-                }
-            `;
-            document.head.appendChild(style);
+    async function updateBalanceDisplay() {
+        if (bot.isRunning) return;
+        const balance = await API.getBalance(bot.selectedCurrency);
+        bot.stats.currentBal = balance;
+        if (bot.stats.startBal === 0) {
+            bot.stats.startBal = balance;
         }
     }
 
-    function updateStatus(text, color = "#3b82f6") {
-        const el = document.getElementById("st-status-text");
-        if (el) {
-            el.innerText = text;
-            el.style.color = color;
-        }
-    }
-
-    function updateLogs(amt, ch, mode, pft, customText = "") {
-        const logBox = document.getElementById("p-log-body");
-        if (!logBox) return;
-        
-        const modeColors = {
-            'WAGER': '#60a5fa',
-            'BASE': '#fbbf24',
-            'SESSION': '#10b981',
-            'MODE': '#8b5cf6'
-        };
-        
-        const row = document.createElement("div");
-        
-        if (customText) {
-            row.style.cssText = `padding: 8px; margin: 5px 0; background: rgba(30, 41, 59, 0.5); border-radius: 8px; border-left: 3px solid ${modeColors[mode] || '#94a3b8'}; font-size: 10px; color: #e2e8f0;`;
-            row.innerHTML = `<div style="display: flex; align-items: center; gap: 8px;"><span style="color: ${modeColors[mode] || '#94a3b8'}">${mode}</span><span>${customText}</span></div>`;
-        } else {
-            row.style.cssText = `display:grid; grid-template-columns:1.2fr 1fr 0.8fr 1.2fr; font-size:10px; border-bottom:1px solid rgba(255,255,255,0.05); padding:8px 0; color:${pft >= 0 ? '#00ffcc' : '#ff3366'}; text-align:center;`;
-            row.innerHTML = `
-                <span>${amt.toFixed(5)}</span>
-                <span>${ch.toFixed(1)}%</span>
-                <span style="color:${modeColors[mode] || '#94a3b8'}">${mode}</span>
-                <span>${pft.toFixed(5)}</span>
-            `;
-        }
-        
-        logBox.prepend(row);
-        if (logBox.children.length > 15) logBox.removeChild(logBox.lastChild);
-    }
-
-    // ==================== BOT ENGINE ====================
-    async function runLoop() {
-        if (!bot.isRunning || bot.isPaused) return;
-        
-        try {
-            const res = await API.placeBet(bot.nextBet, bot.currentChance);
-            const d = res?.data?.diceRoll || res?.diceRoll;
+    function updateStreakStats(win, profit) {
+        if (win) {
+            bot.stats.currentWinStreak++;
+            bot.stats.currentLossStreak = 0;
             
-            if (d) {
-                const win = d.payout > 0;
-                const pft = d.payout - d.amount;
-                
-                // Update stats
-                bot.stats.bets++;
-                bot.stats.sessionBets++;
-                bot.stats.wagered += d.amount;
-                bot.stats.sessionWagered += d.amount;
-                bot.stats.profit += pft;
-                bot.stats.sessionProfit += pft;
-                bot.stats.currentBal += pft;
-                bot.partialProfit += pft;
-                
-                if (win) {
-                    bot.stats.wins++;
-                    if (bot.mode === "BASE") {
-                        bot.stats.baseModeProfit += pft;
-                    } else {
-                        bot.stats.wagerModeProfit += pft;
-                    }
-                } else {
-                    bot.stats.loss++;
-                }
-
-                // Update drawdown
-                let drop = bot.stats.currentBal < bot.stats.startBal ? bot.stats.startBal - bot.stats.currentBal : 0;
-                if (drop > bot.stats.maxDD) bot.stats.maxDD = drop;
-                
-                updateLogs(d.amount, bot.currentChance, bot.mode, pft);
-                
-                // Handle mode logic
-                if (bot.mode === "BASE") {
-                    handleBaseMode(win);
-                } else if (bot.mode === "WAGER") {
-                    handleWagerMode(win);
-                }
-                
-                // Ensure minimum bet
-                const minBet = getVal("p-minbet");
-                bot.nextBet = Math.max(bot.nextBet, minBet);
+            if (bot.stats.currentWinStreak > bot.stats.longestWinStreak) {
+                bot.stats.longestWinStreak = bot.stats.currentWinStreak;
             }
             
-            // Continue loop
-            setTimeout(runLoop, 150);
+            if (profit > bot.stats.biggestWin) {
+                bot.stats.biggestWin = profit;
+            }
+        } else {
+            bot.stats.currentLossStreak++;
+            bot.stats.currentWinStreak = 0;
             
-        } catch (e) {
-            console.error("Loop error:", e);
-            showToast(`Bet error: ${e.message}`, "error");
-            setTimeout(runLoop, 1000);
+            if (bot.stats.currentLossStreak > bot.stats.longestLossStreak) {
+                bot.stats.longestLossStreak = bot.stats.currentLossStreak;
+            }
+            
+            if (Math.abs(profit) > Math.abs(bot.stats.biggestLoss)) {
+                bot.stats.biggestLoss = profit;
+            }
         }
     }
 
@@ -655,7 +834,7 @@
             bot.wgr.ctwin++;
             if (bot.wgr.ctwin > 10) {
                 bot.wgr.ctwin = 0;
-                const recoveryChance = Math.random() * (70 - 50) + 50;
+                const recoveryChance = Math.random() * (getVal("p-chrec-max") - getVal("p-chrec-min")) + getVal("p-chrec-min");
                 bot.currentChance = recoveryChance;
                 bot.nextBet = Math.max(0, bot.wgr.betload) / ((99 / bot.currentChance) - 1);
             } else {
@@ -667,9 +846,25 @@
             if (bot.stats.currentBal > bot.wgr.balhigh) {
                 bot.wgr.balhigh = bot.stats.currentBal;
             }
+            
+            // Handle recovery win
+            if (bot.wgr.recoveryActive) {
+                handleRecoveryWin();
+            }
         } else {
+            // Calculate loss
             bot.wgr.profitc += (bot.stats.currentBal - bot.wgr.balhigh);
             bot.wgr.betload = bot.wgr.balhigh - bot.stats.currentBal;
+            
+            // Check if recovery needed
+            if (bot.wgr.profitc < 0 && !bot.wgr.recoveryActive) {
+                startDallembertRecovery();
+            }
+            
+            // Handle recovery loss
+            if (bot.wgr.recoveryActive) {
+                handleRecoveryLoss();
+            }
             
             if (bot.currentChance < 80) {
                 bot.nextBet = Math.abs(bot.wgr.betload) / ((99 / bot.currentChance) - 1);
@@ -679,92 +874,159 @@
         }
     }
 
+    // ==================== MAIN BOT LOOP ====================
+    async function runLoop() {
+        if (!bot.isRunning || bot.isPaused) return;
+        
+        // Check session completion
+        if (checkSessionCompletion()) {
+            return;
+        }
+        
+        // Check trailing stop
+        if (updateTrailingStop()) {
+            return;
+        }
+        
+        // Check global stop loss
+        const stopLossPct = getVal("p-stoploss-pct");
+        const currentProfitPct = bot.stats.profit / bot.stats.startBal * 100;
+        
+        if (currentProfitPct <= -stopLossPct) {
+            await stopEngine();
+            updateStatus("⛔ STOP LOSS", "#ef4444");
+            await sendTelegramReport("stoploss");
+            return;
+        }
+        
+        // Check target profit
+        if (bot.targetAbs > 0 && bot.stats.profit >= bot.targetAbs) {
+            await stopEngine();
+            updateStatus("🎯 TARGET REACHED", "#10b981");
+            await sendTelegramReport("target");
+            return;
+        }
+
+        try {
+            const res = await API.placeBet(bot.nextBet, bot.currentChance);
+            const d = res?.data?.diceRoll || res?.diceRoll;
+            if (d) {
+                const win = d.payout > 0;
+                const pft = d.payout - d.amount;
+                
+                // Update stats
+                bot.stats.bets++;
+                bot.stats.sessionBets++;
+                bot.stats.wagered += d.amount;
+                bot.stats.sessionWagered += d.amount;
+                bot.stats.profit += pft;
+                bot.stats.sessionProfit += pft;
+                bot.stats.currentBal += pft;
+                bot.partialProfit += pft;
+                
+                if (bot.stats.profit > bot.stats.maxProfit) {
+                    bot.stats.maxProfit = bot.stats.profit;
+                }
+                
+                if (win) {
+                    bot.stats.wins++;
+                    if (bot.mode === "BASE") {
+                        bot.stats.baseModeProfit += pft;
+                    } else {
+                        bot.stats.wagerModeProfit += pft;
+                    }
+                } else {
+                    bot.stats.loss++;
+                }
+
+                let drop = bot.stats.currentBal < bot.stats.startBal ? bot.stats.startBal - bot.stats.currentBal : 0;
+                if (drop > bot.stats.maxDD) bot.stats.maxDD = drop;
+                
+                // Update streak stats
+                updateStreakStats(win, pft);
+
+                updateLogs(d.amount, bot.currentChance, bot.mode, pft);
+                
+                // Check mode rotation
+                if (bot.mode === "BASE") {
+                    if (shouldRotateToWager()) {
+                        rotateMode("WAGER");
+                    } else {
+                        handleBaseMode(win);
+                    }
+                } else if (bot.mode === "WAGER") {
+                    if (shouldRotateToBase()) {
+                        rotateMode("BASE");
+                    } else {
+                        handleWagerMode(win);
+                    }
+                }
+                
+                // Ensure minimum bet
+                const minBet = getVal("p-minbet");
+                bot.nextBet = Math.max(bot.nextBet, minBet);
+                
+                // Send report every 5 minutes
+                if (Date.now() - bot.lastReportTime >= 300000) {
+                    await sendTelegramReport("auto");
+                }
+            }
+            setTimeout(runLoop, 150);
+        } catch (e) {
+            console.error("Loop error:", e);
+            setTimeout(runLoop, 1000);
+        }
+    }
+
     async function stopEngine() {
         bot.isRunning = false;
+        bot.stopTime = Date.now();
         bot.wgr.recoveryActive = false;
-        await API.updateBalanceDisplay();
+        await updateBalanceDisplay();
     }
 
-    function rotateMode(newMode) {
-        const oldMode = bot.mode;
-        bot.mode = newMode;
-        
-        if (newMode === "BASE") {
-            bot.currentChance = Math.random() * (getVal("p-bch-max") - getVal("p-bch-min")) + getVal("p-bch-min");
-            bot.nextBet = getVal("p-basebet");
-            bot.currentMulti = getVal("p-multi-start");
-            bot.ls = 0;
-            bot.lc = 0;
-            bot.partialProfit = 0;
-        } else if (newMode === "WAGER") {
-            bot.currentChance = getVal("p-wgr-chance");
-            bot.nextBet = bot.stats.currentBal / getVal("p-wgr-div");
-            bot.wgr.balhigh = bot.stats.currentBal;
-            bot.wgr.profitc = 0;
-            bot.wgr.ctwin = 0;
+    function updateStatus(text, color) {
+        const el = document.getElementById("st-status-text");
+        if (el) {
+            el.innerText = text;
+            el.style.color = color || "#0ff";
         }
-        
-        updateStatus(`🔄 ${newMode} MODE`, "#8b5cf6");
-        updateLogs(0, 0, "MODE", 0, `Switched from ${oldMode} to ${newMode}`);
     }
 
-    // ==================== TELEGRAM REPORT ====================
-    async function sendTelegramReport(reason = "auto") {
-        try {
-            const runningTime = getElapsedTime();
-            const currentDD = bot.stats.startBal - bot.stats.currentBal;
-            const currentDDPct = bot.stats.startBal > 0 ? (currentDD / bot.stats.startBal * 100) : 0;
-            const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100) : 0;
-            
-            let header = "📊 *REGULAR REPORT*";
-            let emoji = "📊";
-            
-            switch(reason) {
-                case "load": header = "📱 *BOT LOADED*"; emoji = "📱"; break;
-                case "start": header = "▶️ *BOT STARTED*"; emoji = "▶️"; break;
-                case "stop": header = "🛑 *BOT STOPPED*"; emoji = "🛑"; break;
-                case "target": header = "🎯 *TARGET REACHED*"; emoji = "🎯"; break;
-                case "stoploss": header = "⛔ *STOP LOSS HIT*"; emoji = "⛔"; break;
-            }
-            
-            const message =
-                `${emoji} ${header}\n` +
-                `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-                `👤 *User:* ${bot.stakeUser}\n` +
-                `💰 *Currency:* ${bot.selectedCurrency.toUpperCase()}\n` +
-                `🔒 *License:* ${bot.licenseTier}\n` +
-                `🎮 *Mode:* ${bot.mode}\n` +
-                `⏱ *Time:* ${runningTime}\n` +
-                `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-                `🏦 *Balance:* ${bot.stats.currentBal.toFixed(8)}\n` +
-                `✅ *Profit:* ${bot.stats.profit.toFixed(8)}\n` +
-                `📊 *Session P/L:* ${bot.stats.sessionProfit.toFixed(8)}\n` +
-                `📉 *Drawdown:* ${currentDD.toFixed(8)} (${currentDDPct.toFixed(2)}%)\n` +
-                `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-                `🔄 *W/L:* ${bot.stats.wins}/${bot.stats.loss}\n` +
-                `🎲 *Bets:* ${bot.stats.bets}\n` +
-                `📊 *Win Rate:* ${winRate.toFixed(1)}%\n` +
-                `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-                `📊 *Status:* ${bot.isRunning ? (bot.isPaused ? '⏸️ PAUSED' : '▶️ RUNNING') : '🛑 STOPPED'}\n\n` +
-                `💬 *Support:* ${CONFIG.supportContact}\n` +
-                `⚡ *Version:* ${CONFIG.version}`;
-
-            const url = `https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`;
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    chat_id: CONFIG.tgChatId,
-                    text: message,
-                    parse_mode: 'Markdown'
-                })
-            });
-            
-            console.log(`${emoji} Telegram report sent (${reason})`);
-            
-        } catch (error) {
-            console.error('Telegram report error:', error);
+    function updateLogs(amt, ch, mode, pft, customText = "") {
+        const logBox = document.getElementById("p-log-body");
+        if (!logBox) return;
+        
+        const modeColors = {
+            'WAGER': '#60a5fa',
+            'BASE': '#fbbf24',
+            'RECOVERY': '#8b5cf6',
+            'SESSION': '#10b981',
+            'TRAILING': '#f59e0b',
+            'MODE': '#8b5cf6'
+        };
+        
+        const currentMode = bot.wgr.recoveryActive ? 'RECOVERY' : mode;
+        
+        const row = document.createElement("div");
+        
+        if (customText) {
+            // Special log entry (session start, mode switch, etc)
+            row.style.cssText = `padding: 6px; margin: 3px 0; background: rgba(30, 41, 59, 0.5); border-radius: 6px; border-left: 3px solid ${modeColors[mode] || '#94a3b8'}; font-size: 9px; color: #e2e8f0;`;
+            row.innerHTML = `<div style="display: flex; align-items: center; gap: 6px;"><span style="color: ${modeColors[mode] || '#94a3b8'}">${mode}</span><span>${customText}</span></div>`;
+        } else {
+            // Normal bet log entry
+            row.style.cssText = `display:grid; grid-template-columns:1.2fr 1fr 0.8fr 1.2fr; font-size:9px; border-bottom:1px solid rgba(0,255,255,0.05); padding:6px 0; color:${pft >= 0 ? '#00ffcc' : '#ff3366'}; text-align:center;`;
+            row.innerHTML = `
+                <span>${amt.toFixed(5)}</span>
+                <span>${ch.toFixed(1)}%</span>
+                <span style="color:${modeColors[currentMode] || '#94a3b8'}">${currentMode}</span>
+                <span>${pft.toFixed(5)}</span>
+            `;
         }
+        
+        logBox.prepend(row);
+        if (logBox.children.length > 10) logBox.removeChild(logBox.lastChild);
     }
 
     function getElapsedTime() {
@@ -774,7 +1036,28 @@
         return `${Math.floor(d/3600).toString().padStart(2,'0')}:${Math.floor((d%3600)/60).toString().padStart(2,'0')}:${(d%60).toString().padStart(2,'0')}`;
     }
 
-    // ==================== UI CREATION ====================
+    function updateRecoveryUI() {
+        const recoveryStatus = document.getElementById("recovery-status");
+        const recoveryLevel = document.getElementById("recovery-level");
+        const recoveryProgress = document.getElementById("recovery-progress");
+        
+        if (!recoveryStatus || !recoveryLevel || !recoveryProgress) return;
+        
+        if (!bot.wgr.recoveryActive) {
+            recoveryStatus.innerText = "INACTIVE";
+            recoveryLevel.innerText = "0";
+            recoveryProgress.style.width = "0%";
+            return;
+        }
+        
+        recoveryStatus.innerText = "ACTIVE";
+        recoveryLevel.innerText = bot.wgr.recoveryLevel;
+        
+        const progress = Math.min(100, (bot.wgr.recoveryWins / 3) * 100);
+        recoveryProgress.style.width = `${progress}%`;
+    }
+
+    // ==================== COMPACT UI CREATION ====================
     function createUI() {
         if (document.getElementById("orion-wrap")) {
             document.getElementById("orion-wrap").remove();
@@ -788,174 +1071,310 @@
                 position: fixed;
                 top: 10px;
                 right: 10px;
-                width: 95%;
-                max-width: 500px;
-                min-width: 350px;
+                width: 400px;
                 background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
                 border: 2px solid #3b82f6;
-                border-radius: 20px;
-                padding: 20px;
+                border-radius: 16px;
+                padding: 15px;
                 color: #e2e8f0;
                 font-family: 'Inter', system-ui, -apple-system, sans-serif;
                 z-index: 9999;
                 box-shadow: 0 10px 30px rgba(59, 130, 246, 0.3);
                 backdrop-filter: blur(10px);
-                max-height: 95vh;
-                overflow-y: auto;
-                box-sizing: border-box;
-            }
-            
-            @media (max-width: 768px) {
-                #orion-wrap {
-                    right: 2.5%;
-                    width: 95%;
-                    padding: 15px;
-                    max-height: 90vh;
-                }
+                max-height: 85vh;
+                overflow: hidden;
+                display: flex;
+                flex-direction: column;
             }
             
             /* Header */
             .header {
                 text-align: center;
-                margin-bottom: 20px;
-                padding-bottom: 15px;
+                margin-bottom: 15px;
+                padding-bottom: 12px;
                 border-bottom: 1px solid #334155;
             }
             
             .header-title {
-                font-size: 22px;
+                font-size: 18px;
                 font-weight: 800;
                 background: linear-gradient(90deg, #3b82f6, #8b5cf6);
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
-                margin-bottom: 10px;
+                margin-bottom: 6px;
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                gap: 10px;
+                gap: 8px;
             }
             
             .license-badge {
                 background: linear-gradient(135deg, #3b82f6, #8b5cf6);
                 color: white;
-                padding: 4px 12px;
+                padding: 3px 10px;
                 border-radius: 20px;
-                font-size: 10px;
+                font-size: 9px;
                 font-weight: 600;
             }
             
             .status-badge {
                 display: inline-block;
-                padding: 8px 20px;
+                padding: 6px 15px;
                 background: rgba(30, 41, 59, 0.8);
                 border: 1px solid #334155;
                 border-radius: 20px;
-                font-size: 12px;
+                font-size: 11px;
                 font-weight: 600;
-                margin-top: 10px;
+                margin-top: 8px;
                 backdrop-filter: blur(5px);
             }
             
-            /* Balance Stats */
-            .balance-stats {
+            /* Tab Navigation - Compact */
+            .tab-nav {
+                display: flex;
+                background: rgba(30, 41, 59, 0.5);
+                border-radius: 10px;
+                padding: 3px;
+                margin-bottom: 15px;
+            }
+            
+            .tab-btn {
+                flex: 1;
+                padding: 8px 10px;
+                background: transparent;
+                border: none;
+                border-radius: 8px;
+                color: #94a3b8;
+                font-size: 11px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.3s;
+                text-align: center;
+                white-space: nowrap;
+                min-width: 70px;
+            }
+            
+            .tab-btn.active {
+                background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+                color: white;
+                box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+            }
+            
+            .tab-btn:hover:not(.active) {
+                background: rgba(59, 130, 246, 0.1);
+                color: #e2e8f0;
+            }
+            
+            /* Tab Content */
+            .tab-content {
+                display: none;
+                animation: fadeIn 0.3s ease;
+                overflow-y: auto;
+                max-height: 55vh;
+                padding-right: 5px;
+            }
+            
+            .tab-content.active {
+                display: block;
+            }
+            
+            @keyframes fadeIn {
+                from { opacity: 0; transform: translateY(5px); }
+                to { opacity: 1; transform: translateY(0); }
+            }
+            
+            /* Scrollbar */
+            .tab-content::-webkit-scrollbar {
+                width: 4px;
+            }
+            
+            .tab-content::-webkit-scrollbar-track {
+                background: rgba(30, 41, 59, 0.5);
+                border-radius: 2px;
+            }
+            
+            .tab-content::-webkit-scrollbar-thumb {
+                background: #3b82f6;
+                border-radius: 2px;
+            }
+            
+            /* Dashboard - Compact */
+            .dashboard-grid {
                 display: grid;
                 grid-template-columns: repeat(2, 1fr);
-                gap: 12px;
-                margin-bottom: 20px;
+                gap: 8px;
+                margin-bottom: 12px;
             }
             
             .stat-card {
                 background: rgba(30, 41, 59, 0.5);
-                border-radius: 12px;
-                padding: 15px;
+                border: 1px solid #334155;
+                border-radius: 10px;
+                padding: 10px;
                 transition: all 0.3s;
             }
             
             .stat-card:hover {
                 border-color: #3b82f6;
-                transform: translateY(-2px);
             }
             
             .stat-label {
-                font-size: 10px;
+                font-size: 9px;
                 color: #94a3b8;
                 text-transform: uppercase;
-                letter-spacing: 0.5px;
+                letter-spacing: 0.3px;
                 font-weight: 600;
-                margin-bottom: 8px;
+                margin-bottom: 5px;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
             }
             
             .stat-value {
-                font-size: 18px;
+                font-size: 14px;
                 font-weight: 700;
                 color: #f1f5f9;
                 line-height: 1.2;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
             }
             
             .stat-sub {
-                font-size: 11px;
+                font-size: 9px;
                 color: #64748b;
-                margin-top: 5px;
+                margin-top: 3px;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            
+            /* Performance Grid */
+            .performance-grid {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 8px;
+                margin: 10px 0;
+            }
+            
+            .performance-card {
+                background: rgba(30, 41, 59, 0.5);
+                border-radius: 10px;
+                padding: 10px;
+                border-left: 3px solid;
+            }
+            
+            .performance-card.base {
+                border-left-color: #fbbf24;
+            }
+            
+            .performance-card.wager {
+                border-left-color: #60a5fa;
+            }
+            
+            .performance-title {
+                font-size: 10px;
+                color: #94a3b8;
+                font-weight: 600;
+                margin-bottom: 6px;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+            }
+            
+            .performance-stats {
+                font-size: 9px;
+                color: #e2e8f0;
+                line-height: 1.4;
+            }
+            
+            /* Recovery Panel */
+            .recovery-panel {
+                background: rgba(139, 92, 246, 0.1);
+                border: 1px solid #8b5cf6;
+                border-radius: 10px;
+                padding: 10px;
+                margin: 10px 0;
+            }
+            
+            .recovery-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 8px;
+            }
+            
+            .recovery-title {
+                font-size: 11px;
+                font-weight: 700;
+                color: #8b5cf6;
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+            
+            .recovery-level {
+                background: rgba(139, 92, 246, 0.2);
+                border: 1px solid #8b5cf6;
+                padding: 3px 8px;
+                border-radius: 12px;
+                font-size: 10px;
+                font-weight: 600;
+                color: #8b5cf6;
+            }
+            
+            .progress-container {
+                margin: 10px 0;
+            }
+            
+            .progress-label {
+                display: flex;
+                justify-content: space-between;
+                font-size: 9px;
+                color: #94a3b8;
+                margin-bottom: 4px;
+            }
+            
+            .progress-bar {
+                height: 6px;
+                background: #1e293b;
+                border-radius: 3px;
+                overflow: hidden;
+            }
+            
+            .progress-fill {
+                height: 100%;
+                background: linear-gradient(90deg, #8b5cf6, #a855f7);
+                border-radius: 3px;
+                transition: width 0.3s ease;
             }
             
             /* Control Panel */
             .control-panel {
-                background: rgba(15, 23, 42, 0.7);
-                border: 1px solid #334155;
-                border-radius: 12px;
-                padding: 15px;
-                margin-bottom: 20px;
+                display: grid;
+                gap: 8px;
+                margin: 12px 0;
             }
             
-            .control-title {
-                font-size: 13px;
-                font-weight: 700;
-                color: #94a3b8;
-                margin-bottom: 15px;
-                display: flex;
-                align-items: center;
+            .control-row {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
                 gap: 8px;
             }
             
-            .currency-group {
-                margin-bottom: 15px;
-            }
-            
-            .currency-select {
-                width: 100%;
-                padding: 12px;
-                background: #1e293b;
-                border: 1px solid #334155;
-                border-radius: 10px;
-                color: #e2e8f0;
-                font-size: 14px;
-                font-family: 'Inter', sans-serif;
-            }
-            
-            .btn-group {
-                display: grid;
-                gap: 12px;
-            }
-            
-            .btn-row {
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 12px;
-            }
-            
             .btn {
-                padding: 14px;
+                padding: 10px;
                 border: none;
-                border-radius: 12px;
+                border-radius: 10px;
                 font-weight: 600;
-                font-size: 13px;
+                font-size: 11px;
                 cursor: pointer;
                 transition: all 0.3s;
                 text-align: center;
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                gap: 8px;
+                gap: 6px;
             }
             
             .btn-primary {
@@ -979,115 +1398,72 @@
             }
             
             .btn:hover {
-                transform: translateY(-2px);
-                box-shadow: 0 6px 20px rgba(0,0,0,0.2);
+                transform: translateY(-1px);
+                box-shadow: 0 4px 12px rgba(0,0,0,0.2);
             }
             
-            /* Performance Grid */
-            .performance-grid {
+            .btn:active {
+                transform: translateY(0);
+            }
+            
+            /* Settings Panel */
+            .settings-panel {
                 display: grid;
-                grid-template-columns: repeat(2, 1fr);
-                gap: 12px;
-                margin: 15px 0;
+                gap: 8px;
             }
             
-            .performance-card {
-                background: rgba(30, 41, 59, 0.5);
-                border-radius: 12px;
-                padding: 15px;
-                border-left: 4px solid;
-            }
-            
-            .performance-card.base {
-                border-left-color: #fbbf24;
-            }
-            
-            .performance-card.wager {
-                border-left-color: #60a5fa;
-            }
-            
-            .performance-title {
-                font-size: 11px;
-                color: #94a3b8;
-                font-weight: 600;
-                margin-bottom: 8px;
-                display: flex;
-                align-items: center;
-                gap: 6px;
-            }
-            
-            .performance-stats {
-                font-size: 10px;
-                color: #e2e8f0;
-                line-height: 1.6;
-            }
-            
-            /* Logs Container */
-            .logs-container {
-                background: rgba(15, 23, 42, 0.7);
-                border-radius: 12px;
-                padding: 15px;
-                margin: 15px 0;
-                max-height: 200px;
-                overflow-y: auto;
-            }
-            
-            .logs-header {
-                display: grid;
-                grid-template-columns: 1.2fr 1fr 0.8fr 1.2fr;
-                padding: 10px 0;
-                border-bottom: 1px solid #334155;
-                font-size: 10px;
-                color: #94a3b8;
-                font-weight: 600;
-                text-align: center;
-            }
-            
-            /* Settings */
             .settings-group {
                 background: rgba(30, 41, 59, 0.5);
-                border-radius: 12px;
-                padding: 15px;
-                margin-bottom: 15px;
+                border-radius: 10px;
+                padding: 10px;
                 border: 1px solid #334155;
             }
             
             .settings-title {
-                font-size: 13px;
+                font-size: 11px;
                 font-weight: 700;
                 color: #94a3b8;
-                margin-bottom: 15px;
+                margin-bottom: 10px;
                 display: flex;
                 align-items: center;
+                gap: 6px;
+                cursor: pointer;
+                user-select: none;
+            }
+            
+            .settings-content {
+                display: none;
+                grid-template-columns: repeat(2, 1fr);
                 gap: 8px;
             }
             
-            .settings-grid {
+            .settings-content.active {
                 display: grid;
-                grid-template-columns: repeat(2, 1fr);
-                gap: 12px;
             }
             
             .input-group {
-                margin-bottom: 12px;
+                margin-bottom: 8px;
             }
             
             .input-label {
                 display: block;
-                font-size: 11px;
+                font-size: 9px;
                 color: #94a3b8;
-                margin-bottom: 6px;
+                margin-bottom: 4px;
                 font-weight: 500;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
             }
             
             input, select {
                 width: 100%;
-                padding: 10px 12px;
+                padding: 8px;
                 background: #1e293b;
                 border: 1px solid #334155;
                 border-radius: 8px;
                 color: #e2e8f0;
-                font-size: 12px;
+                font-size: 11px;
                 font-family: 'Inter', sans-serif;
                 transition: all 0.3s;
             }
@@ -1095,21 +1471,84 @@
             input:focus, select:focus {
                 outline: none;
                 border-color: #3b82f6;
-                box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+                box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+            }
+            
+            /* Logs Container */
+            .logs-container {
+                background: rgba(15, 23, 42, 0.7);
+                border-radius: 10px;
+                padding: 10px;
+                margin: 10px 0;
+                max-height: 120px;
+                overflow-y: auto;
+            }
+            
+            .logs-header {
+                display: grid;
+                grid-template-columns: 1.2fr 1fr 0.8fr 1.2fr;
+                padding: 6px 0;
+                border-bottom: 1px solid #334155;
+                font-size: 9px;
+                color: #94a3b8;
+                font-weight: 600;
+                text-align: center;
+            }
+            
+            .log-entry {
+                display: grid;
+                grid-template-columns: 1.2fr 1fr 0.8fr 1.2fr;
+                padding: 6px 0;
+                border-bottom: 1px solid rgba(51, 65, 85, 0.3);
+                font-size: 9px;
+                text-align: center;
+                font-family: 'JetBrains Mono', monospace;
+            }
+            
+            /* Statistics Panel */
+            .stats-panel {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 8px;
+                margin: 10px 0;
+            }
+            
+            .stat-item {
+                background: rgba(30, 41, 59, 0.5);
+                border-radius: 8px;
+                padding: 8px;
+            }
+            
+            .stat-item-label {
+                font-size: 8px;
+                color: #94a3b8;
+                margin-bottom: 3px;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            
+            .stat-item-value {
+                font-size: 10px;
+                font-weight: 600;
+                color: #f1f5f9;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
             }
             
             /* Footer */
             .footer {
-                margin-top: 20px;
-                padding-top: 15px;
+                margin-top: 12px;
+                padding-top: 10px;
                 border-top: 1px solid #334155;
                 text-align: center;
             }
             
             .support-info {
-                font-size: 11px;
+                font-size: 9px;
                 color: #64748b;
-                line-height: 1.6;
+                line-height: 1.4;
             }
             
             .support-link {
@@ -1122,19 +1561,62 @@
                 text-decoration: underline;
             }
             
-            /* Scrollbar */
-            ::-webkit-scrollbar {
-                width: 6px;
+            /* Utility Classes */
+            .text-success { color: #10b981 !important; }
+            .text-warning { color: #f59e0b !important; }
+            .text-danger { color: #ef4444 !important; }
+            .text-info { color: #60a5fa !important; }
+            .text-purple { color: #8b5cf6 !important; }
+            
+            .badge {
+                display: inline-block;
+                padding: 2px 6px;
+                border-radius: 4px;
+                font-size: 9px;
+                font-weight: 600;
             }
             
-            ::-webkit-scrollbar-track {
+            .badge-success { background: rgba(16, 185, 129, 0.2); color: #10b981; }
+            .badge-warning { background: rgba(245, 158, 11, 0.2); color: #f59e0b; }
+            .badge-danger { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
+            .badge-info { background: rgba(59, 130, 246, 0.2); color: #3b82f6; }
+            .badge-purple { background: rgba(139, 92, 246, 0.2); color: #8b5cf6; }
+            
+            .flex-between {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            
+            .flex-center {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+            
+            .toggle-icon {
+                transition: transform 0.3s ease;
+                font-size: 10px;
+            }
+            
+            .collapsed .toggle-icon {
+                transform: rotate(-90deg);
+            }
+            
+            /* Session Progress */
+            .session-progress {
                 background: rgba(30, 41, 59, 0.5);
-                border-radius: 3px;
+                border-radius: 10px;
+                padding: 10px;
+                margin: 10px 0;
             }
             
-            ::-webkit-scrollbar-thumb {
-                background: #3b82f6;
-                border-radius: 3px;
+            .session-info {
+                display: flex;
+                justify-content: space-between;
+                font-size: 9px;
+                color: #94a3b8;
+                margin-bottom: 8px;
             }
         `;
         document.head.appendChild(s);
@@ -1145,62 +1627,155 @@
             <!-- Header -->
             <div class="header">
                 <div class="header-title">
-                    🚀 ORION PREMIUM v4.2
+                    🚀 ORION v4.3
                     <span class="license-badge">${bot.licenseTier}</span>
                 </div>
-                <div class="status-badge" id="st-status-text">✅ READY</div>
+                <div class="status-badge" id="st-status-text">🟢 READY</div>
             </div>
             
-            <!-- Balance Stats -->
-            <div class="balance-stats">
-                <div class="stat-card">
-                    <div class="stat-label">💰 BALANCE</div>
-                    <div class="stat-value" id="st-bal">0.00000000</div>
-                    <div class="stat-sub">
-                        Profit: <span id="profit-display" class="text-success">0.00000000 (0.00%)</span>
+            <!-- Tab Navigation -->
+            <div class="tab-nav">
+                <button class="tab-btn active" data-tab="dashboard">
+                    📊 Dashboard
+                </button>
+                <button class="tab-btn" data-tab="controls">
+                    🎮 Controls
+                </button>
+                <button class="tab-btn" data-tab="settings">
+                    ⚙️ Settings
+                </button>
+                <button class="tab-btn" data-tab="logs">
+                    📝 Logs
+                </button>
+            </div>
+            
+            <!-- Dashboard Tab -->
+            <div id="dashboard-tab" class="tab-content active">
+                <!-- Balance Stats -->
+                <div class="dashboard-grid">
+                    <div class="stat-card">
+                        <div class="stat-label">💰 BALANCE</div>
+                        <div class="stat-value" id="st-bal">0.00000000</div>
+                        <div class="stat-sub">
+                            <span id="profit-display" class="text-success">0.00%</span>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-card">
+                        <div class="stat-label">📊 SESSION</div>
+                        <div class="stat-value" id="session-profit">0.00000000</div>
+                        <div class="stat-sub" id="session-pct">0.00%</div>
+                    </div>
+                    
+                    <div class="stat-card">
+                        <div class="stat-label">🎮 MODE</div>
+                        <div class="stat-value" id="current-mode">BASE</div>
+                        <div class="stat-sub" id="mode-stats">0% WR</div>
+                    </div>
+                    
+                    <div class="stat-card">
+                        <div class="stat-label">⏱ TIME</div>
+                        <div class="stat-value" id="st-time">00:00:00</div>
+                        <div class="stat-sub">S: <span id="current-session">1/20</span></div>
                     </div>
                 </div>
                 
-                <div class="stat-card">
-                    <div class="stat-label">📊 SESSION</div>
-                    <div class="stat-value" id="session-profit">0.00000000</div>
-                    <div class="stat-sub" id="session-pct">0.00%</div>
+                <!-- Session Progress -->
+                <div class="session-progress">
+                    <div class="session-info">
+                        <span>Session <span id="session-num">1</span>/<span id="max-sessions">20</span></span>
+                        <span id="session-progress-text">0%</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div id="session-progress" class="progress-fill" style="width: 0%; background: linear-gradient(90deg, #3b82f6, #8b5cf6);"></div>
+                    </div>
                 </div>
                 
-                <div class="stat-card">
-                    <div class="stat-label">🎮 MODE</div>
-                    <div class="stat-value" id="current-mode">BASE</div>
-                    <div class="stat-sub" id="mode-stats">Win Rate: 0%</div>
+                <!-- Performance Grid -->
+                <div class="performance-grid">
+                    <div class="performance-card base">
+                        <div class="performance-title">
+                            <span>🏗️ BASE</span>
+                            <span class="badge badge-warning" id="base-badge">OFF</span>
+                        </div>
+                        <div class="performance-stats">
+                            <div>P/L: <span id="base-profit" class="text-success">0.0000</span></div>
+                            <div>Bets: <span id="base-bets">0</span></div>
+                            <div>Streak: <span id="base-streak">0</span></div>
+                        </div>
+                    </div>
+                    
+                    <div class="performance-card wager">
+                        <div class="performance-title">
+                            <span>⚡ WAGER</span>
+                            <span class="badge badge-info" id="wager-badge">OFF</span>
+                        </div>
+                        <div class="performance-stats">
+                            <div>P/L: <span id="wager-profit" class="text-success">0.0000</span></div>
+                            <div>Bets: <span id="wager-bets">0</span></div>
+                            <div>Streak: <span id="wager-streak">0</span></div>
+                        </div>
+                    </div>
                 </div>
                 
-                <div class="stat-card">
-                    <div class="stat-label">⏱ TIME</div>
-                    <div class="stat-value" id="st-time">00:00:00</div>
-                    <div class="stat-sub">Session: <span id="current-session">1/${bot.session.maxSessions}</span></div>
+                <!-- Recovery Panel -->
+                <div class="recovery-panel">
+                    <div class="recovery-header">
+                        <div class="recovery-title">
+                            🔄 D'ALEMBERT
+                        </div>
+                        <div class="recovery-level" id="recovery-level">0</div>
+                    </div>
+                    
+                    <div class="progress-container">
+                        <div class="progress-label">
+                            <span id="recovery-status">INACTIVE</span>
+                            <span id="recovery-streak">LS: 0</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div id="recovery-progress" class="progress-fill" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Quick Stats -->
+                <div class="stats-panel">
+                    <div class="stat-item">
+                        <div class="stat-item-label">TOTAL BETS</div>
+                        <div class="stat-item-value" id="stats-bets">0</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-item-label">WIN RATE</div>
+                        <div class="stat-item-value" id="stats-winrate">0.00%</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-item-label">MAX DD</div>
+                        <div class="stat-item-value text-danger" id="stats-maxdd">0.00</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-item-label">PROFIT SESS</div>
+                        <div class="stat-item-value text-success" id="stats-profsessions">0/0</div>
+                    </div>
                 </div>
             </div>
             
-            <!-- Control Panel -->
-            <div class="control-panel">
-                <div class="control-title">🎮 CONTROL PANEL</div>
-                
-                <div class="currency-group">
-                    <label class="input-label">CURRENCY</label>
-                    <select id="p-currency" class="currency-select">
-                        <option value="loading">Loading currencies...</option>
-                    </select>
+            <!-- Controls Tab -->
+            <div id="controls-tab" class="tab-content">
+                <!-- Currency Selection -->
+                <div class="settings-group">
+                    <div class="input-group">
+                        <label class="input-label">CURRENCY</label>
+                        <select id="p-currency" class="currency-select"></select>
+                    </div>
                 </div>
                 
-                <div class="btn-group">
-                    <button id="btn-sync" class="btn btn-secondary">
-                        🔄 SYNC ACCOUNT
-                    </button>
-                    
+                <!-- Main Controls -->
+                <div class="control-panel">
                     <button id="btn-run" class="btn btn-primary">
                         🚀 START ENGINE
                     </button>
                     
-                    <div class="btn-row">
+                    <div class="control-row">
                         <button id="btn-pause" class="btn btn-warning">
                             ⏸️ PAUSE
                         </button>
@@ -1209,101 +1784,255 @@
                         </button>
                     </div>
                     
-                    <div class="btn-row">
+                    <div class="control-row">
                         <button onclick="rotateMode('BASE')" class="btn" style="background: rgba(251, 191, 36, 0.1); color: #fbbf24; border: 1px solid #fbbf24;">
-                            🏗️ BASE MODE
+                            🏗️ BASE
                         </button>
                         <button onclick="rotateMode('WAGER')" class="btn" style="background: rgba(96, 165, 250, 0.1); color: #60a5fa; border: 1px solid #60a5fa;">
-                            ⚡ WAGER MODE
+                            ⚡ WAGER
                         </button>
                     </div>
                     
-                    <button onclick="sendTelegramReport()" class="btn" style="background: linear-gradient(135deg, #8b5cf6, #a855f7);">
-                        📊 TELEGRAM REPORT
-                    </button>
+                    <div class="control-row">
+                        <button onclick="startDallembertRecovery()" class="btn btn-secondary">
+                            🔄 RECOVERY
+                        </button>
+                        <button onclick="sendTelegramReport()" class="btn" style="background: linear-gradient(135deg, #8b5cf6, #a855f7);">
+                            📊 REPORT
+                        </button>
+                    </div>
                     
                     <button onclick="window.open('https://t.me/${CONFIG.supportContact.replace('@', '')}', '_blank')" 
                         class="btn" style="background: linear-gradient(135deg, #3b82f6, #2563eb);">
-                        💬 SUPPORT CHAT
+                        💬 SUPPORT
                     </button>
+                </div>
+                
+                <!-- Trailing Stop -->
+                <div class="settings-group">
+                    <div class="settings-title">
+                        📈 TRAILING STOP
+                    </div>
+                    <div class="flex-between">
+                        <span style="font-size: 9px; color: #94a3b8;">Status:</span>
+                        <span id="trailing-status" style="font-size: 9px; color: #94a3b8;">INACTIVE</span>
+                    </div>
                 </div>
             </div>
             
-            <!-- Performance Grid -->
-            <div class="performance-grid">
-                <div class="performance-card base">
-                    <div class="performance-title">
-                        🏗️ BASE MODE STATS
+            <!-- Settings Tab -->
+            <div id="settings-tab" class="tab-content">
+                <!-- Base Mode Settings -->
+                <div class="settings-group">
+                    <div class="settings-title" onclick="toggleSettings(this)">
+                        <span class="toggle-icon">▶</span> 🏗️ BASE MODE
                     </div>
-                    <div class="performance-stats">
-                        <div>Profit: <span id="base-profit" class="text-success">0.00000000</span></div>
-                        <div>Bets: <span id="base-bets">0</span></div>
-                        <div>Active: <span id="base-active">${bot.mode === "BASE" ? "YES" : "NO"}</span></div>
+                    <div class="settings-content">
+                        <div class="input-group">
+                            <label class="input-label">Base Bet</label>
+                            <input id="p-basebet" value="0.00000100" type="number" step="0.00000001" min="0">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Base Chance Min</label>
+                            <input id="p-bch-min" value="80.0" type="number" step="0.1" min="1" max="99">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Base Chance Max</label>
+                            <input id="p-bch-max" value="95.0" type="number" step="0.1" min="1" max="99">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Hunt Chance Min</label>
+                            <input id="p-hch-min" value="20.0" type="number" step="0.1" min="1" max="99">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Hunt Chance Max</label>
+                            <input id="p-hch-max" value="30.0" type="number" step="0.1" min="1" max="99">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Multi Start</label>
+                            <input id="p-multi-start" value="1.45" type="number" step="0.05" min="1">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Multi Inc</label>
+                            <input id="p-multi-inc" value="0.05" type="number" step="0.01" min="0.01">
+                        </div>
                     </div>
                 </div>
                 
-                <div class="performance-card wager">
-                    <div class="performance-title">
-                        ⚡ WAGER MODE STATS
+                <!-- Wager Mode Settings -->
+                <div class="settings-group">
+                    <div class="settings-title" onclick="toggleSettings(this)">
+                        <span class="toggle-icon">▶</span> ⚡ WAGER MODE
                     </div>
-                    <div class="performance-stats">
-                        <div>Profit: <span id="wager-profit" class="text-success">0.00000000</span></div>
-                        <div>Bets: <span id="wager-bets">0</span></div>
-                        <div>Active: <span id="wager-active">${bot.mode === "WAGER" ? "YES" : "NO"}</span></div>
+                    <div class="settings-content">
+                        <div class="input-group">
+                            <label class="input-label">Wager Chance</label>
+                            <input id="p-wgr-chance" value="99.0" type="number" step="0.1" min="90" max="99.99">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Wager Divider</label>
+                            <input id="p-wgr-div" value="100" type="number" step="1" min="10">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Recovery Chance Min</label>
+                            <input id="p-chrec-min" value="50.0" type="number" step="0.1" min="1" max="99">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Recovery Chance Max</label>
+                            <input id="p-chrec-max" value="70.0" type="number" step="0.1" min="1" max="99">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Wager Target (x)</label>
+                            <input id="p-wagertarget" value="200" type="number" step="10" min="10">
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- D'Alembert Recovery Settings -->
+                <div class="settings-group">
+                    <div class="settings-title" onclick="toggleSettings(this)">
+                        <span class="toggle-icon">▶</span> 🔄 D'ALEMBERT
+                    </div>
+                    <div class="settings-content">
+                        <div class="input-group">
+                            <label class="input-label">Level 1 Min</label>
+                            <input id="p-dallembert-level1-min" value="25" type="number" step="1" min="1" max="99">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Level 1 Max</label>
+                            <input id="p-dallembert-level1-max" value="35" type="number" step="1" min="1" max="99">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Level 2 Min</label>
+                            <input id="p-dallembert-level2-min" value="45" type="number" step="1" min="1" max="99">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Level 2 Max</label>
+                            <input id="p-dallembert-level2-max" value="55" type="number" step="1" min="1" max="99">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Level 3 Min</label>
+                            <input id="p-dallembert-level3-min" value="77" type="number" step="1" min="1" max="99">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Level 3 Max</label>
+                            <input id="p-dallembert-level3-max" value="87" type="number" step="1" min="1" max="99">
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Session Settings -->
+                <div class="settings-group">
+                    <div class="settings-title" onclick="toggleSettings(this)">
+                        <span class="toggle-icon">▶</span> 🎯 SESSION
+                    </div>
+                    <div class="settings-content">
+                        <div class="input-group">
+                            <label class="input-label">Max Sessions</label>
+                            <input id="p-max-sessions" value="20" type="number" step="1" min="1">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Session Target %</label>
+                            <input id="p-session-target" value="10.0" type="number" step="0.1" min="0.1">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Session Stop Loss %</label>
+                            <input id="p-session-stoploss" value="5.0" type="number" step="0.1" min="0.1">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Global Target %</label>
+                            <input id="p-target-pct" value="5.0" type="number" step="0.1" min="0.1">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Global Stop Loss %</label>
+                            <input id="p-stoploss-pct" value="5.0" type="number" step="0.1" min="0.1">
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Trailing Stop Settings -->
+                <div class="settings-group">
+                    <div class="settings-title" onclick="toggleSettings(this)">
+                        <span class="toggle-icon">▶</span> 📈 TRAILING
+                    </div>
+                    <div class="settings-content">
+                        <div class="input-group">
+                            <label class="input-label">Enabled</label>
+                            <select id="p-trailing-enabled">
+                                <option value="1">Yes</option>
+                                <option value="0">No</option>
+                            </select>
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Activation %</label>
+                            <input id="p-trailing-activation" value="0.5" type="number" step="0.1" min="0.1">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Distance %</label>
+                            <input id="p-trailing-distance" value="0.2" type="number" step="0.1" min="0.1">
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Safety Settings -->
+                <div class="settings-group">
+                    <div class="settings-title" onclick="toggleSettings(this)">
+                        <span class="toggle-icon">▶</span> 🛡️ SAFETY
+                    </div>
+                    <div class="settings-content">
+                        <div class="input-group">
+                            <label class="input-label">Minimum Bet</label>
+                            <input id="p-minbet" value="0.00000001" type="number" step="0.00000001" min="0">
+                        </div>
                     </div>
                 </div>
             </div>
             
-            <!-- Live Logs -->
-            <div class="logs-container">
-                <div class="control-title">
-                    📝 LIVE LOGS
-                    <span style="font-size: 9px; color: #64748b; margin-left: auto;">Last 15 bets</span>
+            <!-- Logs Tab -->
+            <div id="logs-tab" class="tab-content">
+                <div class="logs-container">
+                    <div class="logs-header">
+                        <span>AMOUNT</span>
+                        <span>CHANCE</span>
+                        <span>MODE</span>
+                        <span>PROFIT</span>
+                    </div>
+                    <div id="p-log-body"></div>
                 </div>
-                <div class="logs-header">
-                    <span>AMOUNT</span>
-                    <span>CHANCE</span>
-                    <span>MODE</span>
-                    <span>PROFIT</span>
-                </div>
-                <div id="p-log-body"></div>
-            </div>
-            
-            <!-- Settings -->
-            <div class="settings-group">
-                <div class="settings-title">⚙️ SETTINGS</div>
-                <div class="settings-grid">
-                    <div class="input-group">
-                        <label class="input-label">Base Bet</label>
-                        <input id="p-basebet" value="0.00000100" type="number" step="0.00000001" min="0">
+                
+                <!-- Statistics -->
+                <div class="stats-panel" style="margin-top: 10px;">
+                    <div class="stat-item">
+                        <div class="stat-item-label">TOTAL WAGERED</div>
+                        <div class="stat-item-value" id="stats-wagered">0.00</div>
                     </div>
-                    <div class="input-group">
-                        <label class="input-label">Base Chance Min (%)</label>
-                        <input id="p-bch-min" value="80.0" type="number" step="0.1" min="1" max="99">
+                    <div class="stat-item">
+                        <div class="stat-item-label">BIGGEST WIN</div>
+                        <div class="stat-item-value text-success" id="stats-bigwin">0.00</div>
                     </div>
-                    <div class="input-group">
-                        <label class="input-label">Base Chance Max (%)</label>
-                        <input id="p-bch-max" value="95.0" type="number" step="0.1" min="1" max="99">
+                    <div class="stat-item">
+                        <div class="stat-item-label">BIGGEST LOSS</div>
+                        <div class="stat-item-value text-danger" id="stats-bigloss">0.00</div>
                     </div>
-                    <div class="input-group">
-                        <label class="input-label">Wager Chance (%)</label>
-                        <input id="p-wgr-chance" value="99.0" type="number" step="0.1" min="90" max="99.99">
+                    <div class="stat-item">
+                        <div class="stat-item-label">LONG WIN STREAK</div>
+                        <div class="stat-item-value text-success" id="stats-longwin">0</div>
                     </div>
-                    <div class="input-group">
-                        <label class="input-label">Wager Divider</label>
-                        <input id="p-wgr-div" value="100" type="number" step="1" min="10">
+                    <div class="stat-item">
+                        <div class="stat-item-label">LONG LOSS STREAK</div>
+                        <div class="stat-item-value text-danger" id="stats-longloss">0</div>
                     </div>
-                    <div class="input-group">
-                        <label class="input-label">Min Bet</label>
-                        <input id="p-minbet" value="0.00000001" type="number" step="0.00000001" min="0">
+                    <div class="stat-item">
+                        <div class="stat-item-label">AVG BET SIZE</div>
+                        <div class="stat-item-value" id="stats-avgbet">0.00</div>
                     </div>
-                    <div class="input-group">
-                        <label class="input-label">Target Profit (%)</label>
-                        <input id="p-target-pct" value="5.0" type="number" step="0.1" min="0.1">
+                    <div class="stat-item">
+                        <div class="stat-item-label">MAX PROFIT</div>
+                        <div class="stat-item-value text-success" id="stats-maxprofit">0.00</div>
                     </div>
-                    <div class="input-group">
-                        <label class="input-label">Stop Loss (%)</label>
-                        <input id="p-stoploss-pct" value="5.0" type="number" step="0.1" min="0.1">
+                    <div class="stat-item">
+                        <div class="stat-item-label">TOTAL SESSIONS</div>
+                        <div class="stat-item-value" id="stats-totalsessions">0</div>
                     </div>
                 </div>
             </div>
@@ -1311,9 +2040,9 @@
             <!-- Footer -->
             <div class="footer">
                 <div class="support-info">
-                    💬 Support: <a href="https://t.me/${CONFIG.supportContact.replace('@', '')}" target="_blank" class="support-link">${CONFIG.supportContact}</a>
-                    <div style="margin-top: 5px; font-size: 10px;">
-                        ⚡ ${CONFIG.version} | 🔒 ${bot.licenseTier} License | User: ${currentUser}
+                    💬 <a href="https://t.me/${CONFIG.supportContact.replace('@', '')}" target="_blank" class="support-link">${CONFIG.supportContact}</a>
+                    <div style="margin-top: 3px; font-size: 8px;">
+                        ⚡ ${CONFIG.version} | 🔒 ${bot.licenseTier}
                     </div>
                 </div>
             </div>
@@ -1321,30 +2050,95 @@
         
         document.body.appendChild(d);
         
-        // Setup event listeners
-        setupEventListeners();
-    }
-
-    function setupEventListeners() {
-        // Currency change
+        // Tab Navigation
+        const tabBtns = d.querySelectorAll('.tab-btn');
+        const tabContents = d.querySelectorAll('.tab-content');
+        
+        tabBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                tabBtns.forEach(b => b.classList.remove('active'));
+                tabContents.forEach(c => c.classList.remove('active'));
+                
+                btn.classList.add('active');
+                const tabId = btn.getAttribute('data-tab') + '-tab';
+                document.getElementById(tabId).classList.add('active');
+            });
+        });
+        
+        // Toggle settings sections
+        window.toggleSettings = function(element) {
+            const content = element.nextElementSibling;
+            const icon = element.querySelector('.toggle-icon');
+            
+            if (content.classList.contains('active')) {
+                content.classList.remove('active');
+                icon.textContent = '▶';
+                element.classList.add('collapsed');
+            } else {
+                content.classList.add('active');
+                icon.textContent = '▼';
+                element.classList.remove('collapsed');
+            }
+        };
+        
+        // Update D'Alembert levels based on settings
+        function updateDallembertLevels() {
+            DallembertRecovery.levels = [
+                {
+                    min: 1, max: 5,
+                    chance: { 
+                        min: getVal("p-dallembert-level1-min"), 
+                        max: getVal("p-dallembert-level1-max") 
+                    },
+                    betMultiplier: 1.2,
+                    description: "Aggressive recovery"
+                },
+                {
+                    min: 6, max: 10,
+                    chance: { 
+                        min: getVal("p-dallembert-level2-min"), 
+                        max: getVal("p-dallembert-level2-max") 
+                    },
+                    betMultiplier: 1.5,
+                    description: "Moderate recovery"
+                },
+                {
+                    min: 11, max: 15,
+                    chance: { 
+                        min: getVal("p-dallembert-level3-min"), 
+                        max: getVal("p-dallembert-level3-max") 
+                    },
+                    betMultiplier: 2.0,
+                    description: "Conservative recovery"
+                }
+            ];
+        }
+        
+        // Global functions
+        window.rotateMode = rotateMode;
+        window.startDallembertRecovery = startDallembertRecovery;
+        
+        // Event Listeners
         document.getElementById("p-currency").addEventListener('change', async (e) => {
             bot.selectedCurrency = e.target.value;
             localStorage.setItem('orion_last_coin', bot.selectedCurrency);
-            await API.updateBalanceDisplay();
+            await updateBalanceDisplay();
         });
 
-        // Sync button
-        document.getElementById("btn-sync").addEventListener('click', async () => {
-            await API.syncOnce();
-        });
-
-        // Start button
         document.getElementById("btn-run").addEventListener('click', async () => {
             if (!bot.isRunning) {
                 bot.selectedCurrency = document.getElementById("p-currency").value;
-                
-                // Sync before starting
                 await API.syncOnce();
+                
+                // Update D'Alembert levels from settings
+                updateDallembertLevels();
+                
+                // Set session settings
+                bot.session.maxSessions = getVal("p-max-sessions");
+                bot.session.currentSession = 1;
+                bot.session.trailingStop.enabled = getVal("p-trailing-enabled") === 1;
+                bot.session.trailingStop.activation = getVal("p-trailing-activation");
+                bot.session.trailingStop.distance = getVal("p-trailing-distance");
                 
                 bot.stats.startBal = await API.getBalance(bot.selectedCurrency);
                 bot.stats.currentBal = bot.stats.startBal;
@@ -1358,18 +2152,45 @@
                 bot.stats.wins = 0;
                 bot.stats.loss = 0;
                 bot.stats.maxDD = 0;
+                bot.stats.maxProfit = 0;
+                bot.stats.peakBalance = bot.stats.startBal;
                 bot.stats.baseModeProfit = 0;
                 bot.stats.wagerModeProfit = 0;
+                bot.stats.longestWinStreak = 0;
+                bot.stats.longestLossStreak = 0;
+                bot.stats.currentWinStreak = 0;
+                bot.stats.currentLossStreak = 0;
+                bot.stats.biggestWin = 0;
+                bot.stats.biggestLoss = 0;
+                bot.stats.totalSessions = 0;
+                bot.stats.profitableSessions = 0;
+                bot.stats.losingSessions = 0;
                 
                 bot.targetAbs = bot.stats.startBal * (getVal("p-target-pct") / 100);
                 bot.isRunning = true;
                 bot.isPaused = false;
                 bot.startTime = Date.now();
+                bot.stopTime = null;
+                bot.lastSwitchTime = Date.now();
+                bot.lastReportTime = Date.now();
+                
+                // Reset session history
+                bot.session.sessionHistory = [];
                 
                 // Reset wager mode
                 bot.wgr.balhigh = bot.stats.startBal;
                 bot.wgr.profitc = 0;
                 bot.wgr.ctwin = 0;
+                bot.wgr.recoveryActive = false;
+                bot.wgr.lossStreak = 0;
+                bot.wgr.recoveryLevel = 0;
+                bot.wgr.recoveryWins = 0;
+                bot.wgr.recoveryTarget = 0;
+                bot.wgr.originalLoss = 0;
+                
+                // Reset trailing stop
+                bot.session.trailingStop.peak = bot.stats.startBal;
+                bot.session.trailingStop.activated = false;
                 
                 // Initialize mode
                 bot.mode = "BASE";
@@ -1382,6 +2203,9 @@
                 
                 const logBody = document.getElementById("p-log-body");
                 if (logBody) logBody.innerHTML = "";
+                
+                // Log session start
+                updateLogs(0, 0, "SESSION", 0, `Session ${bot.session.currentSession} started`);
                 
                 updateStatus("⚡ RUNNING", "#10b981");
                 
@@ -1402,6 +2226,23 @@
             updateStatus(bot.isPaused ? "⏸️ PAUSED" : "⚡ RUNNING",
                        bot.isPaused ? "#f59e0b" : "#10b981");
         });
+        
+        // Update D'Alembert settings when changed
+        const dallembertInputs = [
+            'p-dallembert-level1-min', 'p-dallembert-level1-max',
+            'p-dallembert-level2-min', 'p-dallembert-level2-max',
+            'p-dallembert-level3-min', 'p-dallembert-level3-max'
+        ];
+        
+        dallembertInputs.forEach(id => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.addEventListener('change', updateDallembertLevels);
+            }
+        });
+        
+        // Initialize
+        API.syncOnce();
     }
 
     // ==================== REAL-TIME UPDATES ====================
@@ -1415,47 +2256,81 @@
             const profitPct = (bot.stats.profit / (bot.stats.startBal || 1) * 100);
             const profitColor = profitPct >= 0 ? '#10b981' : '#ef4444';
             document.getElementById("profit-display").innerHTML =
-                `<span style="color:${profitColor}">${bot.stats.profit.toFixed(8)} (${profitPct.toFixed(2)}%)</span>`;
+                `<span style="color:${profitColor}">${profitPct.toFixed(2)}%</span>`;
             
             // Update session profit
             const sessionProfitPct = (bot.stats.sessionProfit / (bot.stats.sessionStartBal || 1) * 100);
             document.getElementById("session-profit").innerText = bot.stats.sessionProfit.toFixed(8);
             document.getElementById("session-pct").innerText = `${sessionProfitPct.toFixed(2)}%`;
             
+            // Update session progress
+            const sessionTargetPct = getVal("p-session-target");
+            const sessionStopLossPct = getVal("p-session-stoploss");
+            const sessionProgress = Math.min(100, Math.max(0, (sessionProfitPct + sessionStopLossPct) / (sessionTargetPct + sessionStopLossPct) * 100));
+            
+            document.getElementById("session-progress-text").innerText = `${sessionProgress.toFixed(1)}%`;
+            document.getElementById("session-progress").style.width = `${sessionProgress}%`;
+            document.getElementById("session-num").innerText = bot.session.currentSession;
+            document.getElementById("max-sessions").innerText = bot.session.maxSessions;
+            document.getElementById("current-session").innerText = `${bot.session.currentSession}/${bot.session.maxSessions}`;
+            document.getElementById("trailing-status").innerText = bot.session.trailingStop.activated ? "ACTIVE" : "INACTIVE";
+            document.getElementById("trailing-status").style.color = bot.session.trailingStop.activated ? '#fbbf24' : '#94a3b8';
+            
             // Update mode
             document.getElementById("current-mode").innerText = bot.mode;
             const modeStatsEl = document.getElementById("mode-stats");
             if (modeStatsEl) {
                 const winRate = bot.stats.bets > 0 ? (bot.stats.wins / bot.stats.bets * 100) : 0;
-                modeStatsEl.innerHTML = `Win Rate: ${winRate.toFixed(1)}%`;
+                modeStatsEl.innerHTML = `${winRate.toFixed(1)}% WR`;
             }
             
-            // Update time and session
+            // Update time
             document.getElementById("st-time").innerText = getElapsedTime();
-            document.getElementById("current-session").innerText = `${bot.session.currentSession}/${bot.session.maxSessions}`;
             
             // Update performance cards
-            document.getElementById("base-profit").innerText = bot.stats.baseModeProfit.toFixed(8);
-            document.getElementById("base-active").innerText = bot.mode === "BASE" ? "YES" : "NO";
-            document.getElementById("base-active").style.color = bot.mode === "BASE" ? "#10b981" : "#ef4444";
+            document.getElementById("base-profit").innerText = bot.stats.baseModeProfit.toFixed(4);
+            document.getElementById("base-bets").innerText = bot.stats.baseModeProfit !== 0 ? "ACTIVE" : "0";
+            document.getElementById("base-streak").innerText = bot.stats.currentLossStreak;
+            document.getElementById("base-badge").innerText = bot.mode === "BASE" ? "ON" : "OFF";
+            document.getElementById("base-badge").className = bot.mode === "BASE" ? "badge badge-warning" : "badge";
             
-            document.getElementById("wager-profit").innerText = bot.stats.wagerModeProfit.toFixed(8);
-            document.getElementById("wager-active").innerText = bot.mode === "WAGER" ? "YES" : "NO";
-            document.getElementById("wager-active").style.color = bot.mode === "WAGER" ? "#10b981" : "#ef4444";
+            document.getElementById("wager-profit").innerText = bot.stats.wagerModeProfit.toFixed(4);
+            document.getElementById("wager-bets").innerText = bot.stats.wagerModeProfit !== 0 ? "ACTIVE" : "0";
+            document.getElementById("wager-streak").innerText = bot.wgr.lossStreak;
+            document.getElementById("wager-badge").innerText = bot.mode === "WAGER" ? "ON" : "OFF";
+            document.getElementById("wager-badge").className = bot.mode === "WAGER" ? "badge badge-info" : "badge";
+            
+            // Update recovery UI
+            document.getElementById("recovery-status").innerText = bot.wgr.recoveryActive ? "ACTIVE" : "INACTIVE";
+            document.getElementById("recovery-level").innerText = bot.wgr.recoveryLevel;
+            document.getElementById("recovery-streak").innerText = `LS: ${bot.wgr.lossStreak}`;
+            
+            const recoveryProgress = Math.min(100, (bot.wgr.recoveryWins / 3) * 100);
+            document.getElementById("recovery-progress").style.width = `${recoveryProgress}%`;
+            
+            // Update statistics
+            document.getElementById("stats-bets").innerText = bot.stats.bets;
+            document.getElementById("stats-winrate").innerText = bot.stats.bets > 0 ? 
+                `${((bot.stats.wins / bot.stats.bets) * 100).toFixed(2)}%` : "0.00%";
+            document.getElementById("stats-wagered").innerText = (bot.stats.wagered / (bot.stats.startBal || 1)).toFixed(2) + "x";
+            document.getElementById("stats-maxdd").innerText = (bot.stats.maxDD / (bot.stats.startBal || 1) * 100).toFixed(2) + "%";
+            document.getElementById("stats-bigwin").innerText = bot.stats.biggestWin.toFixed(4);
+            document.getElementById("stats-bigloss").innerText = Math.abs(bot.stats.biggestLoss).toFixed(4);
+            document.getElementById("stats-longwin").innerText = bot.stats.longestWinStreak;
+            document.getElementById("stats-longloss").innerText = bot.stats.longestLossStreak;
+            document.getElementById("stats-profsessions").innerText = `${bot.stats.profitableSessions}/${bot.stats.totalSessions}`;
+            document.getElementById("stats-avgbet").innerText = bot.stats.bets > 0 ? 
+                (bot.stats.wagered / bot.stats.bets).toFixed(8) : "0.00000000";
+            document.getElementById("stats-maxprofit").innerText = bot.stats.maxProfit.toFixed(8);
+            document.getElementById("stats-totalsessions").innerText = bot.stats.totalSessions;
                 
         } catch (e) {
             console.error("UI update error:", e);
         }
     }, 500);
 
-    // ==================== GLOBAL FUNCTIONS ====================
-    window.rotateMode = rotateMode;
-    window.sendTelegramReport = sendTelegramReport;
-
     // ==================== INITIALIZATION ====================
     async function initialize() {
-        console.log("🚀 Initializing ORION PREMIUM v4.2...");
-        
         const isValid = await validateLicense();
         
         if (isValid) {
@@ -1464,11 +2339,6 @@
             bot.stakeUser = currentUser;
             
             createUI();
-            
-            // Initial sync
-            setTimeout(async () => {
-                await API.syncOnce();
-            }, 1000);
             
         } else {
             console.log("❌ License invalid or user not whitelisted");
