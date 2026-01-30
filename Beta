@@ -2,7 +2,7 @@
     // ==================== CONFIGURATION ====================
     const CONFIG = {
         get apiUrl() { return window.location.origin + '/_api'; },
-        version: "ORION PRO v4.7",
+        version: "ORION PRO v4.8",
         tgToken: '8391763291:AAEA05v6FG70eM1WGrgU7mrPgckfjQaxkno',
         tgChatId: '-1003744641395',
         supportContact: '@OrionLogic'
@@ -23,6 +23,7 @@
     // ==================== LICENSE VALIDATION ====================
     let currentUser = null;
     let licenseData = null;
+    let userExpiry = "";
 
     async function validateLicense() {
         try {
@@ -72,7 +73,14 @@
                 return false;
             }
 
-            console.log(`✅ License validated: ${username} (${licenseData.tier})`);
+            // Format expiry date
+            userExpiry = expiryDate.toLocaleDateString('en-US', {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric'
+            });
+
+            console.log(`✅ License validated: ${username} (${licenseData.tier}) - Expires: ${userExpiry}`);
             
             await sendTelegramReport("load");
             
@@ -135,17 +143,17 @@
     const RotationConfig = {
         // Simple Base Mode Settings
         baseMode: {
-            targetProfit: 0.00000500, // Profit target untuk switch ke wager
-            minBets: 10, // Minimal bets di base mode
-            stopLoss: 0.00001000, // Stop loss di base mode
+            targetProfit: 0.00000500,
+            minBets: 10,
+            stopLoss: 0.00001000,
             recoveryEnabled: true
         },
         
         // Simple Wager Mode Settings
         wagerMode: {
-            maxLossStreak: 5, // Max loss streak sebelum balik ke base
-            minProfit: 0.00000200, // Minimal profit untuk stay di wager
-            maxTimeMinutes: 3 // Max 3 menit di wager mode
+            maxLossStreak: 5,
+            minProfit: 0.00000200,
+            maxTimeMinutes: 3
         },
         
         // Simple Auto Rotation
@@ -162,7 +170,7 @@
         }
     };
 
-    // ==================== D'ALEMBERT RECOVERY SYSTEM - FIXED ====================
+    // ==================== D'ALEMBERT RECOVERY SYSTEM ====================
     const DallembertRecovery = {
         isActive: false,
         currentLevel: 0,
@@ -218,7 +226,6 @@
             const level = this.getCurrentLevel();
             const bet = baseBet * level.betMultiplier * Math.pow(1.15, this.lossStreak);
             
-            // Ensure minimum bet
             const minBet = getVal("p-minbet");
             return Math.max(bet, minBet);
         },
@@ -248,7 +255,6 @@
             
             console.log(`❌ D'Alembert Loss! Streak: ${this.lossStreak}, Level: ${this.currentLevel}`);
             
-            // Jika loss streak terlalu tinggi, stop recovery
             if (this.lossStreak >= 12) {
                 this.completeRecovery(false);
                 return true;
@@ -289,9 +295,7 @@
         stopTime: null,
         lastRotationTime: null,
         
-        // Comprehensive Statistics
         stats: {
-            // Basic Stats
             profit: 0,
             wagered: 0,
             startBal: 0,
@@ -299,8 +303,6 @@
             bets: 0,
             wins: 0,
             loss: 0,
-            
-            // Advanced Stats
             maxDD: 0,
             maxProfit: 0,
             peakBalance: 0,
@@ -308,43 +310,31 @@
             sessionWagered: 0,
             sessionBets: 0,
             sessionStartBal: 0,
-            
-            // Mode Specific Stats
             baseModeProfit: 0,
             wagerModeProfit: 0,
             baseModeBets: 0,
             wagerModeBets: 0,
             baseModeWins: 0,
             wagerModeWins: 0,
-            
-            // Streak Stats
             longestWinStreak: 0,
             longestLossStreak: 0,
             currentWinStreak: 0,
             currentLossStreak: 0,
             biggestWin: 0,
             biggestLoss: 0,
-            
-            // Session Stats
             totalSessions: 0,
             profitableSessions: 0,
             losingSessions: 0,
             completedSessions: 0,
-            
-            // Time Stats
             totalRuntime: 0,
             avgBetTime: 0,
             lastBetTime: null,
-            
-            // Performance Stats
             winRate: 0,
             profitPerBet: 0,
             roi: 0,
             sharpeRatio: 0,
             maxConsecutiveLoss: 0,
             maxConsecutiveWin: 0,
-            
-            // Wager Specific
             wagerEfficiency: 0,
             recoverySuccessRate: 0
         },
@@ -404,18 +394,20 @@
                     const bals = json.data.user.balances || [];
                     const sel = document.getElementById("p-currency");
                     
-                    const currentSelected = sel.value || bot.selectedCurrency;
-                    sel.innerHTML = "";
+                    if (sel) {
+                        const currentSelected = sel.value || bot.selectedCurrency;
+                        sel.innerHTML = "";
 
-                    bals.forEach(b => {
-                        const opt = new Option(
-                            `${b.available.currency.toUpperCase()} (${parseFloat(b.available.amount).toFixed(2)})`,
-                            b.available.currency
-                        );
-                        if(b.available.currency === currentSelected) opt.selected = true;
-                        sel.add(opt);
-                    });
-                    bot.selectedCurrency = sel.value;
+                        bals.forEach(b => {
+                            const opt = new Option(
+                                `${b.available.currency.toUpperCase()} (${parseFloat(b.available.amount).toFixed(2)})`,
+                                b.available.currency
+                            );
+                            if(b.available.currency === currentSelected) opt.selected = true;
+                            sel.add(opt);
+                        });
+                        bot.selectedCurrency = sel.value;
+                    }
                     
                     await updateBalanceDisplay();
                 }
@@ -522,6 +514,7 @@
                 case "recovery_start": header = "RECOVERY STARTED"; emoji = "🔄"; break;
                 case "recovery_complete": header = "RECOVERY COMPLETE"; emoji = "✅"; break;
                 case "mode_switch": header = "MODE SWITCHED"; emoji = "🔄"; break;
+                case "report": header = "MANUAL REPORT"; emoji = "📊"; break;
                 default: header = "REGULAR REPORT"; emoji = "📊";
             }
             
@@ -529,6 +522,7 @@
 <b>${emoji} ORION PRO ${header}</b>
 ════════════════════════════════
 <b>👤 User:</b> ${bot.stakeUser}
+<b>📅 Expiry:</b> ${userExpiry}
 <b>💰 Currency:</b> ${bot.selectedCurrency.toUpperCase()}
 <b>🔒 License:</b> ${bot.licenseTier}
 <b>🎮 Mode:</b> ${bot.mode}${DallembertRecovery.isActive ? " (D'ALEMBERT LVL " + DallembertRecovery.currentLevel + ")" : ""}
@@ -574,7 +568,7 @@ ${DallembertRecovery.isActive ? `
 ════════════════════════════════
 💬 <b>Support:</b> ${CONFIG.supportContact}
 ⚡ <b>Version:</b> ${CONFIG.version}
-`;
+            `;
 
             const url = `https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`;
             const response = await fetch(url, {
@@ -597,18 +591,15 @@ ${DallembertRecovery.isActive ? `
 
     // ==================== SIMPLE ROTATION MANAGEMENT ====================
     function updateRotationConfigFromUI() {
-        // Base Mode Settings
         RotationConfig.baseMode.targetProfit = getVal("p-base-target-profit");
         RotationConfig.baseMode.minBets = getVal("p-base-min-bets");
         RotationConfig.baseMode.stopLoss = getVal("p-base-stop-loss");
         RotationConfig.baseMode.recoveryEnabled = getVal("p-base-recovery-enabled") === 1;
         
-        // Wager Mode Settings
         RotationConfig.wagerMode.maxLossStreak = getVal("p-wager-max-loss");
         RotationConfig.wagerMode.minProfit = getVal("p-wager-min-profit");
         RotationConfig.wagerMode.maxTimeMinutes = getVal("p-wager-max-time");
         
-        // Auto Rotation
         RotationConfig.autoRotation.enabled = getVal("p-auto-rotate-enabled") === 1;
         RotationConfig.autoRotation.cooldownSeconds = getVal("p-rotate-cooldown");
         
@@ -618,21 +609,17 @@ ${DallembertRecovery.isActive ? `
     function shouldSwitchToWager() {
         if (!RotationConfig.autoRotation.enabled || bot.mode !== "BASE") return false;
         
-        // Check cooldown
         if (RotationConfig.stats.lastRotationTime && 
             (Date.now() - RotationConfig.stats.lastRotationTime) < (RotationConfig.autoRotation.cooldownSeconds * 1000)) {
             return false;
         }
         
-        // Check minimum bets
         if (bot.session.modeBetsCount < RotationConfig.baseMode.minBets) return false;
         
-        // Check profit target
         if (bot.stats.baseModeProfit >= RotationConfig.baseMode.targetProfit) {
             return true;
         }
         
-        // Check stop loss
         if (bot.stats.baseModeProfit <= -RotationConfig.baseMode.stopLoss) {
             return true;
         }
@@ -643,23 +630,19 @@ ${DallembertRecovery.isActive ? `
     function shouldSwitchToBase() {
         if (!RotationConfig.autoRotation.enabled || bot.mode !== "WAGER") return false;
         
-        // Check cooldown
         if (RotationConfig.stats.lastRotationTime && 
             (Date.now() - RotationConfig.stats.lastRotationTime) < (RotationConfig.autoRotation.cooldownSeconds * 1000)) {
             return false;
         }
         
-        // Check loss streak
         if (bot.stats.currentLossStreak >= RotationConfig.wagerMode.maxLossStreak) {
             return true;
         }
         
-        // Check minimum profit
         if (bot.stats.wagerModeProfit < RotationConfig.wagerMode.minProfit) {
             return true;
         }
         
-        // Check time limit
         const modeDuration = Date.now() - bot.session.modeStartTime;
         if (modeDuration >= RotationConfig.wagerMode.maxTimeMinutes * 60 * 1000) {
             return true;
@@ -672,11 +655,9 @@ ${DallembertRecovery.isActive ? `
         const oldMode = bot.mode;
         const rotationTime = Date.now();
         
-        // Update rotation stats
         RotationConfig.stats.rotationCount++;
         RotationConfig.stats.lastRotationTime = rotationTime;
         
-        // Record rotation
         const rotationRecord = {
             timestamp: rotationTime,
             from: oldMode,
@@ -691,24 +672,20 @@ ${DallembertRecovery.isActive ? `
             RotationConfig.stats.rotationHistory.pop();
         }
         
-        // Perform rotation
         bot.mode = newMode;
         bot.lastRotationTime = rotationTime;
         bot.session.modeStartTime = rotationTime;
         bot.session.modeBetsCount = 0;
         
-        // Reset mode parameters
         if (newMode === "BASE") {
             rotateToBaseMode();
         } else if (newMode === "WAGER") {
             rotateToWagerMode();
         }
         
-        // Update UI
         updateStatus(`🔄 ${oldMode} → ${newMode}`, "#888");
         updateLogs(0, 0, "ROTATION", 0, `${oldMode} → ${newMode}`);
         
-        // Send report
         sendTelegramReport("mode_switch");
         
         console.log(`🔄 Mode rotated: ${oldMode} → ${newMode}`);
@@ -723,7 +700,6 @@ ${DallembertRecovery.isActive ? `
         bot.partialProfit = 0;
         bot.bcount = 0;
         
-        // Reset D'Alembert jika aktif
         if (DallembertRecovery.isActive) {
             DallembertRecovery.completeRecovery(false);
         }
@@ -775,7 +751,6 @@ ${DallembertRecovery.isActive ? `
         bot.session.modeStartTime = Date.now();
         bot.session.modeBetsCount = 0;
         
-        // Start in BASE mode
         rotateToBaseMode();
         
         console.log(`🚀 Starting session ${bot.session.currentSession}`);
@@ -864,7 +839,6 @@ ${DallembertRecovery.isActive ? `
                     "p-session-target": 10.0,
                     "p-session-stoploss": 5.0,
                     "p-max-sessions": 20,
-                    // Simple Rotation Settings
                     "p-base-target-profit": 0.00000500,
                     "p-base-min-bets": 10,
                     "p-base-stop-loss": 0.00001000,
@@ -874,7 +848,6 @@ ${DallembertRecovery.isActive ? `
                     "p-wager-max-time": 3,
                     "p-auto-rotate-enabled": 1,
                     "p-rotate-cooldown": 30,
-                    // D'Alembert Settings
                     "p-dallembert-enabled": 1,
                     "p-dallembert-loss-threshold": -0.00000500
                 };
@@ -899,7 +872,6 @@ ${DallembertRecovery.isActive ? `
     function updateStatsSync(d, win, pft) {
         const betTime = Date.now();
         
-        // Update basic stats
         bot.stats.bets++;
         bot.stats.sessionBets++;
         bot.session.modeBetsCount++;
@@ -910,7 +882,6 @@ ${DallembertRecovery.isActive ? `
         bot.stats.currentBal += pft;
         bot.partialProfit += pft;
         
-        // Update mode specific stats
         if (bot.mode === "BASE") {
             bot.stats.baseModeBets++;
             bot.stats.baseModeProfit += pft;
@@ -933,11 +904,9 @@ ${DallembertRecovery.isActive ? `
             }
         }
         
-        // Update drawdown
         let drop = bot.stats.currentBal < bot.stats.startBal ? bot.stats.startBal - bot.stats.currentBal : 0;
         if (drop > bot.stats.maxDD) bot.stats.maxDD = drop;
         
-        // Update peak
         if (bot.stats.currentBal > bot.stats.peakBalance) {
             bot.stats.peakBalance = bot.stats.currentBal;
         }
@@ -946,7 +915,6 @@ ${DallembertRecovery.isActive ? `
             bot.stats.maxProfit = bot.stats.profit;
         }
         
-        // Update time stats
         if (bot.stats.lastBetTime) {
             const timeBetweenBets = betTime - bot.stats.lastBetTime;
             bot.stats.avgBetTime = (bot.stats.avgBetTime * (bot.stats.bets - 1) + timeBetweenBets) / bot.stats.bets;
@@ -954,10 +922,7 @@ ${DallembertRecovery.isActive ? `
         bot.stats.lastBetTime = betTime;
         bot.stats.totalRuntime = betTime - bot.startTime;
         
-        // Update streak stats
         updateStreakStats(win, pft);
-        
-        // Update advanced stats
         updateAdvancedStats();
     }
 
@@ -988,23 +953,10 @@ ${DallembertRecovery.isActive ? `
     }
 
     function updateAdvancedStats() {
-        // Calculate win rate
         bot.stats.winRate = bot.stats.bets > 0 ? (bot.stats.wins / bot.stats.bets * 100) : 0;
-        
-        // Calculate profit per bet
         bot.stats.profitPerBet = bot.stats.bets > 0 ? (bot.stats.profit / bot.stats.bets) : 0;
-        
-        // Calculate ROI
         bot.stats.roi = bot.stats.wagered > 0 ? (bot.stats.profit / bot.stats.wagered * 100) : 0;
         
-        // Calculate Sharpe Ratio (simplified)
-        const avgReturn = bot.stats.profitPerBet;
-        const returns = []; // In real implementation, track returns array
-        const variance = returns.length > 1 ? 
-            returns.reduce((sum, ret) => sum + Math.pow(ret - avgReturn, 2), 0) / (returns.length - 1) : 0;
-        bot.stats.sharpeRatio = variance > 0 ? (avgReturn / Math.sqrt(variance)) : 0;
-        
-        // Calculate wager efficiency
         const avgWagerBet = bot.stats.wagerModeBets > 0 ? 
             (bot.stats.wagered / bot.stats.bets) : 0;
         bot.stats.wagerEfficiency = avgWagerBet > 0 ? 
@@ -1020,7 +972,6 @@ ${DallembertRecovery.isActive ? `
             bot.nextBet = getVal("p-basebet");
             bot.currentMulti = getVal("p-multi-start");
             
-            // Check if should switch to wager
             if (shouldSwitchToWager()) {
                 rotateMode("WAGER");
             }
@@ -1028,7 +979,6 @@ ${DallembertRecovery.isActive ? `
             bot.ls++;
             bot.lc++;
             
-            // Check if should start D'Alembert recovery
             if (getVal("p-dallembert-enabled") === 1 && bot.mode === "WAGER" && 
                 !DallembertRecovery.isActive && bot.wgr.profitc <= getVal("p-dallembert-loss-threshold")) {
                 DallembertRecovery.startRecovery(bot.wgr.profitc);
@@ -1042,7 +992,6 @@ ${DallembertRecovery.isActive ? `
             }
             bot.nextBet = (Math.abs(bot.partialProfit) / ((99/bot.currentChance) - 1)) * bot.currentMulti;
             
-            // Check if should switch to wager due to stop loss
             if (shouldSwitchToWager()) {
                 rotateMode("WAGER");
             }
@@ -1053,14 +1002,11 @@ ${DallembertRecovery.isActive ? `
         if (win) {
             bot.wgr.ctwin++;
             
-            // Handle D'Alembert recovery
             if (DallembertRecovery.isActive) {
                 if (DallembertRecovery.handleWin()) {
-                    // Recovery completed
                     bot.currentChance = getVal("p-wgr-chance");
                     bot.nextBet = bot.stats.currentBal / getVal("p-wgr-div");
                 } else {
-                    // Continue recovery
                     bot.currentChance = DallembertRecovery.calculateNextChance();
                     bot.nextBet = DallembertRecovery.calculateNextBet(bot.stats.currentBal / getVal("p-wgr-div"));
                 }
@@ -1080,7 +1026,6 @@ ${DallembertRecovery.isActive ? `
                 bot.wgr.balhigh = bot.stats.currentBal;
             }
             
-            // Check if should switch back to base
             if (shouldSwitchToBase()) {
                 rotateMode("BASE");
             }
@@ -1088,19 +1033,15 @@ ${DallembertRecovery.isActive ? `
             bot.wgr.profitc += (bot.stats.currentBal - bot.wgr.balhigh);
             bot.wgr.betload = bot.wgr.balhigh - bot.stats.currentBal;
             
-            // Handle D'Alembert recovery
             if (DallembertRecovery.isActive) {
                 if (DallembertRecovery.handleLoss()) {
-                    // Recovery failed, reset to normal
                     bot.currentChance = getVal("p-wgr-chance");
                     bot.nextBet = bot.stats.currentBal / getVal("p-wgr-div");
                 } else {
-                    // Continue recovery
                     bot.currentChance = DallembertRecovery.calculateNextChance();
                     bot.nextBet = DallembertRecovery.calculateNextBet(bot.stats.currentBal / getVal("p-wgr-div"));
                 }
             } else {
-                // Start D'Alembert if loss threshold reached
                 if (getVal("p-dallembert-enabled") === 1 && 
                     bot.wgr.profitc <= getVal("p-dallembert-loss-threshold")) {
                     DallembertRecovery.startRecovery(bot.wgr.profitc);
@@ -1115,7 +1056,6 @@ ${DallembertRecovery.isActive ? `
                 }
             }
             
-            // Check if should switch back to base
             if (shouldSwitchToBase()) {
                 rotateMode("BASE");
             }
@@ -1262,7 +1202,9 @@ ${DallembertRecovery.isActive ? `
     // ==================== COMPREHENSIVE STATISTICS UI ====================
     function updateStatisticsUI() {
         try {
-            // Calculate all statistics
+            const statsPanel = document.getElementById("stats-panel");
+            if (!statsPanel) return;
+            
             const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100) : 0;
             const roi = bot.stats.wagered > 0 ? (bot.stats.profit / bot.stats.wagered * 100) : 0;
             const profitPerBet = bot.stats.bets > 0 ? (bot.stats.profit / bot.stats.bets) : 0;
@@ -1270,140 +1212,135 @@ ${DallembertRecovery.isActive ? `
             const efficiency = bot.stats.wagerModeBets > 0 ? 
                 (bot.stats.wagerModeProfit / (bot.stats.wagerModeBets * avgBet) * 100) : 0;
             
-            // Update statistics panel
-            const statsPanel = document.getElementById("stats-panel");
-            if (statsPanel) {
-                statsPanel.innerHTML = `
-                    <div class="stats-section">
-                        <div class="stats-title">📊 BASIC STATS</div>
-                        <div class="stats-grid">
-                            <div class="stat-card">
-                                <div class="stat-label">Total Profit</div>
-                                <div class="stat-value ${bot.stats.profit >= 0 ? 'text-success' : 'text-danger'}">
-                                    ${bot.stats.profit.toFixed(8)}
-                                </div>
+            statsPanel.innerHTML = `
+                <div class="stats-section">
+                    <div class="stats-title">📊 BASIC STATS</div>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-label">Total Profit</div>
+                            <div class="stat-value ${bot.stats.profit >= 0 ? 'text-success' : 'text-danger'}">
+                                ${bot.stats.profit.toFixed(8)}
                             </div>
-                            <div class="stat-card">
-                                <div class="stat-label">Win Rate</div>
-                                <div class="stat-value">${winRate.toFixed(1)}%</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Win Rate</div>
+                            <div class="stat-value">${winRate.toFixed(1)}%</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Total Bets</div>
+                            <div class="stat-value">${bot.stats.bets}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">W/L Ratio</div>
+                            <div class="stat-value">${bot.stats.wins}/${bot.stats.loss}</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="stats-section">
+                    <div class="stats-title">💰 FINANCIAL</div>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-label">ROI</div>
+                            <div class="stat-value ${roi >= 0 ? 'text-success' : 'text-danger'}">
+                                ${roi.toFixed(2)}%
                             </div>
-                            <div class="stat-card">
-                                <div class="stat-label">Total Bets</div>
-                                <div class="stat-value">${bot.stats.bets}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Profit/Bet</div>
+                            <div class="stat-value">${profitPerBet.toFixed(8)}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Total Wagered</div>
+                            <div class="stat-value">${(bot.stats.wagered / bot.stats.startBal).toFixed(1)}x</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Max DD</div>
+                            <div class="stat-value text-danger">${(bot.stats.maxDD / bot.stats.startBal * 100).toFixed(1)}%</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="stats-section">
+                    <div class="stats-title">🎮 MODE PERFORMANCE</div>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-label">Base Mode Profit</div>
+                            <div class="stat-value ${bot.stats.baseModeProfit >= 0 ? 'text-success' : 'text-danger'}">
+                                ${bot.stats.baseModeProfit.toFixed(8)}
                             </div>
-                            <div class="stat-card">
-                                <div class="stat-label">W/L Ratio</div>
-                                <div class="stat-value">${bot.stats.wins}/${bot.stats.loss}</div>
+                            <div class="stat-sub">${bot.stats.baseModeBets} bets</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Wager Mode Profit</div>
+                            <div class="stat-value ${bot.stats.wagerModeProfit >= 0 ? 'text-success' : 'text-danger'}">
+                                ${bot.stats.wagerModeProfit.toFixed(8)}
+                            </div>
+                            <div class="stat-sub">${bot.stats.wagerModeBets} bets</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Base Win Rate</div>
+                            <div class="stat-value">
+                                ${bot.stats.baseModeBets > 0 ? ((bot.stats.baseModeWins / bot.stats.baseModeBets) * 100).toFixed(1) : 0}%
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Wager Efficiency</div>
+                            <div class="stat-value">${efficiency.toFixed(1)}%</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="stats-section">
+                    <div class="stats-title">🏆 RECORDS</div>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-label">Biggest Win</div>
+                            <div class="stat-value text-success">${bot.stats.biggestWin.toFixed(8)}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Biggest Loss</div>
+                            <div class="stat-value text-danger">${Math.abs(bot.stats.biggestLoss).toFixed(8)}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Longest Win Streak</div>
+                            <div class="stat-value text-success">${bot.stats.longestWinStreak}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Longest Loss Streak</div>
+                            <div class="stat-value text-danger">${bot.stats.longestLossStreak}</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="stats-section">
+                    <div class="stats-title">📈 SESSION INFO</div>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-label">Current Session</div>
+                            <div class="stat-value">${bot.session.currentSession}/${bot.session.maxSessions}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Session Profit</div>
+                            <div class="stat-value ${bot.stats.sessionProfit >= 0 ? 'text-success' : 'text-danger'}">
+                                ${bot.stats.sessionProfit.toFixed(8)}
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Profitable Sessions</div>
+                            <div class="stat-value">${bot.stats.profitableSessions}/${bot.stats.completedSessions}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Success Rate</div>
+                            <div class="stat-value">
+                                ${bot.stats.completedSessions > 0 ? 
+                                    ((bot.stats.profitableSessions / bot.stats.completedSessions) * 100).toFixed(1) : 0}%
                             </div>
                         </div>
                     </div>
-                    
-                    <div class="stats-section">
-                        <div class="stats-title">💰 FINANCIAL</div>
-                        <div class="stats-grid">
-                            <div class="stat-card">
-                                <div class="stat-label">ROI</div>
-                                <div class="stat-value ${roi >= 0 ? 'text-success' : 'text-danger'}">
-                                    ${roi.toFixed(2)}%
-                                </div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-label">Profit/Bet</div>
-                                <div class="stat-value">${profitPerBet.toFixed(8)}</div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-label">Total Wagered</div>
-                                <div class="stat-value">${(bot.stats.wagered / bot.stats.startBal).toFixed(1)}x</div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-label">Max DD</div>
-                                <div class="stat-value text-danger">${(bot.stats.maxDD / bot.stats.startBal * 100).toFixed(1)}%</div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="stats-section">
-                        <div class="stats-title">🎮 MODE PERFORMANCE</div>
-                        <div class="stats-grid">
-                            <div class="stat-card">
-                                <div class="stat-label">Base Mode Profit</div>
-                                <div class="stat-value ${bot.stats.baseModeProfit >= 0 ? 'text-success' : 'text-danger'}">
-                                    ${bot.stats.baseModeProfit.toFixed(8)}
-                                </div>
-                                <div class="stat-sub">${bot.stats.baseModeBets} bets</div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-label">Wager Mode Profit</div>
-                                <div class="stat-value ${bot.stats.wagerModeProfit >= 0 ? 'text-success' : 'text-danger'}">
-                                    ${bot.stats.wagerModeProfit.toFixed(8)}
-                                </div>
-                                <div class="stat-sub">${bot.stats.wagerModeBets} bets</div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-label">Base Win Rate</div>
-                                <div class="stat-value">
-                                    ${bot.stats.baseModeBets > 0 ? ((bot.stats.baseModeWins / bot.stats.baseModeBets) * 100).toFixed(1) : 0}%
-                                </div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-label">Wager Efficiency</div>
-                                <div class="stat-value">${efficiency.toFixed(1)}%</div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="stats-section">
-                        <div class="stats-title">🏆 RECORDS</div>
-                        <div class="stats-grid">
-                            <div class="stat-card">
-                                <div class="stat-label">Biggest Win</div>
-                                <div class="stat-value text-success">${bot.stats.biggestWin.toFixed(8)}</div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-label">Biggest Loss</div>
-                                <div class="stat-value text-danger">${Math.abs(bot.stats.biggestLoss).toFixed(8)}</div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-label">Longest Win Streak</div>
-                                <div class="stat-value text-success">${bot.stats.longestWinStreak}</div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-label">Longest Loss Streak</div>
-                                <div class="stat-value text-danger">${bot.stats.longestLossStreak}</div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="stats-section">
-                        <div class="stats-title">📈 SESSION INFO</div>
-                        <div class="stats-grid">
-                            <div class="stat-card">
-                                <div class="stat-label">Current Session</div>
-                                <div class="stat-value">${bot.session.currentSession}/${bot.session.maxSessions}</div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-label">Session Profit</div>
-                                <div class="stat-value ${bot.stats.sessionProfit >= 0 ? 'text-success' : 'text-danger'}">
-                                    ${bot.stats.sessionProfit.toFixed(8)}
-                                </div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-label">Profitable Sessions</div>
-                                <div class="stat-value">${bot.stats.profitableSessions}/${bot.stats.completedSessions}</div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-label">Success Rate</div>
-                                <div class="stat-value">
-                                    ${bot.stats.completedSessions > 0 ? 
-                                        ((bot.stats.profitableSessions / bot.stats.completedSessions) * 100).toFixed(1) : 0}%
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                `;
-            }
+                </div>
+            `;
             
-            // Update rotation stats
             updateRotationStatsUI();
             
         } catch (e) {
@@ -1516,7 +1453,6 @@ ${DallembertRecovery.isActive ? `
                 max-height: 95vh;
             }
             
-            /* Responsive adjustments */
             @media (max-width: 500px) {
                 #orion-wrap {
                     width: 95vw;
@@ -1541,6 +1477,7 @@ ${DallembertRecovery.isActive ? `
                 padding: 15px;
                 border-bottom: 1px solid #333;
                 flex-shrink: 0;
+                text-align: center;
             }
             
             .header-title {
@@ -1551,7 +1488,7 @@ ${DallembertRecovery.isActive ? `
                 align-items: center;
                 justify-content: center;
                 gap: 10px;
-                margin-bottom: 8px;
+                margin-bottom: 10px;
                 text-shadow: 0 2px 4px rgba(0,0,0,0.3);
                 letter-spacing: 0.5px;
             }
@@ -1559,6 +1496,34 @@ ${DallembertRecovery.isActive ? `
             .header-title::before {
                 content: "⚡";
                 font-size: 24px;
+            }
+            
+            .header-info {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                gap: 6px;
+                font-size: 11px;
+                color: #888;
+                margin-top: 5px;
+            }
+            
+            .user-info {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                background: #2a2a2a;
+                padding: 4px 12px;
+                border-radius: 12px;
+                border: 1px solid #333;
+            }
+            
+            .expiry-info {
+                background: #333;
+                padding: 4px 12px;
+                border-radius: 12px;
+                font-size: 10px;
+                border: 1px solid #444;
             }
             
             .license-badge {
@@ -1581,6 +1546,33 @@ ${DallembertRecovery.isActive ? `
                 font-size: 12px;
                 font-weight: 600;
                 color: #ccc;
+                margin-top: 10px;
+            }
+            
+            .currency-selector {
+                background: #222;
+                border-radius: 10px;
+                padding: 12px;
+                margin: 12px;
+                border: 1px solid #333;
+            }
+            
+            .currency-select {
+                width: 100%;
+                padding: 10px;
+                background: #2a2a2a;
+                border: 1px solid #333;
+                border-radius: 8px;
+                color: #e0e0e0;
+                font-size: 12px;
+                font-family: 'Inter', sans-serif;
+                transition: all 0.3s;
+            }
+            
+            .currency-select:focus {
+                outline: none;
+                border-color: #666;
+                background: #2c2c2c;
             }
             
             .tab-nav {
@@ -1630,7 +1622,6 @@ ${DallembertRecovery.isActive ? `
                 display: block;
             }
             
-            /* Compact Dashboard */
             .dashboard-grid {
                 display: grid;
                 grid-template-columns: repeat(2, 1fr);
@@ -1667,7 +1658,6 @@ ${DallembertRecovery.isActive ? `
                 margin-top: 4px;
             }
             
-            /* Progress Bars */
             .progress-container {
                 margin: 10px 0;
             }
@@ -1694,7 +1684,6 @@ ${DallembertRecovery.isActive ? `
                 transition: width 0.3s ease;
             }
             
-            /* Statistics Section */
             .stats-section {
                 background: #222;
                 border-radius: 10px;
@@ -1745,7 +1734,6 @@ ${DallembertRecovery.isActive ? `
                 margin-top: 2px;
             }
             
-            /* Rotation History */
             .rotation-history {
                 max-height: 120px;
                 overflow-y: auto;
@@ -1804,7 +1792,6 @@ ${DallembertRecovery.isActive ? `
                 padding: 20px;
             }
             
-            /* Controls */
             .control-panel {
                 display: grid;
                 gap: 8px;
@@ -1861,7 +1848,6 @@ ${DallembertRecovery.isActive ? `
                 border: 1px solid #6a5a3a;
             }
             
-            /* Settings */
             .settings-group {
                 background: #222;
                 border-radius: 10px;
@@ -1918,7 +1904,6 @@ ${DallembertRecovery.isActive ? `
                 background: #2c2c2c;
             }
             
-            /* Logs */
             .logs-container {
                 background: #222;
                 border-radius: 10px;
@@ -1951,7 +1936,6 @@ ${DallembertRecovery.isActive ? `
                 text-align: center;
             }
             
-            /* Footer */
             .footer {
                 background: #222;
                 padding: 12px;
@@ -1972,7 +1956,6 @@ ${DallembertRecovery.isActive ? `
                 font-weight: 600;
             }
             
-            /* Utility Classes */
             .text-success { color: #4CAF50 !important; }
             .text-warning { color: #ffa500 !important; }
             .text-danger { color: #ff6b6b !important; }
@@ -1998,7 +1981,6 @@ ${DallembertRecovery.isActive ? `
                 color: #888;
             }
             
-            /* Resize handle */
             .resize-handle {
                 position: absolute;
                 bottom: 0;
@@ -2021,7 +2003,25 @@ ${DallembertRecovery.isActive ? `
                     ORION PRO
                     <span class="license-badge">${bot.licenseTier}</span>
                 </div>
+                
+                <!-- USER INFO BAR - CENTERED -->
+                <div class="header-info">
+                    <div class="user-info">
+                        👤 ${bot.stakeUser}
+                    </div>
+                    <div class="expiry-info">
+                        📅 Expires: ${userExpiry}
+                    </div>
+                </div>
+                
                 <div class="status-badge" id="st-status-text">🟢 READY</div>
+            </div>
+            
+            <!-- CURRENCY SELECTOR - DI ATAS SEMUA TAB -->
+            <div class="currency-selector">
+                <select id="p-currency" class="currency-select">
+                    <option value="loading">Loading currencies...</option>
+                </select>
             </div>
             
             <div class="tab-nav">
@@ -2141,7 +2141,7 @@ ${DallembertRecovery.isActive ? `
                     <div class="settings-group">
                         <div class="settings-title">REPORT & SUPPORT</div>
                         <div class="control-row">
-                            <button onclick="sendTelegramReport('manual')" class="btn btn-secondary">📊 SEND REPORT</button>
+                            <button onclick="sendTelegramReport('report')" class="btn btn-secondary">📊 SEND REPORT</button>
                             <button onclick="window.open('https://t.me/${CONFIG.supportContact.replace('@', '')}', '_blank')" 
                                 class="btn btn-secondary">💬 SUPPORT</button>
                         </div>
@@ -2156,7 +2156,7 @@ ${DallembertRecovery.isActive ? `
                         🏗️ BASE MODE SETTINGS
                         <span class="toggle-icon">▼</span>
                     </div>
-                    <div class="settings-grid">
+                    <div class="settings-grid" style="display: none;">
                         <div class="input-group"><label class="input-label">Base Bet</label><input id="p-basebet" value="0.00000100" type="number" step="0.00000001" min="0"></div>
                         <div class="input-group"><label class="input-label">Base Chance Min</label><input id="p-bch-min" value="80.0" type="number" step="0.1" min="1" max="99"></div>
                         <div class="input-group"><label class="input-label">Base Chance Max</label><input id="p-bch-max" value="95.0" type="number" step="0.1" min="1" max="99"></div>
@@ -2170,7 +2170,7 @@ ${DallembertRecovery.isActive ? `
                         ⚡ WAGER MODE SETTINGS
                         <span class="toggle-icon">▼</span>
                     </div>
-                    <div class="settings-grid">
+                    <div class="settings-grid" style="display: none;">
                         <div class="input-group"><label class="input-label">Wager Chance</label><input id="p-wgr-chance" value="99.0" type="number" step="0.1" min="90" max="99.99"></div>
                         <div class="input-group"><label class="input-label">Wager Divider</label><input id="p-wgr-div" value="100" type="number" step="1" min="10"></div>
                         <div class="input-group"><label class="input-label">Recovery Chance Min</label><input id="p-chrec-min" value="50.0" type="number" step="0.1" min="1" max="99"></div>
@@ -2183,7 +2183,7 @@ ${DallembertRecovery.isActive ? `
                         🔄 BASE MODE ROTATION
                         <span class="toggle-icon">▼</span>
                     </div>
-                    <div class="settings-grid">
+                    <div class="settings-grid" style="display: none;">
                         <div class="input-group"><label class="input-label">Target Profit</label><input id="p-base-target-profit" value="0.00000500" type="number" step="0.00000001" min="0"></div>
                         <div class="input-group"><label class="input-label">Min Bets</label><input id="p-base-min-bets" value="10" type="number" step="1" min="1"></div>
                         <div class="input-group"><label class="input-label">Stop Loss</label><input id="p-base-stop-loss" value="0.00001000" type="number" step="0.00000001" min="0"></div>
@@ -2201,7 +2201,7 @@ ${DallembertRecovery.isActive ? `
                         🔄 WAGER MODE ROTATION
                         <span class="toggle-icon">▼</span>
                     </div>
-                    <div class="settings-grid">
+                    <div class="settings-grid" style="display: none;">
                         <div class="input-group"><label class="input-label">Max Loss Streak</label><input id="p-wager-max-loss" value="5" type="number" step="1" min="1"></div>
                         <div class="input-group"><label class="input-label">Min Profit</label><input id="p-wager-min-profit" value="0.00000200" type="number" step="0.00000001" min="0"></div>
                         <div class="input-group"><label class="input-label">Max Time (min)</label><input id="p-wager-max-time" value="3" type="number" step="1" min="1"></div>
@@ -2213,7 +2213,7 @@ ${DallembertRecovery.isActive ? `
                         🔄 AUTO ROTATION
                         <span class="toggle-icon">▼</span>
                     </div>
-                    <div class="settings-grid">
+                    <div class="settings-grid" style="display: none;">
                         <div class="input-group"><label class="input-label">Auto Rotation</label>
                             <select id="p-auto-rotate-enabled">
                                 <option value="1">Enabled</option>
@@ -2229,7 +2229,7 @@ ${DallembertRecovery.isActive ? `
                         🔄 D'ALEMBERT SETTINGS
                         <span class="toggle-icon">▼</span>
                     </div>
-                    <div class="settings-grid">
+                    <div class="settings-grid" style="display: none;">
                         <div class="input-group"><label class="input-label">Enabled</label>
                             <select id="p-dallembert-enabled">
                                 <option value="1">Yes</option>
@@ -2245,7 +2245,7 @@ ${DallembertRecovery.isActive ? `
                         🎯 SESSION SETTINGS
                         <span class="toggle-icon">▼</span>
                     </div>
-                    <div class="settings-grid">
+                    <div class="settings-grid" style="display: none;">
                         <div class="input-group"><label class="input-label">Max Sessions</label><input id="p-max-sessions" value="20" type="number" step="1" min="1"></div>
                         <div class="input-group"><label class="input-label">Session Target %</label><input id="p-session-target" value="10.0" type="number" step="0.1" min="0.1"></div>
                         <div class="input-group"><label class="input-label">Session Stop Loss %</label><input id="p-session-stoploss" value="5.0" type="number" step="0.1" min="0.1"></div>
@@ -2257,7 +2257,7 @@ ${DallembertRecovery.isActive ? `
                         🛡️ SAFETY SETTINGS
                         <span class="toggle-icon">▼</span>
                     </div>
-                    <div class="settings-grid">
+                    <div class="settings-grid" style="display: none;">
                         <div class="input-group"><label class="input-label">Minimum Bet</label><input id="p-minbet" value="0.00000001" type="number" step="0.00000001" min="0"></div>
                         <div class="input-group"><label class="input-label">Global Stop Loss %</label><input id="p-stoploss-pct" value="5.0" type="number" step="0.1" min="0.1"></div>
                     </div>
@@ -2353,11 +2353,11 @@ ${DallembertRecovery.isActive ? `
             const content = element.nextElementSibling;
             const icon = element.querySelector('.toggle-icon');
             
-            if (content.classList.contains('active')) {
-                content.classList.remove('active');
+            if (content.style.display === 'grid') {
+                content.style.display = 'none';
                 icon.textContent = '▼';
             } else {
-                content.classList.add('active');
+                content.style.display = 'grid';
                 icon.textContent = '▲';
             }
         };
@@ -2527,7 +2527,13 @@ ${DallembertRecovery.isActive ? `
             const dallembertProgress = DallembertRecovery.getProgress();
             document.getElementById("dallembert-progress").style.width = `${dallembertProgress}%`;
             
-            // Update statistics every 3 seconds
+            // Update user info
+            const userInfo = document.querySelector('.user-info');
+            if (userInfo) {
+                userInfo.textContent = `👤 ${bot.stakeUser}`;
+            }
+            
+            // Update statistics and rotation stats every 3 seconds
             if (Date.now() % 3000 < 100) {
                 updateStatisticsUI();
                 updateRotationStatsUI();
