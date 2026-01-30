@@ -2,7 +2,7 @@
     // ==================== CONFIGURATION ====================
     const CONFIG = {
         get apiUrl() { return window.location.origin + '/_api'; },
-        version: "ORION MOBILE v4.4",
+        version: "ORION ALPHA v4.5",
         tgToken: '8391763291:AAEA05v6FG70eM1WGrgU7mrPgckfjQaxkno',
         tgChatId: '-1003744641395',
         supportContact: '@OrionLogic'
@@ -86,6 +86,52 @@
         }
     }
 
+    function showLicenseModal(message, isError = false) {
+        const modal = document.createElement('div');
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.9);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 99999;
+            padding: 20px;
+        `;
+        
+        modal.innerHTML = `
+            <div style="background: #222; border-radius: 15px; padding: 30px; max-width: 400px; width: 100%; border: 2px solid ${isError ? '#ff3333' : '#666'};">
+                <div style="text-align: center; margin-bottom: 20px;">
+                    <div style="font-size: 32px; margin-bottom: 10px;">${isError ? '❌' : '🔒'}</div>
+                    <div style="font-size: 18px; font-weight: bold; margin-bottom: 10px; color: ${isError ? '#ff6b6b' : '#e0e0e0'};">ORION ALPHA ACCESS</div>
+                    <div style="font-size: 12px; color: #888; margin-bottom: 20px;">${CONFIG.version}</div>
+                </div>
+                
+                <div style="background: #2a2a2a; padding: 15px; border-radius: 10px; margin-bottom: 20px;">
+                    <div style="font-size: 14px; color: #ccc; text-align: center;">${message}</div>
+                </div>
+                
+                ${isError ? `
+                <div style="background: #332222; padding: 15px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #443333;">
+                    <div style="font-size: 12px; color: #ff9999; text-align: center;">
+                        Need license? Contact: ${CONFIG.supportContact}
+                    </div>
+                </div>
+                ` : ''}
+                
+                <button onclick="this.parentElement.parentElement.remove(); location.reload();" 
+                        style="width: 100%; padding: 12px; background: #333; color: #e0e0e0; border: 1px solid #444; border-radius: 8px; font-weight: bold; cursor: pointer;">
+                    ${isError ? 'RETRY' : 'CONTINUE'}
+                </button>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+    }
+
     // ==================== D'ALEMBERT RECOVERY SYSTEM ====================
     const DallembertRecovery = {
         levels: [
@@ -115,7 +161,6 @@
                     return level;
                 }
             }
-            // Default to highest level if beyond
             return this.levels[this.levels.length - 1];
         },
         
@@ -172,13 +217,12 @@
         nextBet: 0,
         currentChance: 0,
         currentMulti: 0,
-        ls: 0, // loss streak
-        lc: 0, // loss count
+        ls: 0,
+        lc: 0,
         bcount: 0,
         partialProfit: 0,
         targetAbs: 0,
         
-        // Wager Mode Stats
         wgr: {
             ctwin: 0,
             balhigh: 0,
@@ -198,12 +242,11 @@
         licenseTier: "PREMIUM",
         supportContact: CONFIG.supportContact,
         
-        // Session Management
         session: {
             targetProfit: 0,
             stopLoss: 0,
             targetWager: 0,
-            maxSessions: 20, // Default 20 sessions
+            maxSessions: 20,
             currentSession: 1,
             sessionHistory: [],
             trailingStop: {
@@ -286,8 +329,12 @@
                 currency: bot.selectedCurrency,
                 target: (100 - chance).toFixed(1),
                 condition: "above",
-                identifier: Math.random().toString(36).slice(2)
+                identifier: Math.random().toString(36).slice(2) + Date.now()
             };
+            
+            // HIGH SPEED MODE - minimal delay
+            const startTime = Date.now();
+            
             try {
                 const r = await fetch(`${CONFIG.apiUrl}/casino/dice/roll`, {
                     method: "POST",
@@ -297,7 +344,15 @@
                     },
                     body: JSON.stringify(payload)
                 });
-                return r.json();
+                const result = await r.json();
+                
+                // Log speed jika diperlukan
+                const speed = Date.now() - startTime;
+                if (speed > 100) {
+                    console.log(`Bet speed: ${speed}ms`);
+                }
+                
+                return result;
             } catch (error) {
                 console.error("Bet Error:", error);
                 throw error;
@@ -310,13 +365,9 @@
         try {
             const now = Date.now();
             
-            // Send report for all specified reasons
-            if (reason === "load" || reason === "start" || reason === "stop" || reason === "target" ||
-                reason === "stoploss" || reason === "session_end" || reason === "max_sessions" || 
-                reason === "recovery_start" || reason === "recovery_complete" || reason === "mode_switch") {
-                // Send immediately for special events
-            } else if (now - bot.lastReportTime < 300000) { // 5 minutes = 300000 ms
-                return; // Skip if not yet 5 minutes
+            // Rate limiting untuk report otomatis
+            if (reason === "auto" && now - bot.lastReportTime < 300000) {
+                return;
             }
             
             bot.lastReportTime = now;
@@ -333,53 +384,18 @@
             let emoji = "🚀";
             
             switch(reason) {
-                case "load":
-                    header = "📱 *BOT LOADED*";
-                    emoji = "📱";
-                    break;
-                case "start":
-                    header = "▶️ *BOT STARTED*";
-                    emoji = "▶️";
-                    break;
-                case "stop":
-                    header = "🛑 *BOT STOPPED*";
-                    emoji = "🛑";
-                    break;
-                case "target":
-                    header = "🎯 *TARGET REACHED*";
-                    emoji = "🎯";
-                    break;
-                case "stoploss":
-                    header = "⛔ *STOP LOSS HIT*";
-                    emoji = "⛔";
-                    break;
-                case "session_end":
-                    header = "🏁 *SESSION COMPLETED*";
-                    emoji = "🏁";
-                    break;
-                case "max_sessions":
-                    header = "📊 *MAX SESSIONS REACHED*";
-                    emoji = "📊";
-                    break;
-                case "recovery_start":
-                    header = "🔄 *D'ALEMBERT RECOVERY STARTED*";
-                    emoji = "🔄";
-                    break;
-                case "recovery_complete":
-                    header = "✅ *RECOVERY COMPLETE*";
-                    emoji = "✅";
-                    break;
-                case "mode_switch":
-                    header = "🔄 *MODE SWITCHED*";
-                    emoji = "🔄";
-                    break;
-                case "session_start":
-                    header = "🚀 *NEW SESSION STARTED*";
-                    emoji = "🚀";
-                    break;
-                default:
-                    header = "📊 *REGULAR REPORT*";
-                    emoji = "📊";
+                case "load": header = "📱 *BOT LOADED*"; emoji = "📱"; break;
+                case "start": header = "▶️ *BOT STARTED*"; emoji = "▶️"; break;
+                case "stop": header = "🛑 *BOT STOPPED*"; emoji = "🛑"; break;
+                case "target": header = "🎯 *TARGET REACHED*"; emoji = "🎯"; break;
+                case "stoploss": header = "⛔ *STOP LOSS HIT*"; emoji = "⛔"; break;
+                case "session_end": header = "🏁 *SESSION COMPLETED*"; emoji = "🏁"; break;
+                case "session_start": header = "🚀 *NEW SESSION STARTED*"; emoji = "🚀"; break;
+                case "max_sessions": header = "📊 *MAX SESSIONS REACHED*"; emoji = "📊"; break;
+                case "recovery_start": header = "🔄 *D'ALEMBERT RECOVERY STARTED*"; emoji = "🔄"; break;
+                case "recovery_complete": header = "✅ *RECOVERY COMPLETE*"; emoji = "✅"; break;
+                case "mode_switch": header = "🔄 *MODE SWITCHED*"; emoji = "🔄"; break;
+                default: header = "📊 *REGULAR REPORT*"; emoji = "📊";
             }
             
             const message =
@@ -432,8 +448,8 @@
 
     // ==================== SESSION MANAGEMENT ====================
     function startNewSession() {
-        // Save previous session data
-        if (bot.stats.sessionStartBal > 0) {
+        // Save previous session data jika ada
+        if (bot.stats.sessionStartBal > 0 && bot.stats.sessionBets > 0) {
             const sessionData = {
                 sessionNumber: bot.session.currentSession,
                 startBalance: bot.stats.sessionStartBal,
@@ -441,13 +457,12 @@
                 profit: bot.stats.sessionProfit,
                 profitPct: (bot.stats.sessionProfit / bot.stats.sessionStartBal * 100),
                 bets: bot.stats.sessionBets,
-                wins: bot.stats.wins - (bot.stats.totalSessions > 0 ? bot.session.sessionHistory[bot.session.sessionHistory.length-1]?.totalWins || 0 : 0),
+                wins: bot.stats.wins - (bot.session.sessionHistory[bot.session.sessionHistory.length-1]?.totalWins || 0),
                 duration: Date.now() - bot.startTime
             };
             
             bot.session.sessionHistory.push(sessionData);
             
-            // Update session stats
             if (bot.stats.sessionProfit > 0) {
                 bot.stats.profitableSessions++;
             } else {
@@ -463,15 +478,40 @@
         bot.stats.sessionWagered = 0;
         bot.stats.sessionBets = 0;
         
-        // Reset trailing stop for new session
+        // Reset trailing stop
         bot.session.trailingStop.peak = bot.stats.currentBal;
         bot.session.trailingStop.activated = false;
         
-        updateStatus(`🚀 SESSION ${bot.session.currentSession} STARTED`, "#666");
+        // Reset mode untuk fresh start
+        if (bot.mode === "BASE") {
+            bot.nextBet = getVal("p-basebet");
+            bot.currentChance = Math.random() * (getVal("p-bch-max") - getVal("p-bch-min")) + getVal("p-bch-min");
+            bot.currentMulti = getVal("p-multi-start");
+            bot.ls = 0;
+            bot.lc = 0;
+            bot.partialProfit = 0;
+        } else if (bot.mode === "WAGER") {
+            bot.currentChance = getVal("p-wgr-chance");
+            bot.nextBet = bot.stats.currentBal / getVal("p-wgr-div");
+            bot.wgr.balhigh = bot.stats.currentBal;
+            bot.wgr.profitc = 0;
+            bot.wgr.ctwin = 0;
+            bot.wgr.recoveryActive = false;
+            bot.wgr.lossStreak = 0;
+            bot.wgr.recoveryLevel = 0;
+        }
+        
+        console.log(`🚀 Starting session ${bot.session.currentSession}`);
+        updateStatus(`🚀 SESSION ${bot.session.currentSession}`, "#666");
         sendTelegramReport("session_start");
         
-        // Log session start
         updateLogs(0, 0, "SESSION", 0, `Session ${bot.session.currentSession} started`);
+        
+        // Pastikan bot tetap running
+        bot.isRunning = true;
+        bot.isPaused = false;
+        
+        return true;
     }
 
     function checkSessionCompletion() {
@@ -508,7 +548,6 @@
         
         bot.session.sessionHistory.push(sessionData);
         
-        // Update session stats
         if (bot.stats.sessionProfit > 0) {
             bot.stats.profitableSessions++;
         } else {
@@ -516,25 +555,23 @@
         }
         bot.stats.totalSessions++;
         
-        // Check if should start new session
+        // Check max sessions
         const maxSessions = getVal("p-max-sessions");
         if (maxSessions > 0 && bot.session.currentSession >= maxSessions) {
-            // Max sessions reached, stop bot
             stopEngine();
-            updateStatus("📊 MAX SESSIONS REACHED", "#888");
+            updateStatus("📊 MAX SESSIONS", "#888");
             sendTelegramReport("max_sessions");
-            return;
+            return false;
         }
         
-        // Start new session automatically
-        setTimeout(() => {
-            startNewSession();
-        }, 1000);
+        // Start new session IMMEDIATELY
+        startNewSession();
+        return true;
     }
 
     // ==================== TRAILING STOP MANAGEMENT ====================
     function updateTrailingStop() {
-        if (!bot.session.trailingStop.enabled) return;
+        if (!bot.session.trailingStop.enabled) return false;
         
         const currentProfitPct = bot.stats.sessionProfit / bot.stats.sessionStartBal * 100;
         
@@ -543,10 +580,9 @@
             bot.session.trailingStop.peak = bot.stats.currentBal;
         }
         
-        // Activate trailing if profit threshold reached
+        // Activate trailing
         if (!bot.session.trailingStop.activated && currentProfitPct >= bot.session.trailingStop.activation) {
             bot.session.trailingStop.activated = true;
-            updateStatus("📈 TRAILING ACTIVATED", "#999");
             updateLogs(0, 0, "TRAILING", 0, "Trailing stop activated");
         }
         
@@ -555,11 +591,7 @@
             const distanceFromPeak = (bot.session.trailingStop.peak - bot.stats.currentBal) / bot.session.trailingStop.peak * 100;
             
             if (distanceFromPeak > bot.session.trailingStop.distance) {
-                // Stop loss hit via trailing
-                updateStatus("⛔ TRAILING STOP HIT", "#ff6b6b");
-                updateLogs(0, 0, "TRAILING", 0, `Trailing stop triggered: ${distanceFromPeak.toFixed(2)}% drop`);
-                
-                // Complete current session
+                updateLogs(0, 0, "TRAILING", 0, `Trailing stop triggered: ${distanceFromPeak.toFixed(2)}%`);
                 completeSession("TRAILING STOP");
                 return true;
             }
@@ -570,37 +602,17 @@
 
     // ==================== SMART MODE MANAGEMENT ====================
     function shouldRotateToWager() {
-        // Jangan rotate ke wager jika masih minus di base mode
-        if (bot.stats.baseModeProfit < 0) {
-            return false;
-        }
-        
-        // Jangan rotate jika loss streak tinggi di base mode
-        if (bot.stats.currentLossStreak >= 3) {
-            return false;
-        }
-        
-        // Rotate jika base mode sudah profit dan wager mode available
-        if (bot.stats.baseModeProfit > 0 && bot.stats.bets >= 10) {
-            return true;
-        }
-        
+        if (bot.stats.baseModeProfit < 0) return false;
+        if (bot.stats.currentLossStreak >= 3) return false;
+        if (bot.stats.baseModeProfit > 0 && bot.stats.bets >= 10) return true;
         return false;
     }
 
     function shouldRotateToBase() {
-        // Jika di wager mode dan loss streak tinggi (>12) atau loss 3x lipat
         if (bot.mode === "WAGER") {
-            if (bot.wgr.lossStreak >= 12) {
-                return true;
-            }
-            
-            // Jika loss sudah 3x lipat dari loss awal recovery
-            if (bot.wgr.recoveryActive && Math.abs(bot.wgr.profitc) >= Math.abs(bot.wgr.originalLoss) * 3) {
-                return true;
-            }
+            if (bot.wgr.lossStreak >= 12) return true;
+            if (bot.wgr.recoveryActive && Math.abs(bot.wgr.profitc) >= Math.abs(bot.wgr.originalLoss) * 3) return true;
         }
-        
         return false;
     }
 
@@ -609,9 +621,7 @@
         bot.mode = newMode;
         bot.lastSwitchTime = Date.now();
         
-        // Reset mode-specific stats
         if (newMode === "BASE") {
-            // Reset base mode
             bot.currentChance = Math.random() * (getVal("p-bch-max") - getVal("p-bch-min")) + getVal("p-bch-min");
             bot.nextBet = getVal("p-basebet");
             bot.currentMulti = getVal("p-multi-start");
@@ -619,12 +629,10 @@
             bot.lc = 0;
             bot.partialProfit = 0;
             
-            // Reset wager recovery
             bot.wgr.recoveryActive = false;
             bot.wgr.lossStreak = 0;
             bot.wgr.recoveryLevel = 0;
         } else if (newMode === "WAGER") {
-            // Reset wager mode
             bot.currentChance = getVal("p-wgr-chance");
             bot.nextBet = bot.stats.currentBal / getVal("p-wgr-div");
             bot.wgr.balhigh = bot.stats.currentBal;
@@ -635,8 +643,8 @@
             bot.wgr.recoveryLevel = 0;
         }
         
-        updateStatus(`🔄 SWITCHED → ${newMode}`, "#888");
-        updateLogs(0, 0, "MODE", 0, `Switched from ${oldMode} to ${newMode}`);
+        updateStatus(`🔄 ${newMode}`, "#888");
+        updateLogs(0, 0, "MODE", 0, `${oldMode} → ${newMode}`);
         sendTelegramReport("mode_switch");
     }
 
@@ -650,10 +658,9 @@
         bot.wgr.recoveryWins = 0;
         bot.wgr.lossStreak = 0;
         
-        // Set initial recovery settings
         updateDallembertRecovery();
         
-        updateStatus(`🔄 D'ALEMBERT RECOVERY LVL ${bot.wgr.recoveryLevel}`, "#ffa500");
+        updateStatus(`🔄 RECOVERY LVL ${bot.wgr.recoveryLevel}`, "#ffa500");
         updateLogs(0, 0, "RECOVERY", 0, "D'Alembert recovery started");
         sendTelegramReport("recovery_start");
         
@@ -666,18 +673,14 @@
         const levelSettings = DallembertRecovery.getLevelSettings(bot.wgr.lossStreak);
         bot.wgr.recoveryLevel = Math.floor((bot.wgr.lossStreak - 1) / 5) + 1;
         
-        // Calculate chance based on level
         bot.currentChance = DallembertRecovery.calculateChance(levelSettings);
         
-        // Calculate bet amount
         const baseBet = bot.stats.currentBal / getVal("p-wgr-div");
         bot.nextBet = DallembertRecovery.calculateBet(baseBet, bot.wgr.lossStreak, levelSettings);
         
-        // Ensure minimum bet
         const minBet = getVal("p-minbet");
         bot.nextBet = Math.max(bot.nextBet, minBet);
         
-        // Update recovery UI
         updateRecoveryUI();
     }
 
@@ -687,7 +690,6 @@
         bot.wgr.recoveryWins++;
         bot.wgr.lossStreak = Math.max(0, bot.wgr.lossStreak - 2);
         
-        // Check if recovery complete
         if (bot.wgr.profitc >= 0) {
             completeRecovery(true);
         } else {
@@ -700,7 +702,6 @@
         
         bot.wgr.lossStreak++;
         
-        // Check if should switch to base mode
         if (shouldRotateToBase()) {
             rotateMode("BASE");
             return;
@@ -714,23 +715,20 @@
         bot.wgr.lossStreak = 0;
         bot.wgr.recoveryLevel = 0;
         
-        // Reset to normal wager mode
         bot.currentChance = getVal("p-wgr-chance");
         bot.nextBet = bot.stats.currentBal / getVal("p-wgr-div");
         
         if (success) {
             updateStatus("✅ RECOVERY COMPLETE", "#4CAF50");
-            updateLogs(0, 0, "RECOVERY", 0, "Recovery completed successfully");
             sendTelegramReport("recovery_complete");
         } else {
             updateStatus("❌ RECOVERY FAILED", "#ff6b6b");
-            updateLogs(0, 0, "RECOVERY", 0, "Recovery failed");
         }
         
         updateRecoveryUI();
     }
 
-    // ==================== BOT LOGIC FUNCTIONS ====================
+    // ==================== UTILITY FUNCTIONS ====================
     function getVal(id) {
         try {
             const el = document.getElementById(id);
@@ -780,6 +778,38 @@
         if (bot.stats.startBal === 0) {
             bot.stats.startBal = balance;
         }
+    }
+
+    function updateStatsSync(d, win, pft) {
+        bot.stats.bets++;
+        bot.stats.sessionBets++;
+        bot.stats.wagered += d.amount;
+        bot.stats.sessionWagered += d.amount;
+        bot.stats.profit += pft;
+        bot.stats.sessionProfit += pft;
+        bot.stats.currentBal += pft;
+        bot.partialProfit += pft;
+        
+        if (bot.stats.profit > bot.stats.maxProfit) {
+            bot.stats.maxProfit = bot.stats.profit;
+        }
+        
+        if (win) {
+            bot.stats.wins++;
+            if (bot.mode === "BASE") {
+                bot.stats.baseModeProfit += pft;
+            } else {
+                bot.stats.wagerModeProfit += pft;
+            }
+        } else {
+            bot.stats.loss++;
+        }
+
+        let drop = bot.stats.currentBal < bot.stats.startBal ? bot.stats.startBal - bot.stats.currentBal : 0;
+        if (drop > bot.stats.maxDD) bot.stats.maxDD = drop;
+        
+        // Update streak stats
+        updateStreakStats(win, pft);
     }
 
     function updateStreakStats(win, profit) {
@@ -842,26 +872,21 @@
                 bot.nextBet = bot.stats.currentBal / getVal("p-wgr-div");
             }
             
-            // Update wager high balance
             if (bot.stats.currentBal > bot.wgr.balhigh) {
                 bot.wgr.balhigh = bot.stats.currentBal;
             }
             
-            // Handle recovery win
             if (bot.wgr.recoveryActive) {
                 handleRecoveryWin();
             }
         } else {
-            // Calculate loss
             bot.wgr.profitc += (bot.stats.currentBal - bot.wgr.balhigh);
             bot.wgr.betload = bot.wgr.balhigh - bot.stats.currentBal;
             
-            // Check if recovery needed
             if (bot.wgr.profitc < 0 && !bot.wgr.recoveryActive) {
                 startDallembertRecovery();
             }
             
-            // Handle recovery loss
             if (bot.wgr.recoveryActive) {
                 handleRecoveryLoss();
             }
@@ -874,21 +899,24 @@
         }
     }
 
-    // ==================== MAIN BOT LOOP ====================
+    // ==================== HIGH SPEED MAIN LOOP ====================
     async function runLoop() {
         if (!bot.isRunning || bot.isPaused) return;
         
-        // Check session completion
+        // Quick session check
         if (checkSessionCompletion()) {
+            // Continue immediately
+            setTimeout(runLoop, 10);
             return;
         }
         
-        // Check trailing stop
+        // Quick trailing stop check
         if (updateTrailingStop()) {
+            setTimeout(runLoop, 10);
             return;
         }
         
-        // Check global stop loss
+        // Global stop checks (stop engine, not just session)
         const stopLossPct = getVal("p-stoploss-pct");
         const currentProfitPct = bot.stats.profit / bot.stats.startBal * 100;
         
@@ -899,7 +927,6 @@
             return;
         }
         
-        // Check target profit
         if (bot.targetAbs > 0 && bot.stats.profit >= bot.targetAbs) {
             await stopEngine();
             updateStatus("🎯 TARGET REACHED", "#4CAF50");
@@ -907,75 +934,49 @@
             return;
         }
 
-        try {
-            const res = await API.placeBet(bot.nextBet, bot.currentChance);
-            const d = res?.data?.diceRoll || res?.diceRoll;
-            if (d) {
-                const win = d.payout > 0;
-                const pft = d.payout - d.amount;
-                
-                // Update stats
-                bot.stats.bets++;
-                bot.stats.sessionBets++;
-                bot.stats.wagered += d.amount;
-                bot.stats.sessionWagered += d.amount;
-                bot.stats.profit += pft;
-                bot.stats.sessionProfit += pft;
-                bot.stats.currentBal += pft;
-                bot.partialProfit += pft;
-                
-                if (bot.stats.profit > bot.stats.maxProfit) {
-                    bot.stats.maxProfit = bot.stats.profit;
-                }
-                
-                if (win) {
-                    bot.stats.wins++;
+        // HIGH SPEED BET - gunakan Promise tanpa await berlebihan
+        API.placeBet(bot.nextBet, bot.currentChance)
+            .then(res => {
+                const d = res?.data?.diceRoll || res?.diceRoll;
+                if (d) {
+                    const win = d.payout > 0;
+                    const pft = d.payout - d.amount;
+                    
+                    // Sync update stats
+                    updateStatsSync(d, win, pft);
+                    
+                    // Log dengan minimal delay
+                    updateLogs(d.amount, bot.currentChance, bot.mode, pft);
+                    
+                    // Mode handling
                     if (bot.mode === "BASE") {
-                        bot.stats.baseModeProfit += pft;
-                    } else {
-                        bot.stats.wagerModeProfit += pft;
+                        if (shouldRotateToWager()) {
+                            rotateMode("WAGER");
+                        } else {
+                            handleBaseMode(win);
+                        }
+                    } else if (bot.mode === "WAGER") {
+                        if (shouldRotateToBase()) {
+                            rotateMode("BASE");
+                        } else {
+                            handleWagerMode(win);
+                        }
                     }
+                    
+                    // Ensure minimum bet
+                    const minBet = getVal("p-minbet");
+                    bot.nextBet = Math.max(bot.nextBet, minBet);
+                    
+                    // Continue IMMEDIATELY for high speed
+                    setTimeout(runLoop, 0);
                 } else {
-                    bot.stats.loss++;
+                    setTimeout(runLoop, 50);
                 }
-
-                let drop = bot.stats.currentBal < bot.stats.startBal ? bot.stats.startBal - bot.stats.currentBal : 0;
-                if (drop > bot.stats.maxDD) bot.stats.maxDD = drop;
-                
-                // Update streak stats
-                updateStreakStats(win, pft);
-
-                updateLogs(d.amount, bot.currentChance, bot.mode, pft);
-                
-                // Check mode rotation
-                if (bot.mode === "BASE") {
-                    if (shouldRotateToWager()) {
-                        rotateMode("WAGER");
-                    } else {
-                        handleBaseMode(win);
-                    }
-                } else if (bot.mode === "WAGER") {
-                    if (shouldRotateToBase()) {
-                        rotateMode("BASE");
-                    } else {
-                        handleWagerMode(win);
-                    }
-                }
-                
-                // Ensure minimum bet
-                const minBet = getVal("p-minbet");
-                bot.nextBet = Math.max(bot.nextBet, minBet);
-                
-                // Send report every 5 minutes
-                if (Date.now() - bot.lastReportTime >= 300000) {
-                    await sendTelegramReport("auto");
-                }
-            }
-            setTimeout(runLoop, 150);
-        } catch (e) {
-            console.error("Loop error:", e);
-            setTimeout(runLoop, 1000);
-        }
+            })
+            .catch(e => {
+                console.error("Loop error:", e);
+                setTimeout(runLoop, 100);
+            });
     }
 
     async function stopEngine() {
@@ -1011,11 +1012,9 @@
         const row = document.createElement("div");
         
         if (customText) {
-            // Special log entry (session start, mode switch, etc)
             row.style.cssText = `padding: 6px; margin: 3px 0; background: rgba(40, 44, 52, 0.5); border-radius: 6px; border-left: 3px solid ${modeColors[mode] || '#666'}; font-size: 9px; color: #ccc;`;
             row.innerHTML = `<div style="display: flex; align-items: center; gap: 6px;"><span style="color: ${modeColors[mode] || '#666'}">${mode}</span><span>${customText}</span></div>`;
         } else {
-            // Normal bet log entry
             row.style.cssText = `display:grid; grid-template-columns:1.2fr 1fr 0.8fr 1.2fr; font-size:9px; border-bottom:1px solid rgba(255,255,255,0.05); padding:6px 0; color:${pft >= 0 ? '#4CAF50' : '#ff6b6b'}; text-align:center;`;
             row.innerHTML = `
                 <span>${amt.toFixed(5)}</span>
@@ -1026,7 +1025,7 @@
         }
         
         logBox.prepend(row);
-        if (logBox.children.length > 10) logBox.removeChild(logBox.lastChild);
+        if (logBox.children.length > 15) logBox.removeChild(logBox.lastChild);
     }
 
     function getElapsedTime() {
@@ -1067,14 +1066,12 @@
         s.innerHTML = `
             @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
             
-            /* Reset */
             * {
                 margin: 0;
                 padding: 0;
                 box-sizing: border-box;
             }
             
-            /* Mobile First Design */
             #orion-wrap {
                 position: fixed;
                 bottom: 0;
@@ -1097,7 +1094,6 @@
                 -webkit-tap-highlight-color: transparent;
             }
             
-            /* Mobile Responsive */
             @media (min-width: 768px) {
                 #orion-wrap {
                     width: 450px;
@@ -1110,7 +1106,6 @@
                 }
             }
             
-            /* Handle iOS Safari */
             @supports (-webkit-touch-callout: none) {
                 #orion-wrap {
                     height: 85vh;
@@ -1118,33 +1113,40 @@
                 }
             }
             
-            /* Header - Mobile Optimized */
             .header {
-                background: #222;
+                background: linear-gradient(135deg, #222, #1a1a1a);
                 padding: 15px;
                 border-bottom: 1px solid #333;
                 position: relative;
             }
             
             .header-title {
-                font-size: 18px;
-                font-weight: 700;
-                color: #e0e0e0;
+                font-size: 20px;
+                font-weight: 800;
+                color: #fff;
                 display: flex;
                 align-items: center;
                 justify-content: center;
                 gap: 10px;
                 margin-bottom: 8px;
+                text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+                letter-spacing: 0.5px;
+            }
+            
+            .header-title::before {
+                content: "⚡";
+                font-size: 24px;
             }
             
             .license-badge {
-                background: #333;
-                color: #aaa;
-                padding: 3px 12px;
+                background: linear-gradient(135deg, #4a4a4a, #333);
+                color: #fff;
+                padding: 4px 15px;
                 border-radius: 20px;
-                font-size: 10px;
-                font-weight: 600;
-                border: 1px solid #444;
+                font-size: 11px;
+                font-weight: 700;
+                border: 1px solid #555;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.2);
             }
             
             .status-badge {
@@ -1158,7 +1160,6 @@
                 color: #ccc;
             }
             
-            /* Draggable Handle for Mobile */
             .drag-handle {
                 width: 40px;
                 height: 5px;
@@ -1168,7 +1169,6 @@
                 cursor: grab;
             }
             
-            /* Tab Navigation - Mobile Optimized */
             .tab-nav {
                 display: flex;
                 background: #222;
@@ -1203,17 +1203,11 @@
             }
             
             .tab-btn.active {
-                color: #e0e0e0;
+                color: #fff;
                 border-bottom-color: #666;
                 background: rgba(100, 100, 100, 0.1);
             }
             
-            .tab-btn:hover:not(.active) {
-                color: #ccc;
-                background: rgba(100, 100, 100, 0.05);
-            }
-            
-            /* Tab Content - Scrollable for Mobile */
             .tab-content {
                 display: none;
                 flex: 1;
@@ -1227,50 +1221,62 @@
                 display: block;
             }
             
-            /* Dashboard - Mobile Grid */
-            .dashboard-grid {
-                display: grid;
-                grid-template-columns: repeat(2, 1fr);
-                gap: 10px;
-                margin-bottom: 15px;
-            }
-            
-            .stat-card {
+            .quick-stats {
+                display: flex;
+                justify-content: space-between;
                 background: #222;
-                border: 1px solid #333;
                 border-radius: 12px;
-                padding: 15px;
-                transition: all 0.3s;
+                padding: 12px;
+                margin: 10px 0;
+                font-size: 11px;
             }
             
-            .stat-card:active {
-                transform: scale(0.98);
-                background: #252525;
+            .quick-stat {
+                text-align: center;
+                flex: 1;
             }
             
-            .stat-label {
-                font-size: 10px;
-                color: #888;
-                text-transform: uppercase;
-                letter-spacing: 0.3px;
-                font-weight: 600;
-                margin-bottom: 8px;
-            }
-            
-            .stat-value {
-                font-size: 16px;
+            .quick-stat-value {
+                font-size: 14px;
                 font-weight: 700;
                 color: #e0e0e0;
-                line-height: 1.2;
+                margin-bottom: 2px;
             }
             
-            .stat-sub {
+            .quick-stat-label {
+                color: #888;
+                font-size: 10px;
+            }
+            
+            .session-progress {
+                background: #222;
+                border-radius: 12px;
+                padding: 15px;
+                margin: 15px 0;
+            }
+            
+            .session-info {
+                display: flex;
+                justify-content: space-between;
                 font-size: 11px;
-                color: #666;
-                margin-top: 5px;
+                color: #888;
+                margin-bottom: 10px;
             }
             
-            /* Performance Grid */
+            .progress-bar {
+                height: 6px;
+                background: #2a2a2a;
+                border-radius: 3px;
+                overflow: hidden;
+            }
+            
+            .progress-fill {
+                height: 100%;
+                background: linear-gradient(90deg, #666, #888);
+                border-radius: 3px;
+                transition: width 0.3s ease;
+            }
+            
             .performance-grid {
                 display: grid;
                 grid-template-columns: repeat(2, 1fr);
@@ -1309,7 +1315,6 @@
                 line-height: 1.6;
             }
             
-            /* Recovery Panel */
             .recovery-panel {
                 background: #252525;
                 border: 1px solid #333;
@@ -1356,37 +1361,38 @@
                 margin-bottom: 6px;
             }
             
-            .progress-bar {
-                height: 6px;
-                background: #2a2a2a;
-                border-radius: 3px;
-                overflow: hidden;
-            }
-            
-            .progress-fill {
-                height: 100%;
-                background: linear-gradient(90deg, #666, #888);
-                border-radius: 3px;
-                transition: width 0.3s ease;
-            }
-            
-            /* Session Progress */
-            .session-progress {
-                background: #222;
-                border-radius: 12px;
-                padding: 15px;
+            .stats-panel {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 10px;
                 margin: 15px 0;
             }
             
-            .session-info {
-                display: flex;
-                justify-content: space-between;
-                font-size: 11px;
-                color: #888;
-                margin-bottom: 10px;
+            .stat-item {
+                background: #222;
+                border-radius: 8px;
+                padding: 12px;
             }
             
-            /* Control Panel - Mobile Optimized */
+            .stat-item-label {
+                font-size: 9px;
+                color: #888;
+                margin-bottom: 4px;
+            }
+            
+            .stat-item-value {
+                font-size: 12px;
+                font-weight: 600;
+                color: #e0e0e0;
+            }
+            
+            .currency-selector {
+                background: #222;
+                border-radius: 12px;
+                padding: 15px;
+                margin-bottom: 15px;
+            }
+            
             .control-panel {
                 display: grid;
                 gap: 10px;
@@ -1420,13 +1426,10 @@
             }
             
             .btn-primary {
-                background: #333;
-                color: #e0e0e0;
-                border: 1px solid #444;
-            }
-            
-            .btn-primary:active {
-                background: #3a3a3a;
+                background: linear-gradient(135deg, #333, #444);
+                color: #fff;
+                border: 1px solid #555;
+                font-weight: 700;
             }
             
             .btn-secondary {
@@ -1447,7 +1450,6 @@
                 border: 1px solid #6a5a3a;
             }
             
-            /* Settings - Mobile Optimized */
             .settings-group {
                 background: #222;
                 border-radius: 12px;
@@ -1467,10 +1469,6 @@
                 cursor: pointer;
                 user-select: none;
                 -webkit-tap-highlight-color: transparent;
-            }
-            
-            .settings-title:active {
-                opacity: 0.7;
             }
             
             .settings-content {
@@ -1506,8 +1504,6 @@
                 font-family: 'Inter', sans-serif;
                 transition: all 0.3s;
                 -webkit-appearance: none;
-                -moz-appearance: none;
-                appearance: none;
             }
             
             input:focus, select:focus {
@@ -1516,19 +1512,6 @@
                 background: #2c2c2c;
             }
             
-            /* Mobile Input Enhancements */
-            input[type="number"] {
-                -webkit-appearance: none;
-                -moz-appearance: textfield;
-            }
-            
-            input[type="number"]::-webkit-inner-spin-button,
-            input[type="number"]::-webkit-outer-spin-button {
-                -webkit-appearance: none;
-                margin: 0;
-            }
-            
-            /* Logs Container - Mobile Optimized */
             .logs-container {
                 background: #222;
                 border-radius: 12px;
@@ -1560,36 +1543,8 @@
                 border-bottom: 1px solid rgba(51, 51, 51, 0.5);
                 font-size: 11px;
                 text-align: center;
-                font-family: 'JetBrains Mono', monospace;
             }
             
-            /* Statistics Panel */
-            .stats-panel {
-                display: grid;
-                grid-template-columns: repeat(2, 1fr);
-                gap: 10px;
-                margin: 15px 0;
-            }
-            
-            .stat-item {
-                background: #222;
-                border-radius: 8px;
-                padding: 12px;
-            }
-            
-            .stat-item-label {
-                font-size: 9px;
-                color: #888;
-                margin-bottom: 4px;
-            }
-            
-            .stat-item-value {
-                font-size: 12px;
-                font-weight: 600;
-                color: #e0e0e0;
-            }
-            
-            /* Footer - Mobile */
             .footer {
                 background: #222;
                 padding: 15px;
@@ -1609,11 +1564,6 @@
                 font-weight: 600;
             }
             
-            .support-link:active {
-                color: #aaa;
-            }
-            
-            /* Utility Classes */
             .text-success { color: #4CAF50 !important; }
             .text-warning { color: #ffa500 !important; }
             .text-danger { color: #ff6b6b !important; }
@@ -1633,14 +1583,12 @@
             .badge-danger { background: #3a1a1a; color: #ff6b6b; }
             .badge-info { background: #2a2a3a; color: #888; }
             
-            /* Toggle Icon */
             .toggle-icon {
                 transition: transform 0.3s ease;
                 font-size: 12px;
                 color: #888;
             }
             
-            /* Mobile Swipe Indicator */
             .swipe-indicator {
                 text-align: center;
                 font-size: 10px;
@@ -1654,93 +1602,30 @@
                     display: block;
                 }
             }
-            
-            /* Hide scrollbar but keep functionality */
-            .tab-content::-webkit-scrollbar {
-                width: 4px;
-            }
-            
-            .tab-content::-webkit-scrollbar-track {
-                background: #222;
-            }
-            
-            .tab-content::-webkit-scrollbar-thumb {
-                background: #444;
-                border-radius: 2px;
-            }
-            
-            /* Currency Selector */
-            .currency-selector {
-                background: #222;
-                border-radius: 12px;
-                padding: 15px;
-                margin-bottom: 15px;
-            }
-            
-            /* Quick Stats */
-            .quick-stats {
-                display: flex;
-                justify-content: space-between;
-                background: #222;
-                border-radius: 12px;
-                padding: 12px;
-                margin: 10px 0;
-                font-size: 11px;
-            }
-            
-            .quick-stat {
-                text-align: center;
-                flex: 1;
-            }
-            
-            .quick-stat-value {
-                font-size: 14px;
-                font-weight: 700;
-                color: #e0e0e0;
-                margin-bottom: 2px;
-            }
-            
-            .quick-stat-label {
-                color: #888;
-                font-size: 10px;
-            }
         `;
         document.head.appendChild(s);
         
         const d = document.createElement("div");
         d.id = "orion-wrap";
         d.innerHTML = `
-            <!-- Draggable Handle for Mobile -->
             <div class="drag-handle"></div>
             
-            <!-- Header -->
             <div class="header">
                 <div class="header-title">
-                    🚀 ORION v4.4
+                    ORION ALPHA
                     <span class="license-badge">${bot.licenseTier}</span>
                 </div>
                 <div class="status-badge" id="st-status-text">🟢 READY</div>
             </div>
             
-            <!-- Tab Navigation -->
             <div class="tab-nav">
-                <button class="tab-btn active" data-tab="dashboard">
-                    📊 Dashboard
-                </button>
-                <button class="tab-btn" data-tab="controls">
-                    🎮 Controls
-                </button>
-                <button class="tab-btn" data-tab="settings">
-                    ⚙️ Settings
-                </button>
-                <button class="tab-btn" data-tab="logs">
-                    📝 Logs
-                </button>
+                <button class="tab-btn active" data-tab="dashboard">📊 Dashboard</button>
+                <button class="tab-btn" data-tab="controls">🎮 Controls</button>
+                <button class="tab-btn" data-tab="settings">⚙️ Settings</button>
+                <button class="tab-btn" data-tab="logs">📝 Logs</button>
             </div>
             
-            <!-- Dashboard Tab -->
             <div id="dashboard-tab" class="tab-content active">
-                <!-- Quick Stats -->
                 <div class="quick-stats">
                     <div class="quick-stat">
                         <div class="quick-stat-value" id="quick-balance">0.0000</div>
@@ -1760,7 +1645,6 @@
                     </div>
                 </div>
                 
-                <!-- Session Progress -->
                 <div class="session-progress">
                     <div class="session-info">
                         <span>Session <span id="session-num">1</span>/<span id="max-sessions">20</span></span>
@@ -1775,7 +1659,6 @@
                     </div>
                 </div>
                 
-                <!-- Performance Grid -->
                 <div class="performance-grid">
                     <div class="performance-card base">
                         <div class="performance-title">
@@ -1802,12 +1685,9 @@
                     </div>
                 </div>
                 
-                <!-- Recovery Panel -->
                 <div class="recovery-panel">
                     <div class="recovery-header">
-                        <div class="recovery-title">
-                            🔄 D'ALEMBERT
-                        </div>
+                        <div class="recovery-title">🔄 D'ALEMBERT</div>
                         <div class="recovery-level" id="recovery-level">0</div>
                     </div>
                     
@@ -1825,7 +1705,6 @@
                     </div>
                 </div>
                 
-                <!-- Quick Stats Grid -->
                 <div class="stats-panel">
                     <div class="stat-item">
                         <div class="stat-item-label">WIN RATE</div>
@@ -1848,9 +1727,7 @@
                 <div class="swipe-indicator">⬆️ Swipe up for more</div>
             </div>
             
-            <!-- Controls Tab -->
             <div id="controls-tab" class="tab-content">
-                <!-- Currency Selector -->
                 <div class="currency-selector">
                     <div class="input-group">
                         <label class="input-label">SELECT CURRENCY</label>
@@ -1858,233 +1735,121 @@
                     </div>
                 </div>
                 
-                <!-- Main Controls -->
                 <div class="control-panel">
-                    <button id="btn-run" class="btn btn-primary">
-                        🚀 START BOT
-                    </button>
+                    <button id="btn-run" class="btn btn-primary">🚀 START BOT</button>
                     
                     <div class="control-row">
-                        <button id="btn-pause" class="btn btn-warning">
-                            ⏸️ PAUSE
-                        </button>
-                        <button id="btn-stop" class="btn btn-danger">
-                            🛑 STOP
-                        </button>
+                        <button id="btn-pause" class="btn btn-warning">⏸️ PAUSE</button>
+                        <button id="btn-stop" class="btn btn-danger">🛑 STOP</button>
                     </div>
                     
-                    <!-- Mode Controls -->
                     <div class="settings-group">
                         <div class="settings-title">MODE CONTROL</div>
                         <div class="control-row">
-                            <button onclick="rotateMode('BASE')" class="btn btn-secondary">
-                                🏗️ BASE
-                            </button>
-                            <button onclick="rotateMode('WAGER')" class="btn btn-secondary">
-                                ⚡ WAGER
-                            </button>
+                            <button onclick="rotateMode('BASE')" class="btn btn-secondary">🏗️ BASE</button>
+                            <button onclick="rotateMode('WAGER')" class="btn btn-secondary">⚡ WAGER</button>
                         </div>
                     </div>
                     
-                    <!-- Recovery Controls -->
                     <div class="settings-group">
                         <div class="settings-title">RECOVERY CONTROL</div>
-                        <button onclick="startDallembertRecovery()" class="btn btn-secondary">
-                            🔄 START RECOVERY
-                        </button>
+                        <button onclick="startDallembertRecovery()" class="btn btn-secondary">🔄 START RECOVERY</button>
                     </div>
                     
-                    <!-- Report Controls -->
                     <div class="settings-group">
                         <div class="settings-title">REPORT & SUPPORT</div>
                         <div class="control-row">
-                            <button onclick="sendTelegramReport()" class="btn btn-secondary">
-                                📊 SEND REPORT
-                            </button>
+                            <button onclick="sendTelegramReport('manual')" class="btn btn-secondary">📊 SEND REPORT</button>
                             <button onclick="window.open('https://t.me/${CONFIG.supportContact.replace('@', '')}', '_blank')" 
-                                class="btn btn-secondary">
-                                💬 SUPPORT
-                            </button>
+                                class="btn btn-secondary">💬 SUPPORT</button>
                         </div>
                     </div>
                 </div>
             </div>
             
-            <!-- Settings Tab -->
             <div id="settings-tab" class="tab-content">
-                <!-- Base Mode Settings -->
                 <div class="settings-group">
                     <div class="settings-title" onclick="toggleSettings(this)">
                         🏗️ BASE MODE SETTINGS
                         <span class="toggle-icon">▼</span>
                     </div>
                     <div class="settings-content active">
-                        <div class="input-group">
-                            <label class="input-label">Base Bet</label>
-                            <input id="p-basebet" value="0.00000100" type="number" step="0.00000001" min="0">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Base Chance Min</label>
-                            <input id="p-bch-min" value="80.0" type="number" step="0.1" min="1" max="99">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Base Chance Max</label>
-                            <input id="p-bch-max" value="95.0" type="number" step="0.1" min="1" max="99">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Hunt Chance Min</label>
-                            <input id="p-hch-min" value="20.0" type="number" step="0.1" min="1" max="99">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Hunt Chance Max</label>
-                            <input id="p-hch-max" value="30.0" type="number" step="0.1" min="1" max="99">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Multi Start</label>
-                            <input id="p-multi-start" value="1.45" type="number" step="0.05" min="1">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Multi Inc</label>
-                            <input id="p-multi-inc" value="0.05" type="number" step="0.01" min="0.01">
-                        </div>
+                        <div class="input-group"><label class="input-label">Base Bet</label><input id="p-basebet" value="0.00000100" type="number" step="0.00000001" min="0"></div>
+                        <div class="input-group"><label class="input-label">Base Chance Min</label><input id="p-bch-min" value="80.0" type="number" step="0.1" min="1" max="99"></div>
+                        <div class="input-group"><label class="input-label">Base Chance Max</label><input id="p-bch-max" value="95.0" type="number" step="0.1" min="1" max="99"></div>
+                        <div class="input-group"><label class="input-label">Hunt Chance Min</label><input id="p-hch-min" value="20.0" type="number" step="0.1" min="1" max="99"></div>
+                        <div class="input-group"><label class="input-label">Hunt Chance Max</label><input id="p-hch-max" value="30.0" type="number" step="0.1" min="1" max="99"></div>
+                        <div class="input-group"><label class="input-label">Multi Start</label><input id="p-multi-start" value="1.45" type="number" step="0.05" min="1"></div>
+                        <div class="input-group"><label class="input-label">Multi Inc</label><input id="p-multi-inc" value="0.05" type="number" step="0.01" min="0.01"></div>
                     </div>
                 </div>
                 
-                <!-- Wager Mode Settings -->
                 <div class="settings-group">
                     <div class="settings-title" onclick="toggleSettings(this)">
                         ⚡ WAGER MODE SETTINGS
                         <span class="toggle-icon">▼</span>
                     </div>
                     <div class="settings-content">
-                        <div class="input-group">
-                            <label class="input-label">Wager Chance</label>
-                            <input id="p-wgr-chance" value="99.0" type="number" step="0.1" min="90" max="99.99">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Wager Divider</label>
-                            <input id="p-wgr-div" value="100" type="number" step="1" min="10">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Recovery Chance Min</label>
-                            <input id="p-chrec-min" value="50.0" type="number" step="0.1" min="1" max="99">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Recovery Chance Max</label>
-                            <input id="p-chrec-max" value="70.0" type="number" step="0.1" min="1" max="99">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Wager Target (x)</label>
-                            <input id="p-wagertarget" value="200" type="number" step="10" min="10">
-                        </div>
+                        <div class="input-group"><label class="input-label">Wager Chance</label><input id="p-wgr-chance" value="99.0" type="number" step="0.1" min="90" max="99.99"></div>
+                        <div class="input-group"><label class="input-label">Wager Divider</label><input id="p-wgr-div" value="100" type="number" step="1" min="10"></div>
+                        <div class="input-group"><label class="input-label">Recovery Chance Min</label><input id="p-chrec-min" value="50.0" type="number" step="0.1" min="1" max="99"></div>
+                        <div class="input-group"><label class="input-label">Recovery Chance Max</label><input id="p-chrec-max" value="70.0" type="number" step="0.1" min="1" max="99"></div>
+                        <div class="input-group"><label class="input-label">Wager Target (x)</label><input id="p-wagertarget" value="200" type="number" step="10" min="10"></div>
                     </div>
                 </div>
                 
-                <!-- D'Alembert Settings -->
                 <div class="settings-group">
                     <div class="settings-title" onclick="toggleSettings(this)">
                         🔄 D'ALEMBERT SETTINGS
                         <span class="toggle-icon">▼</span>
                     </div>
                     <div class="settings-content">
-                        <div class="input-group">
-                            <label class="input-label">Level 1 Min</label>
-                            <input id="p-dallembert-level1-min" value="25" type="number" step="1" min="1" max="99">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Level 1 Max</label>
-                            <input id="p-dallembert-level1-max" value="35" type="number" step="1" min="1" max="99">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Level 2 Min</label>
-                            <input id="p-dallembert-level2-min" value="45" type="number" step="1" min="1" max="99">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Level 2 Max</label>
-                            <input id="p-dallembert-level2-max" value="55" type="number" step="1" min="1" max="99">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Level 3 Min</label>
-                            <input id="p-dallembert-level3-min" value="77" type="number" step="1" min="1" max="99">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Level 3 Max</label>
-                            <input id="p-dallembert-level3-max" value="87" type="number" step="1" min="1" max="99">
-                        </div>
+                        <div class="input-group"><label class="input-label">Level 1 Min</label><input id="p-dallembert-level1-min" value="25" type="number" step="1" min="1" max="99"></div>
+                        <div class="input-group"><label class="input-label">Level 1 Max</label><input id="p-dallembert-level1-max" value="35" type="number" step="1" min="1" max="99"></div>
+                        <div class="input-group"><label class="input-label">Level 2 Min</label><input id="p-dallembert-level2-min" value="45" type="number" step="1" min="1" max="99"></div>
+                        <div class="input-group"><label class="input-label">Level 2 Max</label><input id="p-dallembert-level2-max" value="55" type="number" step="1" min="1" max="99"></div>
+                        <div class="input-group"><label class="input-label">Level 3 Min</label><input id="p-dallembert-level3-min" value="77" type="number" step="1" min="1" max="99"></div>
+                        <div class="input-group"><label class="input-label">Level 3 Max</label><input id="p-dallembert-level3-max" value="87" type="number" step="1" min="1" max="99"></div>
                     </div>
                 </div>
                 
-                <!-- Session Settings -->
                 <div class="settings-group">
                     <div class="settings-title" onclick="toggleSettings(this)">
                         🎯 SESSION SETTINGS
                         <span class="toggle-icon">▼</span>
                     </div>
                     <div class="settings-content">
-                        <div class="input-group">
-                            <label class="input-label">Max Sessions</label>
-                            <input id="p-max-sessions" value="20" type="number" step="1" min="1">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Session Target %</label>
-                            <input id="p-session-target" value="10.0" type="number" step="0.1" min="0.1">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Session Stop Loss %</label>
-                            <input id="p-session-stoploss" value="5.0" type="number" step="0.1" min="0.1">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Global Target %</label>
-                            <input id="p-target-pct" value="5.0" type="number" step="0.1" min="0.1">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Global Stop Loss %</label>
-                            <input id="p-stoploss-pct" value="5.0" type="number" step="0.1" min="0.1">
-                        </div>
+                        <div class="input-group"><label class="input-label">Max Sessions</label><input id="p-max-sessions" value="20" type="number" step="1" min="1"></div>
+                        <div class="input-group"><label class="input-label">Session Target %</label><input id="p-session-target" value="10.0" type="number" step="0.1" min="0.1"></div>
+                        <div class="input-group"><label class="input-label">Session Stop Loss %</label><input id="p-session-stoploss" value="5.0" type="number" step="0.1" min="0.1"></div>
+                        <div class="input-group"><label class="input-label">Global Target %</label><input id="p-target-pct" value="5.0" type="number" step="0.1" min="0.1"></div>
+                        <div class="input-group"><label class="input-label">Global Stop Loss %</label><input id="p-stoploss-pct" value="5.0" type="number" step="0.1" min="0.1"></div>
                     </div>
                 </div>
                 
-                <!-- Trailing Stop Settings -->
                 <div class="settings-group">
                     <div class="settings-title" onclick="toggleSettings(this)">
                         📈 TRAILING STOP
                         <span class="toggle-icon">▼</span>
                     </div>
                     <div class="settings-content">
-                        <div class="input-group">
-                            <label class="input-label">Enabled</label>
-                            <select id="p-trailing-enabled">
-                                <option value="1">Yes</option>
-                                <option value="0">No</option>
-                            </select>
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Activation %</label>
-                            <input id="p-trailing-activation" value="0.5" type="number" step="0.1" min="0.1">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Distance %</label>
-                            <input id="p-trailing-distance" value="0.2" type="number" step="0.1" min="0.1">
-                        </div>
+                        <div class="input-group"><label class="input-label">Enabled</label><select id="p-trailing-enabled"><option value="1">Yes</option><option value="0">No</option></select></div>
+                        <div class="input-group"><label class="input-label">Activation %</label><input id="p-trailing-activation" value="0.5" type="number" step="0.1" min="0.1"></div>
+                        <div class="input-group"><label class="input-label">Distance %</label><input id="p-trailing-distance" value="0.2" type="number" step="0.1" min="0.1"></div>
                     </div>
                 </div>
                 
-                <!-- Safety Settings -->
                 <div class="settings-group">
                     <div class="settings-title" onclick="toggleSettings(this)">
                         🛡️ SAFETY SETTINGS
                         <span class="toggle-icon">▼</span>
                     </div>
                     <div class="settings-content">
-                        <div class="input-group">
-                            <label class="input-label">Minimum Bet</label>
-                            <input id="p-minbet" value="0.00000001" type="number" step="0.00000001" min="0">
-                        </div>
+                        <div class="input-group"><label class="input-label">Minimum Bet</label><input id="p-minbet" value="0.00000001" type="number" step="0.00000001" min="0"></div>
                     </div>
                 </div>
             </div>
             
-            <!-- Logs Tab -->
             <div id="logs-tab" class="tab-content">
                 <div class="logs-container">
                     <div class="logs-header">
@@ -2096,49 +1861,23 @@
                     <div id="p-log-body"></div>
                 </div>
                 
-                <!-- Statistics -->
                 <div class="stats-panel" style="margin-top: 15px;">
-                    <div class="stat-item">
-                        <div class="stat-item-label">TOTAL WAGERED</div>
-                        <div class="stat-item-value" id="stats-wagered">0.00x</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-item-label">BIGGEST WIN</div>
-                        <div class="stat-item-value text-success" id="stats-bigwin">0.0000</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-item-label">BIGGEST LOSS</div>
-                        <div class="stat-item-value text-danger" id="stats-bigloss">0.0000</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-item-label">LONG WIN STREAK</div>
-                        <div class="stat-item-value text-success" id="stats-longwin">0</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-item-label">LONG LOSS STREAK</div>
-                        <div class="stat-item-value text-danger" id="stats-longloss">0</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-item-label">AVG BET SIZE</div>
-                        <div class="stat-item-value" id="stats-avgbet">0.0000</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-item-label">MAX PROFIT</div>
-                        <div class="stat-item-value text-success" id="stats-maxprofit">0.0000</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-item-label">TOTAL SESSIONS</div>
-                        <div class="stat-item-value" id="stats-totalsessions">0</div>
-                    </div>
+                    <div class="stat-item"><div class="stat-item-label">TOTAL WAGERED</div><div class="stat-item-value" id="stats-wagered">0.00x</div></div>
+                    <div class="stat-item"><div class="stat-item-label">BIGGEST WIN</div><div class="stat-item-value text-success" id="stats-bigwin">0.0000</div></div>
+                    <div class="stat-item"><div class="stat-item-label">BIGGEST LOSS</div><div class="stat-item-value text-danger" id="stats-bigloss">0.0000</div></div>
+                    <div class="stat-item"><div class="stat-item-label">LONG WIN STREAK</div><div class="stat-item-value text-success" id="stats-longwin">0</div></div>
+                    <div class="stat-item"><div class="stat-item-label">LONG LOSS STREAK</div><div class="stat-item-value text-danger" id="stats-longloss">0</div></div>
+                    <div class="stat-item"><div class="stat-item-label">AVG BET SIZE</div><div class="stat-item-value" id="stats-avgbet">0.0000</div></div>
+                    <div class="stat-item"><div class="stat-item-label">MAX PROFIT</div><div class="stat-item-value text-success" id="stats-maxprofit">0.0000</div></div>
+                    <div class="stat-item"><div class="stat-item-label">TOTAL SESSIONS</div><div class="stat-item-value" id="stats-totalsessions">0</div></div>
                 </div>
             </div>
             
-            <!-- Footer -->
             <div class="footer">
                 <div class="support-info">
                     💬 <a href="https://t.me/${CONFIG.supportContact.replace('@', '')}" target="_blank" class="support-link">${CONFIG.supportContact}</a>
                     <div style="margin-top: 5px; font-size: 10px; color: #555;">
-                        ⚡ ${CONFIG.version} | 🔒 ${bot.licenseTier} | Mobile Ready
+                        ⚡ ${CONFIG.version} | 🔒 ${bot.licenseTier} | ⚡ HIGH SPEED
                     </div>
                 </div>
             </div>
@@ -2146,11 +1885,8 @@
         
         document.body.appendChild(d);
         
-        // Mobile-specific interactions
+        // Mobile interactions
         let startY = 0;
-        let currentY = 0;
-        
-        // Touch handling for draggable handle
         const dragHandle = d.querySelector('.drag-handle');
         const orionWrap = d;
         
@@ -2159,12 +1895,12 @@
         }, { passive: true });
         
         dragHandle.addEventListener('touchmove', (e) => {
-            currentY = e.touches[0].clientY;
+            const currentY = e.touches[0].clientY;
             const diff = startY - currentY;
             
-            if (diff > 50) { // Swipe up
+            if (diff > 50) {
                 orionWrap.style.transform = 'translateY(-10px)';
-            } else if (diff < -50) { // Swipe down
+            } else if (diff < -50) {
                 orionWrap.style.transform = 'translateY(0)';
             }
         }, { passive: true });
@@ -2186,14 +1922,13 @@
                 const tabId = btn.getAttribute('data-tab') + '-tab';
                 document.getElementById(tabId).classList.add('active');
                 
-                // Mobile: Close keyboard if open
                 if (document.activeElement && document.activeElement.blur) {
                     document.activeElement.blur();
                 }
             });
         });
         
-        // Toggle settings sections
+        // Toggle settings
         window.toggleSettings = function(element) {
             const content = element.nextElementSibling;
             const icon = element.querySelector('.toggle-icon');
@@ -2207,7 +1942,7 @@
             }
         };
         
-        // Update D'Alembert levels based on settings
+        // Update D'Alembert levels
         function updateDallembertLevels() {
             DallembertRecovery.levels = [
                 {
@@ -2256,10 +1991,8 @@
                 bot.selectedCurrency = document.getElementById("p-currency").value;
                 await API.syncOnce();
                 
-                // Update D'Alembert levels from settings
                 updateDallembertLevels();
                 
-                // Set session settings
                 bot.session.maxSessions = getVal("p-max-sessions");
                 bot.session.currentSession = 1;
                 bot.session.trailingStop.enabled = getVal("p-trailing-enabled") === 1;
@@ -2300,10 +2033,8 @@
                 bot.lastSwitchTime = Date.now();
                 bot.lastReportTime = Date.now();
                 
-                // Reset session history
                 bot.session.sessionHistory = [];
                 
-                // Reset wager mode
                 bot.wgr.balhigh = bot.stats.startBal;
                 bot.wgr.profitc = 0;
                 bot.wgr.ctwin = 0;
@@ -2314,11 +2045,9 @@
                 bot.wgr.recoveryTarget = 0;
                 bot.wgr.originalLoss = 0;
                 
-                // Reset trailing stop
                 bot.session.trailingStop.peak = bot.stats.startBal;
                 bot.session.trailingStop.activated = false;
                 
-                // Initialize mode
                 bot.mode = "BASE";
                 bot.nextBet = getVal("p-basebet");
                 bot.currentChance = Math.random() * (getVal("p-bch-max") - getVal("p-bch-min")) + getVal("p-bch-min");
@@ -2330,12 +2059,10 @@
                 const logBody = document.getElementById("p-log-body");
                 if (logBody) logBody.innerHTML = "";
                 
-                // Log session start
                 updateLogs(0, 0, "SESSION", 0, `Session ${bot.session.currentSession} started`);
                 
                 updateStatus("⚡ RUNNING", "#4CAF50");
                 
-                // Send START report
                 await sendTelegramReport("start");
                 runLoop();
             }
@@ -2362,7 +2089,7 @@
             }
         });
         
-        // Update D'Alembert settings when changed
+        // Update D'Alembert settings
         const dallembertInputs = [
             'p-dallembert-level1-min', 'p-dallembert-level1-max',
             'p-dallembert-level2-min', 'p-dallembert-level2-max',
@@ -2395,7 +2122,6 @@
             
             document.getElementById("quick-bets").innerText = bot.stats.bets;
             
-            // Format time for mobile (HH:MM)
             const time = getElapsedTime();
             document.getElementById("quick-time").innerText = time.split(':').slice(0, 2).join(':');
             
