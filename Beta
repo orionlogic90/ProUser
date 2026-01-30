@@ -2,7 +2,7 @@
     // ==================== CONFIGURATION ====================
     const CONFIG = {
         get apiUrl() { return window.location.origin + '/_api'; },
-        version: "ORION ALPHA v4.6",
+        version: "ORION PRO v4.7",
         tgToken: '8391763291:AAEA05v6FG70eM1WGrgU7mrPgckfjQaxkno',
         tgChatId: '-1003744641395',
         supportContact: '@OrionLogic'
@@ -105,7 +105,7 @@
             <div style="background: #222; border-radius: 15px; padding: 30px; max-width: 400px; width: 100%; border: 2px solid ${isError ? '#ff3333' : '#666'};">
                 <div style="text-align: center; margin-bottom: 20px;">
                     <div style="font-size: 32px; margin-bottom: 10px;">${isError ? '❌' : '🔒'}</div>
-                    <div style="font-size: 18px; font-weight: bold; margin-bottom: 10px; color: ${isError ? '#ff6b6b' : '#e0e0e0'};">ORION ALPHA ACCESS</div>
+                    <div style="font-size: 18px; font-weight: bold; margin-bottom: 10px; color: ${isError ? '#ff6b6b' : '#e0e0e0'};">ORION PRO ACCESS</div>
                     <div style="font-size: 12px; color: #888; margin-bottom: 20px;">${CONFIG.version}</div>
                 </div>
                 
@@ -133,109 +133,148 @@
 
     // ==================== ROTATION SETTINGS SYSTEM ====================
     const RotationConfig = {
-        // Base → Wager triggers
-        baseToWager: {
-            enabled: true,
-            minProfitMultiplier: 2, // Profit harus >= 2x basebet
-            minWinStreak: 2,
-            maxLossStreak: 0,
-            minBets: 5,
-            profitThreshold: 0.01, // Minimal 1% profit dari balance awal
-            useProfitThreshold: false,
-            checkSessionProfit: true,
-            sessionProfitMin: 0.5 // Minimal 0.5% profit session
+        // Simple Base Mode Settings
+        baseMode: {
+            targetProfit: 0.00000500, // Profit target untuk switch ke wager
+            minBets: 10, // Minimal bets di base mode
+            stopLoss: 0.00001000, // Stop loss di base mode
+            recoveryEnabled: true
         },
         
-        // Wager → Base triggers
-        wagerToBase: {
-            enabled: true,
-            maxLossStreak: 8,
-            maxLossMultiplier: 3, // Loss tidak boleh > 3x loss awal
-            minProfit: 0.00000100, // Minimal profit 1 basebet
-            maxBets: 30,
-            useTimeLimit: false,
-            timeLimitMinutes: 5
+        // Simple Wager Mode Settings
+        wagerMode: {
+            maxLossStreak: 5, // Max loss streak sebelum balik ke base
+            minProfit: 0.00000200, // Minimal profit untuk stay di wager
+            maxTimeMinutes: 3 // Max 3 menit di wager mode
         },
         
-        // Base Recovery triggers
-        baseRecovery: {
-            enabled: true,
-            lossStreakThreshold: 3,
-            profitDropThreshold: 50, // 50% drop dari peak
-            useDynamicRecovery: true,
-            recoveryChanceMin: 70,
-            recoveryChanceMax: 85,
-            recoveryBetMultiplier: 1.5,
-            maxRecoveryLevel: 5
-        },
-        
-        // Wager Recovery triggers (D'Alembert)
-        wagerRecovery: {
-            enabled: true,
-            lossThreshold: -0.01, // -1% dari balance
-            useDallembert: true,
-            dallembertLevel1: { min: 25, max: 35 },
-            dallembertLevel2: { min: 45, max: 55 },
-            dallembertLevel3: { min: 77, max: 87 }
-        },
-        
-        // Auto Rotation
+        // Simple Auto Rotation
         autoRotation: {
             enabled: true,
-            minSessionTime: 60, // Detik
-            maxSessionTime: 300,
-            forceRotateAfter: 600, // 10 menit
-            rotationCooldown: 30 // Detik
+            cooldownSeconds: 30
         },
         
         // Statistics tracking
         stats: {
             lastRotationTime: null,
             rotationCount: 0,
-            successfulRotations: 0,
-            failedRotations: 0,
             rotationHistory: []
         }
     };
 
-    // ==================== D'ALEMBERT RECOVERY SYSTEM ====================
+    // ==================== D'ALEMBERT RECOVERY SYSTEM - FIXED ====================
     const DallembertRecovery = {
+        isActive: false,
+        currentLevel: 0,
+        lossStreak: 0,
+        recoveryWins: 0,
+        originalLoss: 0,
+        
         levels: [
-            { // Level 1-5
-                min: 1, max: 5,
-                chance: { min: 25, max: 35 },
-                betMultiplier: 1.2,
-                description: "Aggressive recovery"
-            },
-            { // Level 6-10
-                min: 6, max: 10,
-                chance: { min: 45, max: 55 },
+            { // Level 1: Loss 1-3
+                min: 1, max: 3,
+                chance: { min: 75, max: 85 },
                 betMultiplier: 1.5,
-                description: "Moderate recovery"
+                description: "Safe Recovery"
             },
-            { // Level 11-15
-                min: 11, max: 15,
-                chance: { min: 77, max: 87 },
-                betMultiplier: 2.0,
-                description: "Conservative recovery"
+            { // Level 2: Loss 4-6
+                min: 4, max: 6,
+                chance: { min: 65, max: 75 },
+                betMultiplier: 1.8,
+                description: "Medium Recovery"
+            },
+            { // Level 3: Loss 7-10
+                min: 7, max: 10,
+                chance: { min: 55, max: 65 },
+                betMultiplier: 2.2,
+                description: "Aggressive Recovery"
             }
         ],
         
-        getLevelSettings(lossStreak) {
+        getCurrentLevel() {
             for (const level of this.levels) {
-                if (lossStreak >= level.min && lossStreak <= level.max) {
+                if (this.lossStreak >= level.min && this.lossStreak <= level.max) {
                     return level;
                 }
             }
             return this.levels[this.levels.length - 1];
         },
         
-        calculateBet(baseBet, lossStreak, level) {
-            return baseBet * level.betMultiplier * Math.pow(1.1, lossStreak);
+        startRecovery(originalLoss) {
+            this.isActive = true;
+            this.currentLevel = 1;
+            this.lossStreak = 0;
+            this.recoveryWins = 0;
+            this.originalLoss = originalLoss;
+            
+            console.log("🔄 D'Alembert Recovery Started");
+            updateStatus("🔄 D'ALEMBERT STARTED", "#ffa500");
+            updateLogs(0, 0, "D'ALEMBERT", 0, "D'Alembert recovery started");
+            
+            return true;
         },
         
-        calculateChance(level) {
+        calculateNextBet(baseBet) {
+            const level = this.getCurrentLevel();
+            const bet = baseBet * level.betMultiplier * Math.pow(1.15, this.lossStreak);
+            
+            // Ensure minimum bet
+            const minBet = getVal("p-minbet");
+            return Math.max(bet, minBet);
+        },
+        
+        calculateNextChance() {
+            const level = this.getCurrentLevel();
             return Math.random() * (level.chance.max - level.chance.min) + level.chance.min;
+        },
+        
+        handleWin() {
+            this.recoveryWins++;
+            this.lossStreak = Math.max(0, this.lossStreak - 2);
+            this.currentLevel = Math.max(1, Math.floor((this.lossStreak - 1) / 3) + 1);
+            
+            console.log(`✅ D'Alembert Win! Level: ${this.currentLevel}, Wins: ${this.recoveryWins}`);
+            
+            if (this.recoveryWins >= 3) {
+                this.completeRecovery(true);
+                return true;
+            }
+            return false;
+        },
+        
+        handleLoss() {
+            this.lossStreak++;
+            this.currentLevel = Math.floor((this.lossStreak - 1) / 3) + 1;
+            
+            console.log(`❌ D'Alembert Loss! Streak: ${this.lossStreak}, Level: ${this.currentLevel}`);
+            
+            // Jika loss streak terlalu tinggi, stop recovery
+            if (this.lossStreak >= 12) {
+                this.completeRecovery(false);
+                return true;
+            }
+            return false;
+        },
+        
+        completeRecovery(success) {
+            this.isActive = false;
+            this.currentLevel = 0;
+            this.lossStreak = 0;
+            this.recoveryWins = 0;
+            
+            if (success) {
+                updateStatus("✅ D'ALEMBERT COMPLETE", "#4CAF50");
+                updateLogs(0, 0, "D'ALEMBERT", 0, "D'Alembert recovery completed successfully");
+            } else {
+                updateStatus("❌ D'ALEMBERT FAILED", "#ff6b6b");
+                updateLogs(0, 0, "D'ALEMBERT", 0, "D'Alembert recovery failed");
+            }
+            
+            updateDallembertUI();
+        },
+        
+        getProgress() {
+            return Math.min(100, (this.recoveryWins / 3) * 100);
         }
     };
 
@@ -249,7 +288,10 @@
         startTime: null,
         stopTime: null,
         lastRotationTime: null,
+        
+        // Comprehensive Statistics
         stats: {
+            // Basic Stats
             profit: 0,
             wagered: 0,
             startBal: 0,
@@ -257,31 +299,56 @@
             bets: 0,
             wins: 0,
             loss: 0,
+            
+            // Advanced Stats
             maxDD: 0,
             maxProfit: 0,
+            peakBalance: 0,
             sessionProfit: 0,
             sessionWagered: 0,
             sessionBets: 0,
             sessionStartBal: 0,
-            peakBalance: 0,
-            sessionsCompleted: 0,
-            totalProfit: 0,
-            totalWagered: 0,
+            
+            // Mode Specific Stats
             baseModeProfit: 0,
             wagerModeProfit: 0,
+            baseModeBets: 0,
+            wagerModeBets: 0,
+            baseModeWins: 0,
+            wagerModeWins: 0,
+            
+            // Streak Stats
             longestWinStreak: 0,
             longestLossStreak: 0,
             currentWinStreak: 0,
             currentLossStreak: 0,
             biggestWin: 0,
             biggestLoss: 0,
+            
+            // Session Stats
             totalSessions: 0,
             profitableSessions: 0,
             losingSessions: 0,
-            modeDuration: { BASE: 0, WAGER: 0 },
-            modeBets: { BASE: 0, WAGER: 0 },
-            modeProfits: { BASE: 0, WAGER: 0 }
+            completedSessions: 0,
+            
+            // Time Stats
+            totalRuntime: 0,
+            avgBetTime: 0,
+            lastBetTime: null,
+            
+            // Performance Stats
+            winRate: 0,
+            profitPerBet: 0,
+            roi: 0,
+            sharpeRatio: 0,
+            maxConsecutiveLoss: 0,
+            maxConsecutiveWin: 0,
+            
+            // Wager Specific
+            wagerEfficiency: 0,
+            recoverySuccessRate: 0
         },
+        
         selectedCurrency: localStorage.getItem('orion_last_coin') || "usdt",
         nextBet: 0,
         currentChance: 0,
@@ -296,14 +363,7 @@
             ctwin: 0,
             balhigh: 0,
             profitc: 0,
-            betload: 0,
-            lossStreak: 0,
-            recoveryActive: false,
-            recoveryLevel: 0,
-            recoveryWins: 0,
-            recoveryTarget: 0,
-            originalLoss: 0,
-            recoveryType: null // 'BASE' atau 'WAGER'
+            betload: 0
         },
         
         lastReportPct: 0,
@@ -315,17 +375,9 @@
         session: {
             targetProfit: 0,
             stopLoss: 0,
-            targetWager: 0,
             maxSessions: 20,
             currentSession: 1,
             sessionHistory: [],
-            trailingStop: {
-                enabled: true,
-                activation: 0.5,
-                distance: 0.2,
-                activated: false,
-                peak: 0
-            },
             modeStartTime: Date.now(),
             modeBetsCount: 0
         }
@@ -430,7 +482,7 @@
         }
     };
 
-    // ==================== TELEGRAM REPORT ====================
+    // ==================== BEAUTIFUL TELEGRAM REPORT ====================
     async function sendTelegramReport(reason) {
         try {
             const now = Date.now();
@@ -441,6 +493,7 @@
             
             bot.lastReportTime = now;
             
+            // Calculate all statistics
             const runningTime = getElapsedTime();
             const currentDD = bot.stats.startBal - bot.stats.currentBal;
             const currentDDPct = bot.stats.startBal > 0 ? (currentDD / bot.stats.startBal * 100) : 0;
@@ -449,61 +502,79 @@
             const sessionProfitPct = bot.stats.sessionStartBal > 0 ?
                 (bot.stats.sessionProfit / bot.stats.sessionStartBal * 100) : 0;
             
+            const roi = bot.stats.wagered > 0 ? (bot.stats.profit / bot.stats.wagered * 100) : 0;
+            const profitPerBet = bot.stats.bets > 0 ? (bot.stats.profit / bot.stats.bets) : 0;
+            const avgBet = bot.stats.bets > 0 ? (bot.stats.wagered / bot.stats.bets) : 0;
+            const efficiency = bot.stats.wagerModeBets > 0 ? 
+                (bot.stats.wagerModeProfit / (bot.stats.wagerModeBets * avgBet) * 100) : 0;
+            
             let header = "";
             let emoji = "🚀";
             
             switch(reason) {
-                case "load": header = "📱 *BOT LOADED*"; emoji = "📱"; break;
-                case "start": header = "▶️ *BOT STARTED*"; emoji = "▶️"; break;
-                case "stop": header = "🛑 *BOT STOPPED*"; emoji = "🛑"; break;
-                case "target": header = "🎯 *TARGET REACHED*"; emoji = "🎯"; break;
-                case "stoploss": header = "⛔ *STOP LOSS HIT*"; emoji = "⛔"; break;
-                case "session_end": header = "🏁 *SESSION COMPLETED*"; emoji = "🏁"; break;
-                case "session_start": header = "🚀 *NEW SESSION STARTED*"; emoji = "🚀"; break;
-                case "max_sessions": header = "📊 *MAX SESSIONS REACHED*"; emoji = "📊"; break;
-                case "recovery_start": header = "🔄 *RECOVERY STARTED*"; emoji = "🔄"; break;
-                case "recovery_complete": header = "✅ *RECOVERY COMPLETE*"; emoji = "✅"; break;
-                case "mode_switch": header = "🔄 *MODE SWITCHED*"; emoji = "🔄"; break;
-                case "rotation": header = "🔄 *AUTO ROTATION*"; emoji = "🔄"; break;
-                default: header = "📊 *REGULAR REPORT*"; emoji = "📊";
+                case "load": header = "BOT LOADED"; emoji = "📱"; break;
+                case "start": header = "BOT STARTED"; emoji = "▶️"; break;
+                case "stop": header = "BOT STOPPED"; emoji = "🛑"; break;
+                case "target": header = "TARGET REACHED"; emoji = "🎯"; break;
+                case "stoploss": header = "STOP LOSS HIT"; emoji = "⛔"; break;
+                case "session_start": header = "NEW SESSION"; emoji = "🚀"; break;
+                case "max_sessions": header = "MAX SESSIONS"; emoji = "📊"; break;
+                case "recovery_start": header = "RECOVERY STARTED"; emoji = "🔄"; break;
+                case "recovery_complete": header = "RECOVERY COMPLETE"; emoji = "✅"; break;
+                case "mode_switch": header = "MODE SWITCHED"; emoji = "🔄"; break;
+                default: header = "REGULAR REPORT"; emoji = "📊";
             }
             
-            // Add rotation stats
-            const rotationStats = RotationConfig.stats.rotationCount > 0 ? 
-                `\n🔄 *Rotations:* ${RotationConfig.stats.successfulRotations}/${RotationConfig.stats.rotationCount}` : '';
-            
-            const message =
-                `${emoji} ${header}\n` +
-                `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-                `👤 *User:* ${bot.stakeUser}\n` +
-                `💰 *Currency:* ${bot.selectedCurrency.toUpperCase()}\n` +
-                `🔒 *License:* ${bot.licenseTier}\n` +
-                `🎮 *Mode:* ${bot.mode}${bot.wgr.recoveryActive ? ` (${bot.wgr.recoveryType} RECOVERY LVL ${bot.wgr.recoveryLevel})` : ''}\n` +
-                `⏱ *Time:* ${runningTime}\n` +
-                `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-                `🏦 *Start Balance:* ${bot.stats.startBal.toFixed(8)}\n` +
-                `📈 *Current Balance:* ${bot.stats.currentBal.toFixed(8)}\n` +
-                `✅ *Total Profit:* ${bot.stats.profit.toFixed(8)}\n` +
-                `📊 *Session P/L:* ${bot.stats.sessionProfit.toFixed(8)} (${sessionProfitPct.toFixed(2)}%)\n` +
-                `🎯 *Wagered:* ${bot.stats.wagered.toFixed(8)} (${wagerPct.toFixed(1)}%)\n` +
-                `📉 *Drawdown:* ${currentDD.toFixed(8)} (${currentDDPct.toFixed(2)}%)\n` +
-                `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-                `🏗️ *Base P/L:* ${bot.stats.baseModeProfit.toFixed(8)}\n` +
-                `⚡ *Wager P/L:* ${bot.stats.wagerModeProfit.toFixed(8)}\n` +
-                (bot.wgr.recoveryActive ? 
-                    `🔄 *Recovery Level:* ${bot.wgr.recoveryLevel}\n` +
-                    `📉 *Loss Streak:* ${bot.wgr.lossStreak}\n` +
-                    `🎯 *Chance:* ${bot.currentChance.toFixed(1)}%\n` : "") +
-                `🔄 *W/L:* ${bot.stats.wins}/${bot.stats.loss}\n` +
-                `🎲 *Bets:* ${bot.stats.bets}\n` +
-                `📊 *Win Rate:* ${winRate.toFixed(1)}%\n` +
-                `📈 *Session:* ${bot.session.currentSession}/${bot.session.maxSessions || '∞'}\n` +
-                `🏆 *Profitable Sessions:* ${bot.stats.profitableSessions}/${bot.stats.totalSessions}` +
-                rotationStats + `\n` +
-                `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-                `📊 *Status:* ${bot.isRunning ? (bot.isPaused ? '⏸️ PAUSED' : '▶️ RUNNING') : '🛑 STOPPED'}\n\n` +
-                `💬 *Support:* ${CONFIG.supportContact}\n` +
-                `⚡ *Version:* ${CONFIG.version}`;
+            const message = `
+<b>${emoji} ORION PRO ${header}</b>
+════════════════════════════════
+<b>👤 User:</b> ${bot.stakeUser}
+<b>💰 Currency:</b> ${bot.selectedCurrency.toUpperCase()}
+<b>🔒 License:</b> ${bot.licenseTier}
+<b>🎮 Mode:</b> ${bot.mode}${DallembertRecovery.isActive ? " (D'ALEMBERT LVL " + DallembertRecovery.currentLevel + ")" : ""}
+<b>⏱ Time:</b> ${runningTime}
+
+<b>📊 BALANCE INFO</b>
+├─ Start: ${bot.stats.startBal.toFixed(8)}
+├─ Current: ${bot.stats.currentBal.toFixed(8)}
+├─ Profit: <b>${bot.stats.profit.toFixed(8)}</b>
+├─ Session P/L: ${bot.stats.sessionProfit.toFixed(8)} (${sessionProfitPct.toFixed(2)}%)
+└─ Drawdown: ${currentDD.toFixed(8)} (${currentDDPct.toFixed(2)}%)
+
+<b>📈 PERFORMANCE</b>
+├─ Bets: ${bot.stats.bets}
+├─ Win/Loss: ${bot.stats.wins}/${bot.stats.loss}
+├─ Win Rate: ${winRate.toFixed(1)}%
+├─ ROI: ${roi.toFixed(2)}%
+└─ Avg Profit/Bet: ${profitPerBet.toFixed(8)}
+
+<b>🎮 MODE STATS</b>
+├─ Base: ${bot.stats.baseModeProfit.toFixed(8)} (${bot.stats.baseModeBets} bets)
+└─ Wager: ${bot.stats.wagerModeProfit.toFixed(8)} (${bot.stats.wagerModeBets} bets)
+
+${DallembertRecovery.isActive ? `
+<b>🔄 D'ALEMBERT RECOVERY</b>
+├─ Level: ${DallembertRecovery.currentLevel}
+├─ Loss Streak: ${DallembertRecovery.lossStreak}
+├─ Recovery Wins: ${DallembertRecovery.recoveryWins}/3
+└─ Chance: ${bot.currentChance.toFixed(1)}%
+` : ''}
+
+<b>🏆 RECORDS</b>
+├─ Biggest Win: ${bot.stats.biggestWin.toFixed(8)}
+├─ Biggest Loss: ${Math.abs(bot.stats.biggestLoss).toFixed(8)}
+├─ Longest Win Streak: ${bot.stats.longestWinStreak}
+└─ Longest Loss Streak: ${bot.stats.longestLossStreak}
+
+<b>📊 SESSION INFO</b>
+├─ Session: ${bot.session.currentSession}/${bot.session.maxSessions}
+├─ Profitable Sessions: ${bot.stats.profitableSessions}/${bot.stats.totalSessions}
+└─ Status: ${bot.isRunning ? (bot.isPaused ? '⏸️ PAUSED' : '▶️ RUNNING') : '🛑 STOPPED'}
+
+════════════════════════════════
+💬 <b>Support:</b> ${CONFIG.supportContact}
+⚡ <b>Version:</b> ${CONFIG.version}
+`;
 
             const url = `https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`;
             const response = await fetch(url, {
@@ -512,7 +583,8 @@
                 body: JSON.stringify({
                     chat_id: CONFIG.tgChatId,
                     text: message,
-                    parse_mode: 'Markdown'
+                    parse_mode: 'HTML',
+                    disable_web_page_preview: true
                 })
             });
             
@@ -523,163 +595,74 @@
         }
     }
 
-    // ==================== ROTATION MANAGEMENT ====================
+    // ==================== SIMPLE ROTATION MANAGEMENT ====================
     function updateRotationConfigFromUI() {
-        // Base → Wager
-        RotationConfig.baseToWager.enabled = getVal("p-rotate-base-wager-enabled") === 1;
-        RotationConfig.baseToWager.minProfitMultiplier = getVal("p-rotate-base-wager-profit-mult");
-        RotationConfig.baseToWager.minWinStreak = getVal("p-rotate-base-wager-win-streak");
-        RotationConfig.baseToWager.maxLossStreak = getVal("p-rotate-base-wager-loss-streak");
-        RotationConfig.baseToWager.minBets = getVal("p-rotate-base-wager-min-bets");
-        RotationConfig.baseToWager.profitThreshold = getVal("p-rotate-base-wager-profit-threshold");
-        RotationConfig.baseToWager.useProfitThreshold = getVal("p-rotate-base-wager-use-threshold") === 1;
-        RotationConfig.baseToWager.checkSessionProfit = getVal("p-rotate-base-wager-session-profit") === 1;
-        RotationConfig.baseToWager.sessionProfitMin = getVal("p-rotate-base-wager-session-profit-min");
+        // Base Mode Settings
+        RotationConfig.baseMode.targetProfit = getVal("p-base-target-profit");
+        RotationConfig.baseMode.minBets = getVal("p-base-min-bets");
+        RotationConfig.baseMode.stopLoss = getVal("p-base-stop-loss");
+        RotationConfig.baseMode.recoveryEnabled = getVal("p-base-recovery-enabled") === 1;
         
-        // Wager → Base
-        RotationConfig.wagerToBase.enabled = getVal("p-rotate-wager-base-enabled") === 1;
-        RotationConfig.wagerToBase.maxLossStreak = getVal("p-rotate-wager-base-loss-streak");
-        RotationConfig.wagerToBase.maxLossMultiplier = getVal("p-rotate-wager-base-loss-mult");
-        RotationConfig.wagerToBase.minProfit = getVal("p-rotate-wager-base-min-profit");
-        RotationConfig.wagerToBase.maxBets = getVal("p-rotate-wager-base-max-bets");
-        RotationConfig.wagerToBase.useTimeLimit = getVal("p-rotate-wager-base-time-limit") === 1;
-        RotationConfig.wagerToBase.timeLimitMinutes = getVal("p-rotate-wager-base-time-minutes");
-        
-        // Base Recovery
-        RotationConfig.baseRecovery.enabled = getVal("p-rotate-base-recovery-enabled") === 1;
-        RotationConfig.baseRecovery.lossStreakThreshold = getVal("p-rotate-base-recovery-loss-streak");
-        RotationConfig.baseRecovery.profitDropThreshold = getVal("p-rotate-base-recovery-profit-drop");
-        RotationConfig.baseRecovery.useDynamicRecovery = getVal("p-rotate-base-recovery-dynamic") === 1;
-        RotationConfig.baseRecovery.recoveryChanceMin = getVal("p-rotate-base-recovery-chance-min");
-        RotationConfig.baseRecovery.recoveryChanceMax = getVal("p-rotate-base-recovery-chance-max");
-        RotationConfig.baseRecovery.recoveryBetMultiplier = getVal("p-rotate-base-recovery-bet-mult");
-        RotationConfig.baseRecovery.maxRecoveryLevel = getVal("p-rotate-base-recovery-max-level");
-        
-        // Wager Recovery
-        RotationConfig.wagerRecovery.enabled = getVal("p-rotate-wager-recovery-enabled") === 1;
-        RotationConfig.wagerRecovery.lossThreshold = getVal("p-rotate-wager-recovery-loss-threshold");
-        RotationConfig.wagerRecovery.useDallembert = getVal("p-rotate-wager-recovery-dallembert") === 1;
+        // Wager Mode Settings
+        RotationConfig.wagerMode.maxLossStreak = getVal("p-wager-max-loss");
+        RotationConfig.wagerMode.minProfit = getVal("p-wager-min-profit");
+        RotationConfig.wagerMode.maxTimeMinutes = getVal("p-wager-max-time");
         
         // Auto Rotation
-        RotationConfig.autoRotation.enabled = getVal("p-rotate-auto-enabled") === 1;
-        RotationConfig.autoRotation.minSessionTime = getVal("p-rotate-auto-min-time");
-        RotationConfig.autoRotation.maxSessionTime = getVal("p-rotate-auto-max-time");
-        RotationConfig.autoRotation.forceRotateAfter = getVal("p-rotate-auto-force-time");
-        RotationConfig.autoRotation.rotationCooldown = getVal("p-rotate-auto-cooldown");
+        RotationConfig.autoRotation.enabled = getVal("p-auto-rotate-enabled") === 1;
+        RotationConfig.autoRotation.cooldownSeconds = getVal("p-rotate-cooldown");
         
-        console.log("Rotation config updated from UI");
+        console.log("Rotation config updated");
     }
 
-    function shouldRotateToWager() {
-        if (!RotationConfig.baseToWager.enabled || bot.mode !== "BASE") return false;
-        
-        const config = RotationConfig.baseToWager;
+    function shouldSwitchToWager() {
+        if (!RotationConfig.autoRotation.enabled || bot.mode !== "BASE") return false;
         
         // Check cooldown
         if (RotationConfig.stats.lastRotationTime && 
-            (Date.now() - RotationConfig.stats.lastRotationTime) < (RotationConfig.autoRotation.rotationCooldown * 1000)) {
+            (Date.now() - RotationConfig.stats.lastRotationTime) < (RotationConfig.autoRotation.cooldownSeconds * 1000)) {
             return false;
         }
         
-        // Check minimum bets in current mode
-        if (bot.session.modeBetsCount < config.minBets) return false;
+        // Check minimum bets
+        if (bot.session.modeBetsCount < RotationConfig.baseMode.minBets) return false;
         
-        // Check loss streak
-        if (config.maxLossStreak >= 0 && bot.stats.currentLossStreak > config.maxLossStreak) return false;
-        
-        // Check win streak
-        if (bot.stats.currentWinStreak < config.minWinStreak) return false;
-        
-        // Check profit multiplier
-        const minProfit = getVal("p-basebet") * config.minProfitMultiplier;
-        if (bot.stats.baseModeProfit < minProfit) return false;
-        
-        // Check profit threshold (percentage)
-        if (config.useProfitThreshold) {
-            const profitPct = (bot.stats.baseModeProfit / bot.stats.sessionStartBal) * 100;
-            if (profitPct < config.profitThreshold) return false;
+        // Check profit target
+        if (bot.stats.baseModeProfit >= RotationConfig.baseMode.targetProfit) {
+            return true;
         }
         
-        // Check session profit
-        if (config.checkSessionProfit) {
-            const sessionProfitPct = (bot.stats.sessionProfit / bot.stats.sessionStartBal) * 100;
-            if (sessionProfitPct < config.sessionProfitMin) return false;
+        // Check stop loss
+        if (bot.stats.baseModeProfit <= -RotationConfig.baseMode.stopLoss) {
+            return true;
         }
         
-        // Check if in recovery
-        if (bot.wgr.recoveryActive) return false;
-        
-        return true;
+        return false;
     }
 
-    function shouldRotateToBase() {
-        if (!RotationConfig.wagerToBase.enabled || bot.mode !== "WAGER") return false;
-        
-        const config = RotationConfig.wagerToBase;
+    function shouldSwitchToBase() {
+        if (!RotationConfig.autoRotation.enabled || bot.mode !== "WAGER") return false;
         
         // Check cooldown
         if (RotationConfig.stats.lastRotationTime && 
-            (Date.now() - RotationConfig.stats.lastRotationTime) < (RotationConfig.autoRotation.rotationCooldown * 1000)) {
+            (Date.now() - RotationConfig.stats.lastRotationTime) < (RotationConfig.autoRotation.cooldownSeconds * 1000)) {
             return false;
         }
         
         // Check loss streak
-        if (bot.wgr.lossStreak >= config.maxLossStreak) return true;
-        
-        // Check loss multiplier
-        if (config.maxLossMultiplier > 0 && bot.wgr.recoveryActive) {
-            const currentLoss = Math.abs(bot.wgr.profitc);
-            const originalLoss = Math.abs(bot.wgr.originalLoss);
-            if (originalLoss > 0 && currentLoss >= originalLoss * config.maxLossMultiplier) return true;
+        if (bot.stats.currentLossStreak >= RotationConfig.wagerMode.maxLossStreak) {
+            return true;
         }
         
         // Check minimum profit
-        if (bot.stats.wagerModeProfit < config.minProfit) return true;
-        
-        // Check max bets
-        if (config.maxBets > 0 && bot.session.modeBetsCount >= config.maxBets) return true;
+        if (bot.stats.wagerModeProfit < RotationConfig.wagerMode.minProfit) {
+            return true;
+        }
         
         // Check time limit
-        if (config.useTimeLimit) {
-            const modeDuration = Date.now() - bot.session.modeStartTime;
-            if (modeDuration >= config.timeLimitMinutes * 60 * 1000) return true;
-        }
-        
-        // Auto rotation force
-        if (RotationConfig.autoRotation.enabled) {
-            const modeDuration = Date.now() - bot.session.modeStartTime;
-            if (modeDuration >= RotationConfig.autoRotation.forceRotateAfter * 1000) return true;
-        }
-        
-        return false;
-    }
-
-    function shouldStartBaseRecovery() {
-        if (!RotationConfig.baseRecovery.enabled || bot.mode !== "BASE" || bot.wgr.recoveryActive) return false;
-        
-        const config = RotationConfig.baseRecovery;
-        
-        // Check loss streak
-        if (bot.stats.currentLossStreak >= config.lossStreakThreshold) return true;
-        
-        // Check profit drop
-        if (config.profitDropThreshold > 0) {
-            const profitDrop = (bot.stats.peakBalance - bot.stats.currentBal) / bot.stats.peakBalance * 100;
-            if (profitDrop >= config.profitDropThreshold) return true;
-        }
-        
-        return false;
-    }
-
-    function shouldStartWagerRecovery() {
-        if (!RotationConfig.wagerRecovery.enabled || bot.mode !== "WAGER" || bot.wgr.recoveryActive) return false;
-        
-        const config = RotationConfig.wagerRecovery;
-        
-        // Check loss threshold (percentage)
-        if (config.lossThreshold < 0) {
-            const lossPct = (bot.wgr.profitc / bot.stats.startBal) * 100;
-            if (lossPct <= config.lossThreshold) return true;
+        const modeDuration = Date.now() - bot.session.modeStartTime;
+        if (modeDuration >= RotationConfig.wagerMode.maxTimeMinutes * 60 * 1000) {
+            return true;
         }
         
         return false;
@@ -693,20 +676,18 @@
         RotationConfig.stats.rotationCount++;
         RotationConfig.stats.lastRotationTime = rotationTime;
         
-        // Record rotation history
+        // Record rotation
         const rotationRecord = {
             timestamp: rotationTime,
             from: oldMode,
             to: newMode,
-            reason: getRotationReason(oldMode, newMode),
             baseProfit: bot.stats.baseModeProfit,
             wagerProfit: bot.stats.wagerModeProfit,
-            sessionProfit: bot.stats.sessionProfit,
             balance: bot.stats.currentBal
         };
         
         RotationConfig.stats.rotationHistory.unshift(rotationRecord);
-        if (RotationConfig.stats.rotationHistory.length > 20) {
+        if (RotationConfig.stats.rotationHistory.length > 10) {
             RotationConfig.stats.rotationHistory.pop();
         }
         
@@ -716,7 +697,7 @@
         bot.session.modeStartTime = rotationTime;
         bot.session.modeBetsCount = 0;
         
-        // Reset mode-specific stats
+        // Reset mode parameters
         if (newMode === "BASE") {
             rotateToBaseMode();
         } else if (newMode === "WAGER") {
@@ -725,18 +706,15 @@
         
         // Update UI
         updateStatus(`🔄 ${oldMode} → ${newMode}`, "#888");
-        updateLogs(0, 0, "ROTATION", 0, `${oldMode} → ${newMode} (${rotationRecord.reason})`);
+        updateLogs(0, 0, "ROTATION", 0, `${oldMode} → ${newMode}`);
         
         // Send report
-        sendTelegramReport("rotation");
-        
-        RotationConfig.stats.successfulRotations++;
+        sendTelegramReport("mode_switch");
         
         console.log(`🔄 Mode rotated: ${oldMode} → ${newMode}`);
     }
 
     function rotateToBaseMode() {
-        // Reset base mode parameters
         bot.currentChance = Math.random() * (getVal("p-bch-max") - getVal("p-bch-min")) + getVal("p-bch-min");
         bot.nextBet = getVal("p-basebet");
         bot.currentMulti = getVal("p-multi-start");
@@ -745,18 +723,15 @@
         bot.partialProfit = 0;
         bot.bcount = 0;
         
-        // Reset recovery
-        bot.wgr.recoveryActive = false;
-        bot.wgr.recoveryType = null;
-        bot.wgr.lossStreak = 0;
-        bot.wgr.recoveryLevel = 0;
-        bot.wgr.recoveryWins = 0;
+        // Reset D'Alembert jika aktif
+        if (DallembertRecovery.isActive) {
+            DallembertRecovery.completeRecovery(false);
+        }
         
         console.log("🔄 Rotated to BASE mode");
     }
 
     function rotateToWagerMode() {
-        // Reset wager mode parameters
         bot.currentChance = getVal("p-wgr-chance");
         bot.nextBet = bot.stats.currentBal / getVal("p-wgr-div");
         bot.wgr.balhigh = bot.stats.currentBal;
@@ -764,190 +739,7 @@
         bot.wgr.ctwin = 0;
         bot.wgr.betload = 0;
         
-        // Reset recovery
-        bot.wgr.recoveryActive = false;
-        bot.wgr.recoveryType = null;
-        bot.wgr.lossStreak = 0;
-        bot.wgr.recoveryLevel = 0;
-        bot.wgr.recoveryWins = 0;
-        
         console.log("🔄 Rotated to WAGER mode");
-    }
-
-    function getRotationReason(fromMode, toMode) {
-        if (fromMode === "BASE" && toMode === "WAGER") {
-            return "Profit target reached";
-        } else if (fromMode === "WAGER" && toMode === "BASE") {
-            if (bot.wgr.lossStreak >= RotationConfig.wagerToBase.maxLossStreak) {
-                return "Loss streak too high";
-            } else if (bot.session.modeBetsCount >= RotationConfig.wagerToBase.maxBets) {
-                return "Max bets reached";
-            } else {
-                return "Profit target achieved";
-            }
-        }
-        return "Manual rotation";
-    }
-
-    // ==================== RECOVERY MANAGEMENT ====================
-    function startBaseRecovery() {
-        bot.wgr.recoveryActive = true;
-        bot.wgr.recoveryType = "BASE";
-        bot.wgr.recoveryLevel = 1;
-        bot.wgr.recoveryWins = 0;
-        bot.wgr.lossStreak = bot.stats.currentLossStreak;
-        bot.wgr.originalLoss = bot.stats.baseModeProfit;
-        
-        const config = RotationConfig.baseRecovery;
-        
-        // Set recovery chance
-        if (config.useDynamicRecovery) {
-            bot.currentChance = Math.random() * (config.recoveryChanceMax - config.recoveryChanceMin) + config.recoveryChanceMin;
-        } else {
-            bot.currentChance = 80; // Default
-        }
-        
-        // Set recovery bet
-        bot.nextBet = getVal("p-basebet") * config.recoveryBetMultiplier;
-        
-        // Reset base parameters
-        bot.ls = 0;
-        bot.lc = 0;
-        bot.partialProfit = 0;
-        bot.currentMulti = getVal("p-multi-start");
-        
-        updateStatus(`🔄 BASE RECOVERY LVL ${bot.wgr.recoveryLevel}`, "#ffa500");
-        updateLogs(0, 0, "RECOVERY", 0, "Base mode recovery started");
-        sendTelegramReport("recovery_start");
-        
-        return true;
-    }
-
-    function startWagerRecovery() {
-        bot.wgr.recoveryActive = true;
-        bot.wgr.recoveryType = "WAGER";
-        bot.wgr.originalLoss = bot.wgr.profitc;
-        bot.wgr.recoveryLevel = 1;
-        bot.wgr.recoveryWins = 0;
-        bot.wgr.lossStreak = 0;
-        
-        if (RotationConfig.wagerRecovery.useDallembert) {
-            updateDallembertRecovery();
-        } else {
-            // Simple recovery
-            bot.currentChance = 95;
-            bot.nextBet = bot.stats.currentBal / (getVal("p-wgr-div") * 2);
-        }
-        
-        updateStatus(`🔄 WAGER RECOVERY LVL ${bot.wgr.recoveryLevel}`, "#ffa500");
-        updateLogs(0, 0, "RECOVERY", 0, "Wager mode recovery started");
-        sendTelegramReport("recovery_start");
-        
-        return true;
-    }
-
-    function updateDallembertRecovery() {
-        if (!bot.wgr.recoveryActive || bot.wgr.recoveryType !== "WAGER") return;
-        
-        const levelSettings = DallembertRecovery.getLevelSettings(bot.wgr.lossStreak);
-        bot.wgr.recoveryLevel = Math.floor((bot.wgr.lossStreak - 1) / 5) + 1;
-        
-        bot.currentChance = DallembertRecovery.calculateChance(levelSettings);
-        
-        const baseBet = bot.stats.currentBal / getVal("p-wgr-div");
-        bot.nextBet = DallembertRecovery.calculateBet(baseBet, bot.wgr.lossStreak, levelSettings);
-        
-        const minBet = getVal("p-minbet");
-        bot.nextBet = Math.max(bot.nextBet, minBet);
-        
-        updateRecoveryUI();
-    }
-
-    function handleRecoveryWin() {
-        if (!bot.wgr.recoveryActive) return;
-        
-        bot.wgr.recoveryWins++;
-        
-        if (bot.wgr.recoveryType === "BASE") {
-            bot.wgr.lossStreak = Math.max(0, bot.wgr.lossStreak - 1);
-            
-            // Check if recovery complete
-            if (bot.stats.baseModeProfit > bot.wgr.originalLoss) {
-                completeRecovery(true);
-            } else {
-                // Continue recovery with adjusted parameters
-                const config = RotationConfig.baseRecovery;
-                bot.currentChance = Math.max(70, bot.currentChance - 5);
-                bot.nextBet *= 1.1;
-            }
-        } else if (bot.wgr.recoveryType === "WAGER") {
-            bot.wgr.lossStreak = Math.max(0, bot.wgr.lossStreak - 2);
-            
-            if (bot.wgr.profitc >= 0) {
-                completeRecovery(true);
-            } else {
-                updateDallembertRecovery();
-            }
-        }
-    }
-
-    function handleRecoveryLoss() {
-        if (!bot.wgr.recoveryActive) return;
-        
-        bot.wgr.lossStreak++;
-        
-        if (bot.wgr.recoveryType === "BASE") {
-            // Check if should stop recovery and rotate
-            if (bot.wgr.lossStreak >= RotationConfig.baseRecovery.maxRecoveryLevel * 3) {
-                completeRecovery(false);
-                if (shouldRotateToWager()) {
-                    rotateMode("WAGER");
-                }
-                return;
-            }
-            
-            // Increase chance for next bet
-            const config = RotationConfig.baseRecovery;
-            bot.currentChance = Math.min(95, bot.currentChance + 10);
-            bot.nextBet *= 1.2;
-            bot.wgr.recoveryLevel = Math.floor((bot.wgr.lossStreak - 1) / 3) + 1;
-            
-        } else if (bot.wgr.recoveryType === "WAGER") {
-            if (shouldRotateToBase()) {
-                completeRecovery(false);
-                rotateMode("BASE");
-                return;
-            }
-            
-            updateDallembertRecovery();
-        }
-    }
-
-    function completeRecovery(success) {
-        const recoveryType = bot.wgr.recoveryType;
-        
-        bot.wgr.recoveryActive = false;
-        bot.wgr.recoveryType = null;
-        bot.wgr.lossStreak = 0;
-        bot.wgr.recoveryLevel = 0;
-        bot.wgr.recoveryWins = 0;
-        
-        if (recoveryType === "BASE") {
-            bot.currentChance = Math.random() * (getVal("p-bch-max") - getVal("p-bch-min")) + getVal("p-bch-min");
-            bot.nextBet = getVal("p-basebet");
-        } else if (recoveryType === "WAGER") {
-            bot.currentChance = getVal("p-wgr-chance");
-            bot.nextBet = bot.stats.currentBal / getVal("p-wgr-div");
-        }
-        
-        if (success) {
-            updateStatus(`✅ ${recoveryType} RECOVERY COMPLETE`, "#4CAF50");
-            sendTelegramReport("recovery_complete");
-        } else {
-            updateStatus(`❌ ${recoveryType} RECOVERY FAILED`, "#ff6b6b");
-        }
-        
-        updateRecoveryUI();
     }
 
     // ==================== SESSION MANAGEMENT ====================
@@ -971,6 +763,7 @@
                 bot.stats.losingSessions++;
             }
             bot.stats.totalSessions++;
+            bot.stats.completedSessions++;
         }
         
         bot.session.currentSession++;
@@ -979,11 +772,11 @@
         bot.stats.sessionWagered = 0;
         bot.stats.sessionBets = 0;
         
-        bot.session.trailingStop.peak = bot.stats.currentBal;
-        bot.session.trailingStop.activated = false;
-        
         bot.session.modeStartTime = Date.now();
         bot.session.modeBetsCount = 0;
+        
+        // Start in BASE mode
+        rotateToBaseMode();
         
         console.log(`🚀 Starting session ${bot.session.currentSession}`);
         updateStatus(`🚀 SESSION ${bot.session.currentSession}`, "#666");
@@ -1035,6 +828,7 @@
             bot.stats.losingSessions++;
         }
         bot.stats.totalSessions++;
+        bot.stats.completedSessions++;
         
         const maxSessions = getVal("p-max-sessions");
         if (maxSessions > 0 && bot.session.currentSession >= maxSessions) {
@@ -1046,33 +840,6 @@
         
         startNewSession();
         return true;
-    }
-
-    function updateTrailingStop() {
-        if (!bot.session.trailingStop.enabled) return false;
-        
-        const currentProfitPct = bot.stats.sessionProfit / bot.stats.sessionStartBal * 100;
-        
-        if (bot.stats.currentBal > bot.session.trailingStop.peak) {
-            bot.session.trailingStop.peak = bot.stats.currentBal;
-        }
-        
-        if (!bot.session.trailingStop.activated && currentProfitPct >= bot.session.trailingStop.activation) {
-            bot.session.trailingStop.activated = true;
-            updateLogs(0, 0, "TRAILING", 0, "Trailing stop activated");
-        }
-        
-        if (bot.session.trailingStop.activated) {
-            const distanceFromPeak = (bot.session.trailingStop.peak - bot.stats.currentBal) / bot.session.trailingStop.peak * 100;
-            
-            if (distanceFromPeak > bot.session.trailingStop.distance) {
-                updateLogs(0, 0, "TRAILING", 0, `Trailing stop triggered: ${distanceFromPeak.toFixed(2)}%`);
-                completeSession("TRAILING STOP");
-                return true;
-            }
-        }
-        
-        return false;
     }
 
     // ==================== UTILITY FUNCTIONS ====================
@@ -1097,50 +864,19 @@
                     "p-session-target": 10.0,
                     "p-session-stoploss": 5.0,
                     "p-max-sessions": 20,
-                    "p-trailing-enabled": 1,
-                    "p-trailing-activation": 0.5,
-                    "p-trailing-distance": 0.2,
-                    "p-dallembert-level1-min": 25,
-                    "p-dallembert-level1-max": 35,
-                    "p-dallembert-level2-min": 45,
-                    "p-dallembert-level2-max": 55,
-                    "p-dallembert-level3-min": 77,
-                    "p-dallembert-level3-max": 87,
-                    "p-chrec-min": 50.0,
-                    "p-chrec-max": 70.0,
-                    // Rotation settings defaults
-                    "p-rotate-base-wager-enabled": 1,
-                    "p-rotate-base-wager-profit-mult": 2,
-                    "p-rotate-base-wager-win-streak": 2,
-                    "p-rotate-base-wager-loss-streak": 0,
-                    "p-rotate-base-wager-min-bets": 5,
-                    "p-rotate-base-wager-profit-threshold": 1.0,
-                    "p-rotate-base-wager-use-threshold": 0,
-                    "p-rotate-base-wager-session-profit": 1,
-                    "p-rotate-base-wager-session-profit-min": 0.5,
-                    "p-rotate-wager-base-enabled": 1,
-                    "p-rotate-wager-base-loss-streak": 8,
-                    "p-rotate-wager-base-loss-mult": 3,
-                    "p-rotate-wager-base-min-profit": 0.00000100,
-                    "p-rotate-wager-base-max-bets": 30,
-                    "p-rotate-wager-base-time-limit": 0,
-                    "p-rotate-wager-base-time-minutes": 5,
-                    "p-rotate-base-recovery-enabled": 1,
-                    "p-rotate-base-recovery-loss-streak": 3,
-                    "p-rotate-base-recovery-profit-drop": 50.0,
-                    "p-rotate-base-recovery-dynamic": 1,
-                    "p-rotate-base-recovery-chance-min": 70.0,
-                    "p-rotate-base-recovery-chance-max": 85.0,
-                    "p-rotate-base-recovery-bet-mult": 1.5,
-                    "p-rotate-base-recovery-max-level": 5,
-                    "p-rotate-wager-recovery-enabled": 1,
-                    "p-rotate-wager-recovery-loss-threshold": -1.0,
-                    "p-rotate-wager-recovery-dallembert": 1,
-                    "p-rotate-auto-enabled": 1,
-                    "p-rotate-auto-min-time": 60,
-                    "p-rotate-auto-max-time": 300,
-                    "p-rotate-auto-force-time": 600,
-                    "p-rotate-auto-cooldown": 30
+                    // Simple Rotation Settings
+                    "p-base-target-profit": 0.00000500,
+                    "p-base-min-bets": 10,
+                    "p-base-stop-loss": 0.00001000,
+                    "p-base-recovery-enabled": 1,
+                    "p-wager-max-loss": 5,
+                    "p-wager-min-profit": 0.00000200,
+                    "p-wager-max-time": 3,
+                    "p-auto-rotate-enabled": 1,
+                    "p-rotate-cooldown": 30,
+                    // D'Alembert Settings
+                    "p-dallembert-enabled": 1,
+                    "p-dallembert-loss-threshold": -0.00000500
                 };
                 return defaults[id] || 0;
             }
@@ -1161,6 +897,9 @@
     }
 
     function updateStatsSync(d, win, pft) {
+        const betTime = Date.now();
+        
+        // Update basic stats
         bot.stats.bets++;
         bot.stats.sessionBets++;
         bot.session.modeBetsCount++;
@@ -1171,29 +910,55 @@
         bot.stats.currentBal += pft;
         bot.partialProfit += pft;
         
-        if (bot.stats.profit > bot.stats.maxProfit) {
-            bot.stats.maxProfit = bot.stats.profit;
+        // Update mode specific stats
+        if (bot.mode === "BASE") {
+            bot.stats.baseModeBets++;
+            bot.stats.baseModeProfit += pft;
+            if (win) bot.stats.baseModeWins++;
+        } else {
+            bot.stats.wagerModeBets++;
+            bot.stats.wagerModeProfit += pft;
+            if (win) bot.stats.wagerModeWins++;
         }
         
         if (win) {
             bot.stats.wins++;
-            if (bot.mode === "BASE") {
-                bot.stats.baseModeProfit += pft;
-                bot.stats.modeProfits.BASE += pft;
-                bot.stats.modeBets.BASE++;
-            } else {
-                bot.stats.wagerModeProfit += pft;
-                bot.stats.modeProfits.WAGER += pft;
-                bot.stats.modeBets.WAGER++;
+            if (pft > bot.stats.biggestWin) {
+                bot.stats.biggestWin = pft;
             }
         } else {
             bot.stats.loss++;
+            if (Math.abs(pft) > Math.abs(bot.stats.biggestLoss)) {
+                bot.stats.biggestLoss = pft;
+            }
         }
-
+        
+        // Update drawdown
         let drop = bot.stats.currentBal < bot.stats.startBal ? bot.stats.startBal - bot.stats.currentBal : 0;
         if (drop > bot.stats.maxDD) bot.stats.maxDD = drop;
         
+        // Update peak
+        if (bot.stats.currentBal > bot.stats.peakBalance) {
+            bot.stats.peakBalance = bot.stats.currentBal;
+        }
+        
+        if (bot.stats.profit > bot.stats.maxProfit) {
+            bot.stats.maxProfit = bot.stats.profit;
+        }
+        
+        // Update time stats
+        if (bot.stats.lastBetTime) {
+            const timeBetweenBets = betTime - bot.stats.lastBetTime;
+            bot.stats.avgBetTime = (bot.stats.avgBetTime * (bot.stats.bets - 1) + timeBetweenBets) / bot.stats.bets;
+        }
+        bot.stats.lastBetTime = betTime;
+        bot.stats.totalRuntime = betTime - bot.startTime;
+        
+        // Update streak stats
         updateStreakStats(win, pft);
+        
+        // Update advanced stats
+        updateAdvancedStats();
     }
 
     function updateStreakStats(win, profit) {
@@ -1205,8 +970,8 @@
                 bot.stats.longestWinStreak = bot.stats.currentWinStreak;
             }
             
-            if (profit > bot.stats.biggestWin) {
-                bot.stats.biggestWin = profit;
+            if (bot.stats.currentWinStreak > bot.stats.maxConsecutiveWin) {
+                bot.stats.maxConsecutiveWin = bot.stats.currentWinStreak;
             }
         } else {
             bot.stats.currentLossStreak++;
@@ -1216,23 +981,38 @@
                 bot.stats.longestLossStreak = bot.stats.currentLossStreak;
             }
             
-            if (Math.abs(profit) > Math.abs(bot.stats.biggestLoss)) {
-                bot.stats.biggestLoss = profit;
+            if (bot.stats.currentLossStreak > bot.stats.maxConsecutiveLoss) {
+                bot.stats.maxConsecutiveLoss = bot.stats.currentLossStreak;
             }
         }
     }
 
+    function updateAdvancedStats() {
+        // Calculate win rate
+        bot.stats.winRate = bot.stats.bets > 0 ? (bot.stats.wins / bot.stats.bets * 100) : 0;
+        
+        // Calculate profit per bet
+        bot.stats.profitPerBet = bot.stats.bets > 0 ? (bot.stats.profit / bot.stats.bets) : 0;
+        
+        // Calculate ROI
+        bot.stats.roi = bot.stats.wagered > 0 ? (bot.stats.profit / bot.stats.wagered * 100) : 0;
+        
+        // Calculate Sharpe Ratio (simplified)
+        const avgReturn = bot.stats.profitPerBet;
+        const returns = []; // In real implementation, track returns array
+        const variance = returns.length > 1 ? 
+            returns.reduce((sum, ret) => sum + Math.pow(ret - avgReturn, 2), 0) / (returns.length - 1) : 0;
+        bot.stats.sharpeRatio = variance > 0 ? (avgReturn / Math.sqrt(variance)) : 0;
+        
+        // Calculate wager efficiency
+        const avgWagerBet = bot.stats.wagerModeBets > 0 ? 
+            (bot.stats.wagered / bot.stats.bets) : 0;
+        bot.stats.wagerEfficiency = avgWagerBet > 0 ? 
+            (bot.stats.wagerModeProfit / (bot.stats.wagerModeBets * avgWagerBet) * 100) : 0;
+    }
+
     function handleBaseMode(win) {
         if (win) {
-            if (bot.stats.currentBal > bot.stats.peakBalance) {
-                bot.stats.peakBalance = bot.stats.currentBal;
-            }
-            
-            if (bot.wgr.recoveryActive && bot.wgr.recoveryType === "BASE") {
-                handleRecoveryWin();
-                return;
-            }
-            
             bot.ls = 0;
             bot.lc = 0;
             bot.partialProfit = 0;
@@ -1240,20 +1020,18 @@
             bot.nextBet = getVal("p-basebet");
             bot.currentMulti = getVal("p-multi-start");
             
-            if (shouldRotateToWager()) {
+            // Check if should switch to wager
+            if (shouldSwitchToWager()) {
                 rotateMode("WAGER");
             }
         } else {
             bot.ls++;
             bot.lc++;
             
-            if (!bot.wgr.recoveryActive && shouldStartBaseRecovery()) {
-                startBaseRecovery();
-            }
-            
-            if (bot.wgr.recoveryActive && bot.wgr.recoveryType === "BASE") {
-                handleRecoveryLoss();
-                return;
+            // Check if should start D'Alembert recovery
+            if (getVal("p-dallembert-enabled") === 1 && bot.mode === "WAGER" && 
+                !DallembertRecovery.isActive && bot.wgr.profitc <= getVal("p-dallembert-loss-threshold")) {
+                DallembertRecovery.startRecovery(bot.wgr.profitc);
             }
             
             if (bot.ls === 1 || bot.lc > bot.bcount) {
@@ -1263,6 +1041,11 @@
                 bot.bcount = Math.ceil(99 / bot.currentChance);
             }
             bot.nextBet = (Math.abs(bot.partialProfit) / ((99/bot.currentChance) - 1)) * bot.currentMulti;
+            
+            // Check if should switch to wager due to stop loss
+            if (shouldSwitchToWager()) {
+                rotateMode("WAGER");
+            }
         }
     }
 
@@ -1270,48 +1053,70 @@
         if (win) {
             bot.wgr.ctwin++;
             
-            if (bot.wgr.recoveryActive && bot.wgr.recoveryType === "WAGER") {
-                handleRecoveryWin();
-                return;
-            }
-            
-            if (bot.wgr.ctwin > 10) {
-                bot.wgr.ctwin = 0;
-                const recoveryChance = Math.random() * (getVal("p-chrec-max") - getVal("p-chrec-min")) + getVal("p-chrec-min");
-                bot.currentChance = recoveryChance;
-                bot.nextBet = Math.max(0, bot.wgr.betload) / ((99 / bot.currentChance) - 1);
+            // Handle D'Alembert recovery
+            if (DallembertRecovery.isActive) {
+                if (DallembertRecovery.handleWin()) {
+                    // Recovery completed
+                    bot.currentChance = getVal("p-wgr-chance");
+                    bot.nextBet = bot.stats.currentBal / getVal("p-wgr-div");
+                } else {
+                    // Continue recovery
+                    bot.currentChance = DallembertRecovery.calculateNextChance();
+                    bot.nextBet = DallembertRecovery.calculateNextBet(bot.stats.currentBal / getVal("p-wgr-div"));
+                }
             } else {
-                bot.currentChance = getVal("p-wgr-chance");
-                bot.nextBet = bot.stats.currentBal / getVal("p-wgr-div");
+                if (bot.wgr.ctwin > 10) {
+                    bot.wgr.ctwin = 0;
+                    const recoveryChance = Math.random() * (getVal("p-chrec-max") - getVal("p-chrec-min")) + getVal("p-chrec-min");
+                    bot.currentChance = recoveryChance;
+                    bot.nextBet = Math.max(0, bot.wgr.betload) / ((99 / bot.currentChance) - 1);
+                } else {
+                    bot.currentChance = getVal("p-wgr-chance");
+                    bot.nextBet = bot.stats.currentBal / getVal("p-wgr-div");
+                }
             }
             
             if (bot.stats.currentBal > bot.wgr.balhigh) {
                 bot.wgr.balhigh = bot.stats.currentBal;
             }
             
-            if (shouldRotateToBase()) {
+            // Check if should switch back to base
+            if (shouldSwitchToBase()) {
                 rotateMode("BASE");
             }
         } else {
             bot.wgr.profitc += (bot.stats.currentBal - bot.wgr.balhigh);
             bot.wgr.betload = bot.wgr.balhigh - bot.stats.currentBal;
             
-            if (!bot.wgr.recoveryActive && shouldStartWagerRecovery()) {
-                startWagerRecovery();
-            }
-            
-            if (bot.wgr.recoveryActive && bot.wgr.recoveryType === "WAGER") {
-                handleRecoveryLoss();
-                return;
-            }
-            
-            if (bot.currentChance < 80) {
-                bot.nextBet = Math.abs(bot.wgr.betload) / ((99 / bot.currentChance) - 1);
+            // Handle D'Alembert recovery
+            if (DallembertRecovery.isActive) {
+                if (DallembertRecovery.handleLoss()) {
+                    // Recovery failed, reset to normal
+                    bot.currentChance = getVal("p-wgr-chance");
+                    bot.nextBet = bot.stats.currentBal / getVal("p-wgr-div");
+                } else {
+                    // Continue recovery
+                    bot.currentChance = DallembertRecovery.calculateNextChance();
+                    bot.nextBet = DallembertRecovery.calculateNextBet(bot.stats.currentBal / getVal("p-wgr-div"));
+                }
             } else {
-                bot.nextBet *= 1.12;
+                // Start D'Alembert if loss threshold reached
+                if (getVal("p-dallembert-enabled") === 1 && 
+                    bot.wgr.profitc <= getVal("p-dallembert-loss-threshold")) {
+                    DallembertRecovery.startRecovery(bot.wgr.profitc);
+                    bot.currentChance = DallembertRecovery.calculateNextChance();
+                    bot.nextBet = DallembertRecovery.calculateNextBet(bot.stats.currentBal / getVal("p-wgr-div"));
+                } else {
+                    if (bot.currentChance < 80) {
+                        bot.nextBet = Math.abs(bot.wgr.betload) / ((99 / bot.currentChance) - 1);
+                    } else {
+                        bot.nextBet *= 1.12;
+                    }
+                }
             }
             
-            if (shouldRotateToBase()) {
+            // Check if should switch back to base
+            if (shouldSwitchToBase()) {
                 rotateMode("BASE");
             }
         }
@@ -1322,11 +1127,6 @@
         if (!bot.isRunning || bot.isPaused) return;
         
         if (checkSessionCompletion()) {
-            setTimeout(runLoop, 10);
-            return;
-        }
-        
-        if (updateTrailingStop()) {
             setTimeout(runLoop, 10);
             return;
         }
@@ -1385,7 +1185,7 @@
     async function stopEngine() {
         bot.isRunning = false;
         bot.stopTime = Date.now();
-        bot.wgr.recoveryActive = false;
+        DallembertRecovery.isActive = false;
         await updateBalanceDisplay();
     }
 
@@ -1406,12 +1206,11 @@
             'BASE': '#999',
             'RECOVERY': '#777',
             'SESSION': '#4CAF50',
-            'TRAILING': '#ffa500',
-            'MODE': '#888',
-            'ROTATION': '#888'
+            'ROTATION': '#888',
+            "D'ALEMBERT": '#ffa500'
         };
         
-        const currentMode = bot.wgr.recoveryActive ? 'RECOVERY' : mode;
+        const currentMode = DallembertRecovery.isActive ? "D'ALEMBERT" : mode;
         
         const row = document.createElement("div");
         
@@ -1439,120 +1238,248 @@
         return `${Math.floor(d/3600).toString().padStart(2,'0')}:${Math.floor((d%3600)/60).toString().padStart(2,'0')}:${(d%60).toString().padStart(2,'0')}`;
     }
 
-    function updateRecoveryUI() {
-        const recoveryStatus = document.getElementById("recovery-status");
-        const recoveryLevel = document.getElementById("recovery-level");
-        const recoveryProgress = document.getElementById("recovery-progress");
+    function updateDallembertUI() {
+        const dallembertStatus = document.getElementById("dallembert-status");
+        const dallembertLevel = document.getElementById("dallembert-level");
+        const dallembertProgress = document.getElementById("dallembert-progress");
         
-        if (!recoveryStatus || !recoveryLevel || !recoveryProgress) return;
+        if (!dallembertStatus || !dallembertLevel || !dallembertProgress) return;
         
-        if (!bot.wgr.recoveryActive) {
-            recoveryStatus.innerText = "INACTIVE";
-            recoveryLevel.innerText = "0";
-            recoveryProgress.style.width = "0%";
+        if (!DallembertRecovery.isActive) {
+            dallembertStatus.innerText = "INACTIVE";
+            dallembertLevel.innerText = "0";
+            dallembertProgress.style.width = "0%";
             return;
         }
         
-        recoveryStatus.innerText = bot.wgr.recoveryType + " ACTIVE";
-        recoveryLevel.innerText = bot.wgr.recoveryLevel;
+        dallembertStatus.innerText = "ACTIVE";
+        dallembertLevel.innerText = DallembertRecovery.currentLevel;
         
-        const progress = Math.min(100, (bot.wgr.recoveryWins / 3) * 100);
-        recoveryProgress.style.width = `${progress}%`;
+        const progress = DallembertRecovery.getProgress();
+        dallembertProgress.style.width = `${progress}%`;
     }
 
-    // ==================== ROTATION UI UPDATES ====================
-    function updateRotationUI() {
+    // ==================== COMPREHENSIVE STATISTICS UI ====================
+    function updateStatisticsUI() {
         try {
-            // Update rotation stats
-            const rotationStatsEl = document.getElementById("rotation-stats");
-            if (rotationStatsEl) {
-                rotationStatsEl.innerHTML = `
-                    <div class="stat-item">
-                        <div class="stat-item-label">TOTAL ROTATIONS</div>
-                        <div class="stat-item-value">${RotationConfig.stats.rotationCount}</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-item-label">SUCCESS RATE</div>
-                        <div class="stat-item-value ${RotationConfig.stats.successfulRotations/RotationConfig.stats.rotationCount >= 0.7 ? 'text-success' : 'text-warning'}">
-                            ${RotationConfig.stats.rotationCount > 0 ? 
-                                ((RotationConfig.stats.successfulRotations/RotationConfig.stats.rotationCount)*100).toFixed(1) + '%' : '0%'}
+            // Calculate all statistics
+            const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100) : 0;
+            const roi = bot.stats.wagered > 0 ? (bot.stats.profit / bot.stats.wagered * 100) : 0;
+            const profitPerBet = bot.stats.bets > 0 ? (bot.stats.profit / bot.stats.bets) : 0;
+            const avgBet = bot.stats.bets > 0 ? (bot.stats.wagered / bot.stats.bets) : 0;
+            const efficiency = bot.stats.wagerModeBets > 0 ? 
+                (bot.stats.wagerModeProfit / (bot.stats.wagerModeBets * avgBet) * 100) : 0;
+            
+            // Update statistics panel
+            const statsPanel = document.getElementById("stats-panel");
+            if (statsPanel) {
+                statsPanel.innerHTML = `
+                    <div class="stats-section">
+                        <div class="stats-title">📊 BASIC STATS</div>
+                        <div class="stats-grid">
+                            <div class="stat-card">
+                                <div class="stat-label">Total Profit</div>
+                                <div class="stat-value ${bot.stats.profit >= 0 ? 'text-success' : 'text-danger'}">
+                                    ${bot.stats.profit.toFixed(8)}
+                                </div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Win Rate</div>
+                                <div class="stat-value">${winRate.toFixed(1)}%</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Total Bets</div>
+                                <div class="stat-value">${bot.stats.bets}</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">W/L Ratio</div>
+                                <div class="stat-value">${bot.stats.wins}/${bot.stats.loss}</div>
+                            </div>
                         </div>
                     </div>
-                    <div class="stat-item">
-                        <div class="stat-item-label">LAST ROTATION</div>
-                        <div class="stat-item-value">${RotationConfig.stats.lastRotationTime ? 
-                            Math.floor((Date.now() - RotationConfig.stats.lastRotationTime)/1000) + 's ago' : 'Never'}</div>
+                    
+                    <div class="stats-section">
+                        <div class="stats-title">💰 FINANCIAL</div>
+                        <div class="stats-grid">
+                            <div class="stat-card">
+                                <div class="stat-label">ROI</div>
+                                <div class="stat-value ${roi >= 0 ? 'text-success' : 'text-danger'}">
+                                    ${roi.toFixed(2)}%
+                                </div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Profit/Bet</div>
+                                <div class="stat-value">${profitPerBet.toFixed(8)}</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Total Wagered</div>
+                                <div class="stat-value">${(bot.stats.wagered / bot.stats.startBal).toFixed(1)}x</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Max DD</div>
+                                <div class="stat-value text-danger">${(bot.stats.maxDD / bot.stats.startBal * 100).toFixed(1)}%</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="stats-section">
+                        <div class="stats-title">🎮 MODE PERFORMANCE</div>
+                        <div class="stats-grid">
+                            <div class="stat-card">
+                                <div class="stat-label">Base Mode Profit</div>
+                                <div class="stat-value ${bot.stats.baseModeProfit >= 0 ? 'text-success' : 'text-danger'}">
+                                    ${bot.stats.baseModeProfit.toFixed(8)}
+                                </div>
+                                <div class="stat-sub">${bot.stats.baseModeBets} bets</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Wager Mode Profit</div>
+                                <div class="stat-value ${bot.stats.wagerModeProfit >= 0 ? 'text-success' : 'text-danger'}">
+                                    ${bot.stats.wagerModeProfit.toFixed(8)}
+                                </div>
+                                <div class="stat-sub">${bot.stats.wagerModeBets} bets</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Base Win Rate</div>
+                                <div class="stat-value">
+                                    ${bot.stats.baseModeBets > 0 ? ((bot.stats.baseModeWins / bot.stats.baseModeBets) * 100).toFixed(1) : 0}%
+                                </div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Wager Efficiency</div>
+                                <div class="stat-value">${efficiency.toFixed(1)}%</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="stats-section">
+                        <div class="stats-title">🏆 RECORDS</div>
+                        <div class="stats-grid">
+                            <div class="stat-card">
+                                <div class="stat-label">Biggest Win</div>
+                                <div class="stat-value text-success">${bot.stats.biggestWin.toFixed(8)}</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Biggest Loss</div>
+                                <div class="stat-value text-danger">${Math.abs(bot.stats.biggestLoss).toFixed(8)}</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Longest Win Streak</div>
+                                <div class="stat-value text-success">${bot.stats.longestWinStreak}</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Longest Loss Streak</div>
+                                <div class="stat-value text-danger">${bot.stats.longestLossStreak}</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="stats-section">
+                        <div class="stats-title">📈 SESSION INFO</div>
+                        <div class="stats-grid">
+                            <div class="stat-card">
+                                <div class="stat-label">Current Session</div>
+                                <div class="stat-value">${bot.session.currentSession}/${bot.session.maxSessions}</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Session Profit</div>
+                                <div class="stat-value ${bot.stats.sessionProfit >= 0 ? 'text-success' : 'text-danger'}">
+                                    ${bot.stats.sessionProfit.toFixed(8)}
+                                </div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Profitable Sessions</div>
+                                <div class="stat-value">${bot.stats.profitableSessions}/${bot.stats.completedSessions}</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Success Rate</div>
+                                <div class="stat-value">
+                                    ${bot.stats.completedSessions > 0 ? 
+                                        ((bot.stats.profitableSessions / bot.stats.completedSessions) * 100).toFixed(1) : 0}%
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 `;
             }
             
-            // Update rotation history
-            const rotationHistoryEl = document.getElementById("rotation-history");
-            if (rotationHistoryEl) {
-                let historyHTML = '';
-                RotationConfig.stats.rotationHistory.forEach((record, index) => {
-                    const timeAgo = Math.floor((Date.now() - record.timestamp)/1000);
-                    historyHTML += `
-                        <div class="history-item">
-                            <div class="history-time">${timeAgo}s ago</div>
-                            <div class="history-details">
-                                <span class="history-from">${record.from}</span>
-                                <span class="history-arrow">→</span>
-                                <span class="history-to">${record.to}</span>
-                                <span class="history-reason">(${record.reason})</span>
-                            </div>
-                            <div class="history-profit ${record.balance >= record.sessionStartBal ? 'text-success' : 'text-danger'}">
-                                ${record.profit > 0 ? '+' : ''}${record.profit.toFixed(8)}
-                            </div>
-                        </div>
-                    `;
-                });
-                rotationHistoryEl.innerHTML = historyHTML || '<div class="history-empty">No rotation history yet</div>';
-            }
-            
-            // Update current triggers status
-            updateTriggersStatus();
+            // Update rotation stats
+            updateRotationStatsUI();
             
         } catch (e) {
-            console.error("Rotation UI update error:", e);
+            console.error("Statistics UI update error:", e);
         }
     }
 
-    function updateTriggersStatus() {
+    function updateRotationStatsUI() {
         try {
-            const triggersEl = document.getElementById("triggers-status");
-            if (!triggersEl) return;
+            const rotationStatsEl = document.getElementById("rotation-stats");
+            if (!rotationStatsEl) return;
             
-            const baseToWagerTriggered = shouldRotateToWager();
-            const wagerToBaseTriggered = shouldRotateToBase();
-            const baseRecoveryTriggered = shouldStartBaseRecovery();
-            const wagerRecoveryTriggered = shouldStartWagerRecovery();
+            const successRate = RotationConfig.stats.rotationCount > 0 ? 
+                (RotationConfig.stats.rotationHistory.filter(r => 
+                    (r.to === "WAGER" && r.baseProfit > 0) || 
+                    (r.to === "BASE" && r.wagerProfit > 0)).length / RotationConfig.stats.rotationCount * 100) : 0;
             
-            triggersEl.innerHTML = `
-                <div class="trigger-item ${baseToWagerTriggered ? 'trigger-active' : ''}">
-                    <div class="trigger-label">BASE → WAGER</div>
-                    <div class="trigger-status">${baseToWagerTriggered ? '✅ READY' : '⏳ WAITING'}</div>
+            rotationStatsEl.innerHTML = `
+                <div class="stats-section">
+                    <div class="stats-title">🔄 ROTATION STATS</div>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-label">Total Rotations</div>
+                            <div class="stat-value">${RotationConfig.stats.rotationCount}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Success Rate</div>
+                            <div class="stat-value ${successRate >= 70 ? 'text-success' : successRate >= 50 ? 'text-warning' : 'text-danger'}">
+                                ${successRate.toFixed(1)}%
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Last Rotation</div>
+                            <div class="stat-value">${RotationConfig.stats.lastRotationTime ? 
+                                Math.floor((Date.now() - RotationConfig.stats.lastRotationTime)/1000) + 's ago' : 'Never'}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Current Mode</div>
+                            <div class="stat-value ${bot.mode === 'BASE' ? 'text-info' : 'text-warning'}">${bot.mode}</div>
+                        </div>
+                    </div>
                 </div>
-                <div class="trigger-item ${wagerToBaseTriggered ? 'trigger-active' : ''}">
-                    <div class="trigger-label">WAGER → BASE</div>
-                    <div class="trigger-status">${wagerToBaseTriggered ? '✅ READY' : '⏳ WAITING'}</div>
-                </div>
-                <div class="trigger-item ${baseRecoveryTriggered ? 'trigger-active' : ''}">
-                    <div class="trigger-label">BASE RECOVERY</div>
-                    <div class="trigger-status">${baseRecoveryTriggered ? '⚠️ NEEDED' : '✅ OK'}</div>
-                </div>
-                <div class="trigger-item ${wagerRecoveryTriggered ? 'trigger-active' : ''}">
-                    <div class="trigger-label">WAGER RECOVERY</div>
-                    <div class="trigger-status">${wagerRecoveryTriggered ? '⚠️ NEEDED' : '✅ OK'}</div>
+                
+                <div class="stats-section">
+                    <div class="stats-title">🔄 ROTATION HISTORY</div>
+                    <div class="rotation-history">
+                        ${RotationConfig.stats.rotationHistory.length > 0 ? 
+                            RotationConfig.stats.rotationHistory.map((record, index) => {
+                                const timeAgo = Math.floor((Date.now() - record.timestamp)/1000);
+                                const profit = record.to === "WAGER" ? record.baseProfit : record.wagerProfit;
+                                return `
+                                    <div class="history-item">
+                                        <div class="history-time">${timeAgo}s ago</div>
+                                        <div class="history-details">
+                                            <span class="history-from">${record.from}</span>
+                                            <span class="history-arrow">→</span>
+                                            <span class="history-to">${record.to}</span>
+                                        </div>
+                                        <div class="history-profit ${profit >= 0 ? 'text-success' : 'text-danger'}">
+                                            ${profit > 0 ? '+' : ''}${profit.toFixed(8)}
+                                        </div>
+                                    </div>
+                                `;
+                            }).join('') : 
+                            '<div class="history-empty">No rotation history yet</div>'
+                        }
+                    </div>
                 </div>
             `;
             
         } catch (e) {
-            console.error("Triggers status update error:", e);
+            console.error("Rotation stats UI update error:", e);
         }
     }
 
-    // ==================== COMPLETE UI CREATION ====================
+    // ==================== RESPONSIVE UI CREATION ====================
     function createUI() {
         if (document.getElementById("orion-wrap")) {
             document.getElementById("orion-wrap").remove();
@@ -1570,42 +1497,42 @@
             
             #orion-wrap {
                 position: fixed;
-                bottom: 0;
-                left: 0;
-                right: 0;
-                width: 100%;
-                max-width: 100%;
-                height: 90vh;
+                width: 400px;
+                height: 600px;
+                max-height: 80vh;
                 background: #1a1a1a;
                 color: #e0e0e0;
                 font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
                 z-index: 9999;
                 display: flex;
                 flex-direction: column;
-                border-top-left-radius: 20px;
-                border-top-right-radius: 20px;
-                box-shadow: 0 -5px 30px rgba(0,0,0,0.3);
+                border-radius: 15px;
+                box-shadow: 0 10px 40px rgba(0,0,0,0.5);
                 overflow: hidden;
-                touch-action: pan-y;
-                -webkit-tap-highlight-color: transparent;
+                resize: both;
+                min-width: 350px;
+                min-height: 500px;
+                max-width: 95vw;
+                max-height: 95vh;
             }
             
-            @media (min-width: 768px) {
+            /* Responsive adjustments */
+            @media (max-width: 500px) {
                 #orion-wrap {
-                    width: 450px;
-                    height: 85vh;
-                    top: 50%;
-                    left: 50%;
-                    transform: translate(-50%, -50%);
-                    border-radius: 20px;
-                    bottom: auto;
+                    width: 95vw;
+                    height: 80vh;
+                    bottom: 10px;
+                    left: 2.5vw;
+                    top: auto;
+                    resize: none;
                 }
             }
             
-            @supports (-webkit-touch-callout: none) {
+            @media (min-width: 501px) {
                 #orion-wrap {
-                    height: 85vh;
-                    max-height: -webkit-fill-available;
+                    top: 50%;
+                    left: 50%;
+                    transform: translate(-50%, -50%);
                 }
             }
             
@@ -1613,7 +1540,7 @@
                 background: linear-gradient(135deg, #222, #1a1a1a);
                 padding: 15px;
                 border-bottom: 1px solid #333;
-                position: relative;
+                flex-shrink: 0;
             }
             
             .header-title {
@@ -1656,23 +1583,11 @@
                 color: #ccc;
             }
             
-            .drag-handle {
-                width: 40px;
-                height: 5px;
-                background: #444;
-                border-radius: 3px;
-                margin: 0 auto 10px;
-                cursor: grab;
-            }
-            
             .tab-nav {
                 display: flex;
                 background: #222;
                 border-bottom: 1px solid #333;
-                position: sticky;
-                top: 0;
-                z-index: 10;
-                -webkit-overflow-scrolling: touch;
+                flex-shrink: 0;
                 overflow-x: auto;
                 scrollbar-width: none;
             }
@@ -1683,19 +1598,18 @@
             
             .tab-btn {
                 flex: 1;
-                min-width: 80px;
-                padding: 14px 10px;
+                min-width: 70px;
+                padding: 12px 8px;
                 background: transparent;
                 border: none;
                 border-bottom: 3px solid transparent;
                 color: #888;
-                font-size: 12px;
+                font-size: 11px;
                 font-weight: 600;
                 cursor: pointer;
                 transition: all 0.3s;
                 text-align: center;
                 white-space: nowrap;
-                -webkit-tap-highlight-color: transparent;
             }
             
             .tab-btn.active {
@@ -1708,7 +1622,6 @@
                 display: none;
                 flex: 1;
                 overflow-y: auto;
-                -webkit-overflow-scrolling: touch;
                 padding: 15px;
                 background: #1a1a1a;
             }
@@ -1717,47 +1630,54 @@
                 display: block;
             }
             
-            /* Dashboard Styles */
-            .quick-stats {
-                display: flex;
-                justify-content: space-between;
+            /* Compact Dashboard */
+            .dashboard-grid {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 10px;
+                margin-bottom: 15px;
+            }
+            
+            .dashboard-card {
                 background: #222;
-                border-radius: 12px;
+                border-radius: 10px;
                 padding: 12px;
-                margin: 10px 0;
-                font-size: 11px;
+                border: 1px solid #333;
             }
             
-            .quick-stat {
-                text-align: center;
-                flex: 1;
+            .card-title {
+                font-size: 10px;
+                color: #888;
+                margin-bottom: 6px;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
             }
             
-            .quick-stat-value {
+            .card-value {
                 font-size: 14px;
                 font-weight: 700;
                 color: #e0e0e0;
-                margin-bottom: 2px;
+                line-height: 1.2;
             }
             
-            .quick-stat-label {
-                color: #888;
-                font-size: 10px;
+            .card-sub {
+                font-size: 9px;
+                color: #666;
+                margin-top: 4px;
             }
             
-            .session-progress {
-                background: #222;
-                border-radius: 12px;
-                padding: 15px;
-                margin: 15px 0;
+            /* Progress Bars */
+            .progress-container {
+                margin: 10px 0;
             }
             
-            .session-info {
+            .progress-label {
                 display: flex;
                 justify-content: space-between;
-                font-size: 11px;
+                font-size: 10px;
                 color: #888;
-                margin-bottom: 10px;
+                margin-bottom: 4px;
             }
             
             .progress-bar {
@@ -1774,185 +1694,91 @@
                 transition: width 0.3s ease;
             }
             
-            .performance-grid {
-                display: grid;
-                grid-template-columns: repeat(2, 1fr);
-                gap: 10px;
-                margin: 15px 0;
-            }
-            
-            .performance-card {
+            /* Statistics Section */
+            .stats-section {
                 background: #222;
-                border-radius: 12px;
+                border-radius: 10px;
                 padding: 12px;
-                border-left: 4px solid;
+                margin-bottom: 12px;
+                border: 1px solid #333;
             }
             
-            .performance-card.base {
-                border-left-color: #999;
-            }
-            
-            .performance-card.wager {
-                border-left-color: #777;
-            }
-            
-            .performance-title {
+            .stats-title {
                 font-size: 11px;
                 color: #888;
-                font-weight: 600;
-                margin-bottom: 8px;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-            }
-            
-            .performance-stats {
-                font-size: 11px;
-                color: #ccc;
-                line-height: 1.6;
-            }
-            
-            .recovery-panel {
-                background: #252525;
-                border: 1px solid #333;
-                border-radius: 12px;
-                padding: 15px;
-                margin: 15px 0;
-            }
-            
-            .recovery-header {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
                 margin-bottom: 10px;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
             }
             
-            .recovery-title {
-                font-size: 13px;
-                font-weight: 700;
-                color: #aaa;
-                display: flex;
-                align-items: center;
+            .stats-grid {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
                 gap: 8px;
             }
             
-            .recovery-level {
-                background: #333;
-                border: 1px solid #444;
-                padding: 4px 12px;
-                border-radius: 20px;
-                font-size: 12px;
-                font-weight: 600;
-                color: #aaa;
-            }
-            
-            .progress-container {
-                margin: 12px 0;
-            }
-            
-            .progress-label {
-                display: flex;
-                justify-content: space-between;
-                font-size: 11px;
-                color: #888;
-                margin-bottom: 6px;
-            }
-            
-            .stats-panel {
-                display: grid;
-                grid-template-columns: repeat(2, 1fr);
-                gap: 10px;
-                margin: 15px 0;
-            }
-            
-            .stat-item {
-                background: #222;
+            .stat-card {
+                background: #2a2a2a;
                 border-radius: 8px;
-                padding: 12px;
+                padding: 10px;
+                border: 1px solid #333;
             }
             
-            .stat-item-label {
+            .stat-label {
                 font-size: 9px;
                 color: #888;
                 margin-bottom: 4px;
+                font-weight: 500;
             }
             
-            .stat-item-value {
+            .stat-value {
                 font-size: 12px;
-                font-weight: 600;
+                font-weight: 700;
                 color: #e0e0e0;
+                line-height: 1.2;
             }
             
-            /* Rotation Tab Specific */
-            .triggers-panel {
-                background: #222;
-                border-radius: 12px;
-                padding: 15px;
-                margin: 15px 0;
-                border: 1px solid #333;
+            .stat-sub {
+                font-size: 8px;
+                color: #666;
+                margin-top: 2px;
             }
             
-            .trigger-item {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                padding: 10px;
-                margin: 5px 0;
+            /* Rotation History */
+            .rotation-history {
+                max-height: 120px;
+                overflow-y: auto;
                 background: #2a2a2a;
                 border-radius: 8px;
-                border-left: 4px solid #444;
-                transition: all 0.3s;
-            }
-            
-            .trigger-item.trigger-active {
-                background: #2a3a2a;
-                border-left-color: #4CAF50;
-            }
-            
-            .trigger-label {
-                font-size: 12px;
-                font-weight: 600;
-                color: #ccc;
-            }
-            
-            .trigger-status {
-                font-size: 11px;
-                font-weight: 600;
-                padding: 4px 8px;
-                border-radius: 4px;
-                background: #333;
-            }
-            
-            .rotation-history {
-                background: #222;
-                border-radius: 12px;
-                padding: 15px;
-                margin: 15px 0;
+                padding: 8px;
                 border: 1px solid #333;
-                max-height: 200px;
-                overflow-y: auto;
             }
             
             .history-item {
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
-                padding: 8px 0;
+                padding: 6px 8px;
                 border-bottom: 1px solid rgba(51, 51, 51, 0.3);
-                font-size: 11px;
+                font-size: 10px;
+            }
+            
+            .history-item:last-child {
+                border-bottom: none;
             }
             
             .history-time {
                 color: #888;
-                min-width: 60px;
+                min-width: 50px;
             }
             
             .history-details {
                 flex: 1;
-                margin: 0 10px;
+                margin: 0 8px;
                 display: flex;
                 align-items: center;
-                gap: 6px;
+                gap: 4px;
             }
             
             .history-from, .history-to {
@@ -1964,58 +1790,46 @@
                 color: #888;
             }
             
-            .history-reason {
-                color: #666;
-                font-size: 10px;
-            }
-            
             .history-profit {
                 font-weight: 600;
-                min-width: 70px;
+                min-width: 60px;
                 text-align: right;
+                font-size: 9px;
             }
             
             .history-empty {
                 text-align: center;
                 color: #666;
-                font-size: 11px;
+                font-size: 10px;
                 padding: 20px;
             }
             
             /* Controls */
-            .currency-selector {
-                background: #222;
-                border-radius: 12px;
-                padding: 15px;
-                margin-bottom: 15px;
-            }
-            
             .control-panel {
                 display: grid;
-                gap: 10px;
-                margin: 20px 0;
+                gap: 8px;
+                margin: 15px 0;
             }
             
             .control-row {
                 display: grid;
                 grid-template-columns: repeat(2, 1fr);
-                gap: 10px;
+                gap: 8px;
             }
             
             .btn {
-                padding: 16px;
+                padding: 12px;
                 border: none;
-                border-radius: 12px;
+                border-radius: 10px;
                 font-weight: 600;
-                font-size: 13px;
+                font-size: 12px;
                 cursor: pointer;
                 transition: all 0.3s;
                 text-align: center;
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                gap: 8px;
-                -webkit-tap-highlight-color: transparent;
+                gap: 6px;
             }
             
             .btn:active {
@@ -2050,58 +1864,52 @@
             /* Settings */
             .settings-group {
                 background: #222;
-                border-radius: 12px;
-                padding: 15px;
-                margin-bottom: 15px;
+                border-radius: 10px;
+                padding: 12px;
+                margin-bottom: 12px;
                 border: 1px solid #333;
             }
             
             .settings-title {
-                font-size: 13px;
+                font-size: 12px;
                 font-weight: 700;
                 color: #888;
-                margin-bottom: 15px;
+                margin-bottom: 10px;
                 display: flex;
                 align-items: center;
                 justify-content: space-between;
                 cursor: pointer;
                 user-select: none;
-                -webkit-tap-highlight-color: transparent;
             }
             
-            .settings-content {
-                display: none;
-                grid-template-columns: repeat(2, 1fr);
-                gap: 12px;
-            }
-            
-            .settings-content.active {
+            .settings-grid {
                 display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 10px;
             }
             
             .input-group {
-                margin-bottom: 12px;
+                margin-bottom: 8px;
             }
             
             .input-label {
                 display: block;
-                font-size: 11px;
+                font-size: 10px;
                 color: #888;
-                margin-bottom: 6px;
+                margin-bottom: 4px;
                 font-weight: 500;
             }
             
             input, select {
                 width: 100%;
-                padding: 12px;
+                padding: 8px;
                 background: #2a2a2a;
                 border: 1px solid #333;
-                border-radius: 8px;
+                border-radius: 6px;
                 color: #e0e0e0;
-                font-size: 13px;
+                font-size: 12px;
                 font-family: 'Inter', sans-serif;
                 transition: all 0.3s;
-                -webkit-appearance: none;
             }
             
             input:focus, select:focus {
@@ -2113,20 +1921,19 @@
             /* Logs */
             .logs-container {
                 background: #222;
-                border-radius: 12px;
-                padding: 15px;
-                margin: 15px 0;
-                max-height: 200px;
+                border-radius: 10px;
+                padding: 12px;
+                margin: 12px 0;
+                max-height: 150px;
                 overflow-y: auto;
-                -webkit-overflow-scrolling: touch;
             }
             
             .logs-header {
                 display: grid;
                 grid-template-columns: 1.2fr 1fr 0.8fr 1.2fr;
-                padding: 10px 0;
+                padding: 8px 0;
                 border-bottom: 1px solid #333;
-                font-size: 10px;
+                font-size: 9px;
                 color: #888;
                 font-weight: 600;
                 text-align: center;
@@ -2138,24 +1945,25 @@
             .log-entry {
                 display: grid;
                 grid-template-columns: 1.2fr 1fr 0.8fr 1.2fr;
-                padding: 10px 0;
-                border-bottom: 1px solid rgba(51, 51, 51, 0.5);
-                font-size: 11px;
+                padding: 6px 0;
+                border-bottom: 1px solid rgba(51, 51, 51, 0.3);
+                font-size: 9px;
                 text-align: center;
             }
             
             /* Footer */
             .footer {
                 background: #222;
-                padding: 15px;
+                padding: 12px;
                 border-top: 1px solid #333;
                 text-align: center;
+                flex-shrink: 0;
             }
             
             .support-info {
-                font-size: 11px;
+                font-size: 10px;
                 color: #666;
-                line-height: 1.5;
+                line-height: 1.4;
             }
             
             .support-link {
@@ -2173,9 +1981,9 @@
             
             .badge {
                 display: inline-block;
-                padding: 3px 8px;
+                padding: 2px 6px;
                 border-radius: 4px;
-                font-size: 10px;
+                font-size: 9px;
                 font-weight: 600;
             }
             
@@ -2186,22 +1994,19 @@
             
             .toggle-icon {
                 transition: transform 0.3s ease;
-                font-size: 12px;
+                font-size: 11px;
                 color: #888;
             }
             
-            .swipe-indicator {
-                text-align: center;
-                font-size: 10px;
-                color: #666;
-                margin-top: 10px;
-                display: none;
-            }
-            
-            @media (max-width: 768px) {
-                .swipe-indicator {
-                    display: block;
-                }
+            /* Resize handle */
+            .resize-handle {
+                position: absolute;
+                bottom: 0;
+                right: 0;
+                width: 15px;
+                height: 15px;
+                cursor: se-resize;
+                background: linear-gradient(135deg, transparent 50%, #444 50%);
             }
         `;
         document.head.appendChild(s);
@@ -2209,11 +2014,11 @@
         const d = document.createElement("div");
         d.id = "orion-wrap";
         d.innerHTML = `
-            <div class="drag-handle"></div>
+            <div class="resize-handle"></div>
             
             <div class="header">
                 <div class="header-title">
-                    ORION ALPHA
+                    ORION PRO
                     <span class="license-badge">${bot.licenseTier}</span>
                 </div>
                 <div class="status-badge" id="st-status-text">🟢 READY</div>
@@ -2221,124 +2026,94 @@
             
             <div class="tab-nav">
                 <button class="tab-btn active" data-tab="dashboard">📊 Dashboard</button>
-                <button class="tab-btn" data-tab="controls">🎮 Controls</button>
+                <button class="tab-btn" data-tab="stats">📈 Statistics</button>
                 <button class="tab-btn" data-tab="rotation">🔄 Rotation</button>
+                <button class="tab-btn" data-tab="controls">🎮 Controls</button>
                 <button class="tab-btn" data-tab="settings">⚙️ Settings</button>
                 <button class="tab-btn" data-tab="logs">📝 Logs</button>
             </div>
             
             <!-- Dashboard Tab -->
             <div id="dashboard-tab" class="tab-content active">
-                <div class="quick-stats">
-                    <div class="quick-stat">
-                        <div class="quick-stat-value" id="quick-balance">0.0000</div>
-                        <div class="quick-stat-label">BALANCE</div>
+                <div class="dashboard-grid">
+                    <div class="dashboard-card">
+                        <div class="card-title">BALANCE</div>
+                        <div class="card-value" id="dashboard-balance">0.0000</div>
+                        <div class="card-sub" id="dashboard-profit">+0.0000 (0.00%)</div>
                     </div>
-                    <div class="quick-stat">
-                        <div class="quick-stat-value text-success" id="quick-profit">0.00%</div>
-                        <div class="quick-stat-label">PROFIT</div>
+                    <div class="dashboard-card">
+                        <div class="card-title">BETS</div>
+                        <div class="card-value" id="dashboard-bets">0</div>
+                        <div class="card-sub">W/L: <span id="dashboard-wl">0/0</span></div>
                     </div>
-                    <div class="quick-stat">
-                        <div class="quick-stat-value" id="quick-bets">0</div>
-                        <div class="quick-stat-label">BETS</div>
+                    <div class="dashboard-card">
+                        <div class="card-title">MODE</div>
+                        <div class="card-value" id="dashboard-mode">BASE</div>
+                        <div class="card-sub">Bets: <span id="dashboard-mode-bets">0</span></div>
                     </div>
-                    <div class="quick-stat">
-                        <div class="quick-stat-value" id="quick-time">00:00</div>
-                        <div class="quick-stat-label">TIME</div>
+                    <div class="dashboard-card">
+                        <div class="card-title">SESSION</div>
+                        <div class="card-value" id="dashboard-session">1/20</div>
+                        <div class="card-sub" id="dashboard-session-profit">+0.0000</div>
                     </div>
                 </div>
                 
-                <div class="session-progress">
-                    <div class="session-info">
-                        <span>Session <span id="session-num">1</span>/<span id="max-sessions">20</span></span>
+                <div class="progress-container">
+                    <div class="progress-label">
+                        <span>Session Progress</span>
                         <span id="session-progress-text">0%</span>
                     </div>
                     <div class="progress-bar">
                         <div id="session-progress" class="progress-fill" style="width: 0%"></div>
                     </div>
-                    <div class="session-info" style="margin-top: 8px; font-size: 10px;">
-                        <span>Target: <span id="session-target-display">10%</span></span>
-                        <span>Stop Loss: <span id="session-stoploss-display">-5%</span></span>
-                    </div>
                 </div>
                 
-                <div class="performance-grid">
-                    <div class="performance-card base">
-                        <div class="performance-title">
-                            <span>🏗️ BASE</span>
-                            <span class="badge badge-info" id="base-badge">OFF</span>
-                        </div>
-                        <div class="performance-stats">
-                            <div>P/L: <span id="base-profit" class="text-success">0.0000</span></div>
-                            <div>Bets: <span id="base-bets">0</span></div>
-                            <div>Streak: <span id="base-streak">0</span></div>
-                        </div>
-                    </div>
-                    
-                    <div class="performance-card wager">
-                        <div class="performance-title">
-                            <span>⚡ WAGER</span>
-                            <span class="badge badge-info" id="wager-badge">OFF</span>
-                        </div>
-                        <div class="performance-stats">
-                            <div>P/L: <span id="wager-profit" class="text-success">0.0000</span></div>
-                            <div>Bets: <span id="wager-bets">0</span></div>
-                            <div>Streak: <span id="wager-streak">0</span></div>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="recovery-panel">
-                    <div class="recovery-header">
-                        <div class="recovery-title">🔄 RECOVERY</div>
-                        <div class="recovery-level" id="recovery-level">0</div>
-                    </div>
-                    
+                <div class="settings-group">
+                    <div class="settings-title">D'ALEMBERT RECOVERY</div>
                     <div class="progress-container">
                         <div class="progress-label">
-                            <span id="recovery-status">INACTIVE</span>
-                            <span id="recovery-streak">LS: 0</span>
+                            <span id="dallembert-status">INACTIVE</span>
+                            <span>Level: <span id="dallembert-level">0</span></span>
                         </div>
                         <div class="progress-bar">
-                            <div id="recovery-progress" class="progress-fill" style="width: 0%"></div>
+                            <div id="dallembert-progress" class="progress-fill" style="width: 0%"></div>
                         </div>
                     </div>
-                    <div style="font-size: 10px; color: #888; margin-top: 8px; text-align: center;">
-                        Base: 70-85% • Wager: D'Alembert
+                    <div style="font-size: 9px; color: #888; text-align: center; margin-top: 6px;">
+                        Loss Streak: <span id="dallembert-streak">0</span> | Wins: <span id="dallembert-wins">0</span>/3
                     </div>
                 </div>
                 
-                <div class="stats-panel">
-                    <div class="stat-item">
-                        <div class="stat-item-label">WIN RATE</div>
-                        <div class="stat-item-value" id="stats-winrate">0.00%</div>
+                <div class="dashboard-grid">
+                    <div class="dashboard-card">
+                        <div class="card-title">BASE MODE</div>
+                        <div class="card-value" id="dashboard-base-profit">0.0000</div>
+                        <div class="card-sub" id="dashboard-base-bets">0 bets</div>
                     </div>
-                    <div class="stat-item">
-                        <div class="stat-item-label">MAX DD</div>
-                        <div class="stat-item-value text-danger" id="stats-maxdd">0.00%</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-item-label">PROFIT SESS</div>
-                        <div class="stat-item-value text-success" id="stats-profsessions">0/0</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-item-label">TRAILING</div>
-                        <div class="stat-item-value text-muted" id="trailing-status">OFF</div>
+                    <div class="dashboard-card">
+                        <div class="card-title">WAGER MODE</div>
+                        <div class="card-value" id="dashboard-wager-profit">0.0000</div>
+                        <div class="card-sub" id="dashboard-wager-bets">0 bets</div>
                     </div>
                 </div>
-                
-                <div class="swipe-indicator">⬆️ Swipe up for more</div>
+            </div>
+            
+            <!-- Statistics Tab -->
+            <div id="stats-tab" class="tab-content">
+                <div id="stats-panel">
+                    <!-- Statistics will be populated by updateStatisticsUI -->
+                </div>
+            </div>
+            
+            <!-- Rotation Tab -->
+            <div id="rotation-tab" class="tab-content">
+                <div id="rotation-stats">
+                    <!-- Rotation stats will be populated by updateRotationStatsUI -->
+                </div>
             </div>
             
             <!-- Controls Tab -->
             <div id="controls-tab" class="tab-content">
-                <div class="currency-selector">
-                    <div class="input-group">
-                        <label class="input-label">SELECT CURRENCY</label>
-                        <select id="p-currency" class="currency-select"></select>
-                    </div>
-                </div>
-                
                 <div class="control-panel">
                     <button id="btn-run" class="btn btn-primary">🚀 START BOT</button>
                     
@@ -2350,16 +2125,16 @@
                     <div class="settings-group">
                         <div class="settings-title">MANUAL ROTATION</div>
                         <div class="control-row">
-                            <button onclick="rotateMode('BASE')" class="btn btn-secondary">🏗️ BASE</button>
-                            <button onclick="rotateMode('WAGER')" class="btn btn-secondary">⚡ WAGER</button>
+                            <button onclick="rotateMode('BASE')" class="btn btn-secondary">🏗️ BASE MODE</button>
+                            <button onclick="rotateMode('WAGER')" class="btn btn-secondary">⚡ WAGER MODE</button>
                         </div>
                     </div>
                     
                     <div class="settings-group">
-                        <div class="settings-title">MANUAL RECOVERY</div>
+                        <div class="settings-title">RECOVERY CONTROLS</div>
                         <div class="control-row">
-                            <button onclick="startBaseRecovery()" class="btn btn-secondary">🔄 BASE RECOVERY</button>
-                            <button onclick="startWagerRecovery()" class="btn btn-secondary">🔄 WAGER RECOVERY</button>
+                            <button onclick="startDallembertRecovery()" class="btn btn-secondary">🔄 START D'ALEMBERT</button>
+                            <button onclick="stopDallembertRecovery()" class="btn btn-secondary">🛑 STOP D'ALEMBERT</button>
                         </div>
                     </div>
                     
@@ -2374,65 +2149,6 @@
                 </div>
             </div>
             
-            <!-- Rotation Tab -->
-            <div id="rotation-tab" class="tab-content">
-                <div class="triggers-panel">
-                    <div class="settings-title" style="margin-bottom: 10px;">🔄 ACTIVE TRIGGERS</div>
-                    <div id="triggers-status">
-                        <div class="trigger-item">
-                            <div class="trigger-label">BASE → WAGER</div>
-                            <div class="trigger-status">⏳ WAITING</div>
-                        </div>
-                        <div class="trigger-item">
-                            <div class="trigger-label">WAGER → BASE</div>
-                            <div class="trigger-status">⏳ WAITING</div>
-                        </div>
-                        <div class="trigger-item">
-                            <div class="trigger-label">BASE RECOVERY</div>
-                            <div class="trigger-status">✅ OK</div>
-                        </div>
-                        <div class="trigger-item">
-                            <div class="trigger-label">WAGER RECOVERY</div>
-                            <div class="trigger-status">✅ OK</div>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="rotation-history">
-                    <div class="settings-title" style="margin-bottom: 10px;">📊 ROTATION HISTORY</div>
-                    <div id="rotation-history">
-                        <div class="history-empty">No rotation history yet</div>
-                    </div>
-                </div>
-                
-                <div class="stats-panel">
-                    <div id="rotation-stats">
-                        <div class="stat-item">
-                            <div class="stat-item-label">TOTAL ROTATIONS</div>
-                            <div class="stat-item-value">0</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-item-label">SUCCESS RATE</div>
-                            <div class="stat-item-value">0%</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-item-label">LAST ROTATION</div>
-                            <div class="stat-item-value">Never</div>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="settings-group">
-                    <div class="settings-title" onclick="toggleSettings(this)">
-                        ⚙️ ROTATION SETTINGS
-                        <span class="toggle-icon">▼</span>
-                    </div>
-                    <div class="settings-content">
-                        <!-- Settings will be populated by updateRotationSettingsUI -->
-                    </div>
-                </div>
-            </div>
-            
             <!-- Settings Tab -->
             <div id="settings-tab" class="tab-content">
                 <div class="settings-group">
@@ -2440,14 +2156,12 @@
                         🏗️ BASE MODE SETTINGS
                         <span class="toggle-icon">▼</span>
                     </div>
-                    <div class="settings-content active">
+                    <div class="settings-grid">
                         <div class="input-group"><label class="input-label">Base Bet</label><input id="p-basebet" value="0.00000100" type="number" step="0.00000001" min="0"></div>
                         <div class="input-group"><label class="input-label">Base Chance Min</label><input id="p-bch-min" value="80.0" type="number" step="0.1" min="1" max="99"></div>
                         <div class="input-group"><label class="input-label">Base Chance Max</label><input id="p-bch-max" value="95.0" type="number" step="0.1" min="1" max="99"></div>
                         <div class="input-group"><label class="input-label">Hunt Chance Min</label><input id="p-hch-min" value="20.0" type="number" step="0.1" min="1" max="99"></div>
                         <div class="input-group"><label class="input-label">Hunt Chance Max</label><input id="p-hch-max" value="30.0" type="number" step="0.1" min="1" max="99"></div>
-                        <div class="input-group"><label class="input-label">Multi Start</label><input id="p-multi-start" value="1.45" type="number" step="0.05" min="1"></div>
-                        <div class="input-group"><label class="input-label">Multi Inc</label><input id="p-multi-inc" value="0.05" type="number" step="0.01" min="0.01"></div>
                     </div>
                 </div>
                 
@@ -2456,12 +2170,57 @@
                         ⚡ WAGER MODE SETTINGS
                         <span class="toggle-icon">▼</span>
                     </div>
-                    <div class="settings-content">
+                    <div class="settings-grid">
                         <div class="input-group"><label class="input-label">Wager Chance</label><input id="p-wgr-chance" value="99.0" type="number" step="0.1" min="90" max="99.99"></div>
                         <div class="input-group"><label class="input-label">Wager Divider</label><input id="p-wgr-div" value="100" type="number" step="1" min="10"></div>
                         <div class="input-group"><label class="input-label">Recovery Chance Min</label><input id="p-chrec-min" value="50.0" type="number" step="0.1" min="1" max="99"></div>
                         <div class="input-group"><label class="input-label">Recovery Chance Max</label><input id="p-chrec-max" value="70.0" type="number" step="0.1" min="1" max="99"></div>
-                        <div class="input-group"><label class="input-label">Wager Target (x)</label><input id="p-wagertarget" value="200" type="number" step="10" min="10"></div>
+                    </div>
+                </div>
+                
+                <div class="settings-group">
+                    <div class="settings-title" onclick="toggleSettings(this)">
+                        🔄 BASE MODE ROTATION
+                        <span class="toggle-icon">▼</span>
+                    </div>
+                    <div class="settings-grid">
+                        <div class="input-group"><label class="input-label">Target Profit</label><input id="p-base-target-profit" value="0.00000500" type="number" step="0.00000001" min="0"></div>
+                        <div class="input-group"><label class="input-label">Min Bets</label><input id="p-base-min-bets" value="10" type="number" step="1" min="1"></div>
+                        <div class="input-group"><label class="input-label">Stop Loss</label><input id="p-base-stop-loss" value="0.00001000" type="number" step="0.00000001" min="0"></div>
+                        <div class="input-group"><label class="input-label">Recovery Enabled</label>
+                            <select id="p-base-recovery-enabled">
+                                <option value="1">Yes</option>
+                                <option value="0">No</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="settings-group">
+                    <div class="settings-title" onclick="toggleSettings(this)">
+                        🔄 WAGER MODE ROTATION
+                        <span class="toggle-icon">▼</span>
+                    </div>
+                    <div class="settings-grid">
+                        <div class="input-group"><label class="input-label">Max Loss Streak</label><input id="p-wager-max-loss" value="5" type="number" step="1" min="1"></div>
+                        <div class="input-group"><label class="input-label">Min Profit</label><input id="p-wager-min-profit" value="0.00000200" type="number" step="0.00000001" min="0"></div>
+                        <div class="input-group"><label class="input-label">Max Time (min)</label><input id="p-wager-max-time" value="3" type="number" step="1" min="1"></div>
+                    </div>
+                </div>
+                
+                <div class="settings-group">
+                    <div class="settings-title" onclick="toggleSettings(this)">
+                        🔄 AUTO ROTATION
+                        <span class="toggle-icon">▼</span>
+                    </div>
+                    <div class="settings-grid">
+                        <div class="input-group"><label class="input-label">Auto Rotation</label>
+                            <select id="p-auto-rotate-enabled">
+                                <option value="1">Enabled</option>
+                                <option value="0">Disabled</option>
+                            </select>
+                        </div>
+                        <div class="input-group"><label class="input-label">Cooldown (s)</label><input id="p-rotate-cooldown" value="30" type="number" step="5" min="0"></div>
                     </div>
                 </div>
                 
@@ -2470,13 +2229,14 @@
                         🔄 D'ALEMBERT SETTINGS
                         <span class="toggle-icon">▼</span>
                     </div>
-                    <div class="settings-content">
-                        <div class="input-group"><label class="input-label">Level 1 Min</label><input id="p-dallembert-level1-min" value="25" type="number" step="1" min="1" max="99"></div>
-                        <div class="input-group"><label class="input-label">Level 1 Max</label><input id="p-dallembert-level1-max" value="35" type="number" step="1" min="1" max="99"></div>
-                        <div class="input-group"><label class="input-label">Level 2 Min</label><input id="p-dallembert-level2-min" value="45" type="number" step="1" min="1" max="99"></div>
-                        <div class="input-group"><label class="input-label">Level 2 Max</label><input id="p-dallembert-level2-max" value="55" type="number" step="1" min="1" max="99"></div>
-                        <div class="input-group"><label class="input-label">Level 3 Min</label><input id="p-dallembert-level3-min" value="77" type="number" step="1" min="1" max="99"></div>
-                        <div class="input-group"><label class="input-label">Level 3 Max</label><input id="p-dallembert-level3-max" value="87" type="number" step="1" min="1" max="99"></div>
+                    <div class="settings-grid">
+                        <div class="input-group"><label class="input-label">Enabled</label>
+                            <select id="p-dallembert-enabled">
+                                <option value="1">Yes</option>
+                                <option value="0">No</option>
+                            </select>
+                        </div>
+                        <div class="input-group"><label class="input-label">Loss Threshold</label><input id="p-dallembert-loss-threshold" value="-0.00000500" type="number" step="0.00000001" max="0"></div>
                     </div>
                 </div>
                 
@@ -2485,24 +2245,10 @@
                         🎯 SESSION SETTINGS
                         <span class="toggle-icon">▼</span>
                     </div>
-                    <div class="settings-content">
+                    <div class="settings-grid">
                         <div class="input-group"><label class="input-label">Max Sessions</label><input id="p-max-sessions" value="20" type="number" step="1" min="1"></div>
                         <div class="input-group"><label class="input-label">Session Target %</label><input id="p-session-target" value="10.0" type="number" step="0.1" min="0.1"></div>
                         <div class="input-group"><label class="input-label">Session Stop Loss %</label><input id="p-session-stoploss" value="5.0" type="number" step="0.1" min="0.1"></div>
-                        <div class="input-group"><label class="input-label">Global Target %</label><input id="p-target-pct" value="5.0" type="number" step="0.1" min="0.1"></div>
-                        <div class="input-group"><label class="input-label">Global Stop Loss %</label><input id="p-stoploss-pct" value="5.0" type="number" step="0.1" min="0.1"></div>
-                    </div>
-                </div>
-                
-                <div class="settings-group">
-                    <div class="settings-title" onclick="toggleSettings(this)">
-                        📈 TRAILING STOP
-                        <span class="toggle-icon">▼</span>
-                    </div>
-                    <div class="settings-content">
-                        <div class="input-group"><label class="input-label">Enabled</label><select id="p-trailing-enabled"><option value="1">Yes</option><option value="0">No</option></select></div>
-                        <div class="input-group"><label class="input-label">Activation %</label><input id="p-trailing-activation" value="0.5" type="number" step="0.1" min="0.1"></div>
-                        <div class="input-group"><label class="input-label">Distance %</label><input id="p-trailing-distance" value="0.2" type="number" step="0.1" min="0.1"></div>
                     </div>
                 </div>
                 
@@ -2511,8 +2257,9 @@
                         🛡️ SAFETY SETTINGS
                         <span class="toggle-icon">▼</span>
                     </div>
-                    <div class="settings-content">
+                    <div class="settings-grid">
                         <div class="input-group"><label class="input-label">Minimum Bet</label><input id="p-minbet" value="0.00000001" type="number" step="0.00000001" min="0"></div>
+                        <div class="input-group"><label class="input-label">Global Stop Loss %</label><input id="p-stoploss-pct" value="5.0" type="number" step="0.1" min="0.1"></div>
                     </div>
                 </div>
             </div>
@@ -2528,24 +2275,13 @@
                     </div>
                     <div id="p-log-body"></div>
                 </div>
-                
-                <div class="stats-panel" style="margin-top: 15px;">
-                    <div class="stat-item"><div class="stat-item-label">TOTAL WAGERED</div><div class="stat-item-value" id="stats-wagered">0.00x</div></div>
-                    <div class="stat-item"><div class="stat-item-label">BIGGEST WIN</div><div class="stat-item-value text-success" id="stats-bigwin">0.0000</div></div>
-                    <div class="stat-item"><div class="stat-item-label">BIGGEST LOSS</div><div class="stat-item-value text-danger" id="stats-bigloss">0.0000</div></div>
-                    <div class="stat-item"><div class="stat-item-label">LONG WIN STREAK</div><div class="stat-item-value text-success" id="stats-longwin">0</div></div>
-                    <div class="stat-item"><div class="stat-item-label">LONG LOSS STREAK</div><div class="stat-item-value text-danger" id="stats-longloss">0</div></div>
-                    <div class="stat-item"><div class="stat-item-label">AVG BET SIZE</div><div class="stat-item-value" id="stats-avgbet">0.0000</div></div>
-                    <div class="stat-item"><div class="stat-item-label">MAX PROFIT</div><div class="stat-item-value text-success" id="stats-maxprofit">0.0000</div></div>
-                    <div class="stat-item"><div class="stat-item-label">TOTAL SESSIONS</div><div class="stat-item-value" id="stats-totalsessions">0</div></div>
-                </div>
             </div>
             
             <div class="footer">
                 <div class="support-info">
                     💬 <a href="https://t.me/${CONFIG.supportContact.replace('@', '')}" target="_blank" class="support-link">${CONFIG.supportContact}</a>
-                    <div style="margin-top: 5px; font-size: 10px; color: #555;">
-                        ⚡ ${CONFIG.version} | 🔒 ${bot.licenseTier} | 🔄 SMART ROTATION
+                    <div style="margin-top: 4px; font-size: 9px; color: #555;">
+                        ⚡ ${CONFIG.version} | 🔒 ${bot.licenseTier}
                     </div>
                 </div>
             </div>
@@ -2553,32 +2289,45 @@
         
         document.body.appendChild(d);
         
-        // Create rotation settings UI
-        createRotationSettingsUI();
-        
-        // Mobile interactions
-        let startY = 0;
-        const dragHandle = d.querySelector('.drag-handle');
+        // Add resize functionality
+        let isResizing = false;
+        const resizeHandle = d.querySelector('.resize-handle');
         const orionWrap = d;
         
-        dragHandle.addEventListener('touchstart', (e) => {
-            startY = e.touches[0].clientY;
-        }, { passive: true });
+        resizeHandle.addEventListener('mousedown', initResize);
+        resizeHandle.addEventListener('touchstart', initResize);
         
-        dragHandle.addEventListener('touchmove', (e) => {
-            const currentY = e.touches[0].clientY;
-            const diff = startY - currentY;
+        function initResize(e) {
+            e.preventDefault();
+            isResizing = true;
             
-            if (diff > 50) {
-                orionWrap.style.transform = 'translateY(-10px)';
-            } else if (diff < -50) {
-                orionWrap.style.transform = 'translateY(0)';
-            }
-        }, { passive: true });
+            document.addEventListener('mousemove', resize);
+            document.addEventListener('touchmove', resize);
+            document.addEventListener('mouseup', stopResize);
+            document.addEventListener('touchend', stopResize);
+        }
         
-        dragHandle.addEventListener('touchend', () => {
-            orionWrap.style.transform = 'translateY(0)';
-        });
+        function resize(e) {
+            if (!isResizing) return;
+            
+            e.preventDefault();
+            const clientX = e.clientX || (e.touches && e.touches[0].clientX);
+            const clientY = e.clientY || (e.touches && e.touches[0].clientY);
+            
+            if (clientX && clientY) {
+                const newWidth = Math.max(350, Math.min(clientX - orionWrap.offsetLeft, window.innerWidth * 0.95));
+                const newHeight = Math.max(500, Math.min(clientY - orionWrap.offsetTop, window.innerHeight * 0.95));
+                
+                orionWrap.style.width = `${newWidth}px`;
+                orionWrap.style.height = `${newHeight}px`;
+            }
+        }
+        
+        function stopResize() {
+            isResizing = false;
+            document.removeEventListener('mousemove', resize);
+            document.removeEventListener('touchmove', resize);
+        }
         
         // Tab Navigation
         const tabBtns = d.querySelectorAll('.tab-btn');
@@ -2615,8 +2364,17 @@
         
         // Global functions
         window.rotateMode = rotateMode;
-        window.startBaseRecovery = startBaseRecovery;
-        window.startWagerRecovery = startWagerRecovery;
+        window.startDallembertRecovery = function() {
+            if (bot.mode === "WAGER" && !DallembertRecovery.isActive) {
+                DallembertRecovery.startRecovery(bot.wgr.profitc);
+            }
+        };
+        
+        window.stopDallembertRecovery = function() {
+            if (DallembertRecovery.isActive) {
+                DallembertRecovery.completeRecovery(false);
+            }
+        };
         
         // Event Listeners
         document.getElementById("p-currency").addEventListener('change', async (e) => {
@@ -2634,9 +2392,6 @@
                 
                 bot.session.maxSessions = getVal("p-max-sessions");
                 bot.session.currentSession = 1;
-                bot.session.trailingStop.enabled = getVal("p-trailing-enabled") === 1;
-                bot.session.trailingStop.activation = getVal("p-trailing-activation");
-                bot.session.trailingStop.distance = getVal("p-trailing-distance");
                 
                 bot.stats.startBal = await API.getBalance(bot.selectedCurrency);
                 bot.stats.currentBal = bot.stats.startBal;
@@ -2654,6 +2409,10 @@
                 bot.stats.peakBalance = bot.stats.startBal;
                 bot.stats.baseModeProfit = 0;
                 bot.stats.wagerModeProfit = 0;
+                bot.stats.baseModeBets = 0;
+                bot.stats.wagerModeBets = 0;
+                bot.stats.baseModeWins = 0;
+                bot.stats.wagerModeWins = 0;
                 bot.stats.longestWinStreak = 0;
                 bot.stats.longestLossStreak = 0;
                 bot.stats.currentWinStreak = 0;
@@ -2663,11 +2422,11 @@
                 bot.stats.totalSessions = 0;
                 bot.stats.profitableSessions = 0;
                 bot.stats.losingSessions = 0;
-                bot.stats.modeDuration = { BASE: 0, WAGER: 0 };
-                bot.stats.modeBets = { BASE: 0, WAGER: 0 };
-                bot.stats.modeProfits = { BASE: 0, WAGER: 0 };
+                bot.stats.completedSessions = 0;
+                bot.stats.maxConsecutiveLoss = 0;
+                bot.stats.maxConsecutiveWin = 0;
                 
-                bot.targetAbs = bot.stats.startBal * (getVal("p-target-pct") / 100);
+                bot.targetAbs = bot.stats.startBal * (getVal("p-session-target") / 100);
                 bot.isRunning = true;
                 bot.isPaused = false;
                 bot.startTime = Date.now();
@@ -2676,23 +2435,13 @@
                 bot.lastReportTime = Date.now();
                 
                 bot.session.sessionHistory = [];
+                bot.session.modeStartTime = Date.now();
+                bot.session.modeBetsCount = 0;
                 
                 bot.wgr.balhigh = bot.stats.startBal;
                 bot.wgr.profitc = 0;
                 bot.wgr.ctwin = 0;
-                bot.wgr.recoveryActive = false;
-                bot.wgr.recoveryType = null;
-                bot.wgr.lossStreak = 0;
-                bot.wgr.recoveryLevel = 0;
-                bot.wgr.recoveryWins = 0;
-                bot.wgr.recoveryTarget = 0;
-                bot.wgr.originalLoss = 0;
-                
-                bot.session.trailingStop.peak = bot.stats.startBal;
-                bot.session.trailingStop.activated = false;
-                
-                bot.session.modeStartTime = Date.now();
-                bot.session.modeBetsCount = 0;
+                bot.wgr.betload = 0;
                 
                 rotateToBaseMode();
                 
@@ -2720,190 +2469,8 @@
                        bot.isPaused ? "#ffa500" : "#4CAF50");
         });
         
-        // Mobile: Close keyboard on tap outside
-        document.addEventListener('touchstart', (e) => {
-            if (!e.target.matches('input, select, textarea')) {
-                if (document.activeElement && document.activeElement.blur) {
-                    document.activeElement.blur();
-                }
-            }
-        });
-        
         // Initialize
         API.syncOnce();
-    }
-
-    function createRotationSettingsUI() {
-        const rotationSettingsEl = document.querySelector('#rotation-tab .settings-content');
-        if (!rotationSettingsEl) return;
-        
-        rotationSettingsEl.innerHTML = `
-            <div class="input-group">
-                <label class="input-label">Base → Wager Enabled</label>
-                <select id="p-rotate-base-wager-enabled">
-                    <option value="1">Yes</option>
-                    <option value="0">No</option>
-                </select>
-            </div>
-            <div class="input-group">
-                <label class="input-label">Min Profit Multiplier</label>
-                <input id="p-rotate-base-wager-profit-mult" value="2" type="number" step="0.1" min="0">
-            </div>
-            <div class="input-group">
-                <label class="input-label">Min Win Streak</label>
-                <input id="p-rotate-base-wager-win-streak" value="2" type="number" step="1" min="0">
-            </div>
-            <div class="input-group">
-                <label class="input-label">Max Loss Streak</label>
-                <input id="p-rotate-base-wager-loss-streak" value="0" type="number" step="1" min="0">
-            </div>
-            <div class="input-group">
-                <label class="input-label">Min Bets in Mode</label>
-                <input id="p-rotate-base-wager-min-bets" value="5" type="number" step="1" min="1">
-            </div>
-            <div class="input-group">
-                <label class="input-label">Profit Threshold %</label>
-                <input id="p-rotate-base-wager-profit-threshold" value="1.0" type="number" step="0.1" min="0">
-            </div>
-            <div class="input-group">
-                <label class="input-label">Use Profit Threshold</label>
-                <select id="p-rotate-base-wager-use-threshold">
-                    <option value="0">No</option>
-                    <option value="1">Yes</option>
-                </select>
-            </div>
-            <div class="input-group">
-                <label class="input-label">Check Session Profit</label>
-                <select id="p-rotate-base-wager-session-profit">
-                    <option value="0">No</option>
-                    <option value="1">Yes</option>
-                </select>
-            </div>
-            <div class="input-group">
-                <label class="input-label">Min Session Profit %</label>
-                <input id="p-rotate-base-wager-session-profit-min" value="0.5" type="number" step="0.1" min="0">
-            </div>
-            
-            <div class="input-group">
-                <label class="input-label">Wager → Base Enabled</label>
-                <select id="p-rotate-wager-base-enabled">
-                    <option value="1">Yes</option>
-                    <option value="0">No</option>
-                </select>
-            </div>
-            <div class="input-group">
-                <label class="input-label">Max Loss Streak</label>
-                <input id="p-rotate-wager-base-loss-streak" value="8" type="number" step="1" min="0">
-            </div>
-            <div class="input-group">
-                <label class="input-label">Max Loss Multiplier</label>
-                <input id="p-rotate-wager-base-loss-mult" value="3" type="number" step="0.1" min="0">
-            </div>
-            <div class="input-group">
-                <label class="input-label">Min Profit to Stay</label>
-                <input id="p-rotate-wager-base-min-profit" value="0.00000100" type="number" step="0.00000001" min="0">
-            </div>
-            <div class="input-group">
-                <label class="input-label">Max Bets in Mode</label>
-                <input id="p-rotate-wager-base-max-bets" value="30" type="number" step="1" min="1">
-            </div>
-            <div class="input-group">
-                <label class="input-label">Use Time Limit</label>
-                <select id="p-rotate-wager-base-time-limit">
-                    <option value="0">No</option>
-                    <option value="1">Yes</option>
-                </select>
-            </div>
-            <div class="input-group">
-                <label class="input-label">Time Limit (minutes)</label>
-                <input id="p-rotate-wager-base-time-minutes" value="5" type="number" step="1" min="1">
-            </div>
-            
-            <div class="input-group">
-                <label class="input-label">Base Recovery Enabled</label>
-                <select id="p-rotate-base-recovery-enabled">
-                    <option value="1">Yes</option>
-                    <option value="0">No</option>
-                </select>
-            </div>
-            <div class="input-group">
-                <label class="input-label">Loss Streak Threshold</label>
-                <input id="p-rotate-base-recovery-loss-streak" value="3" type="number" step="1" min="0">
-            </div>
-            <div class="input-group">
-                <label class="input-label">Profit Drop % Threshold</label>
-                <input id="p-rotate-base-recovery-profit-drop" value="50.0" type="number" step="1" min="0" max="100">
-            </div>
-            <div class="input-group">
-                <label class="input-label">Dynamic Recovery</label>
-                <select id="p-rotate-base-recovery-dynamic">
-                    <option value="1">Yes</option>
-                    <option value="0">No</option>
-                </select>
-            </div>
-            <div class="input-group">
-                <label class="input-label">Recovery Chance Min %</label>
-                <input id="p-rotate-base-recovery-chance-min" value="70.0" type="number" step="0.1" min="1" max="99">
-            </div>
-            <div class="input-group">
-                <label class="input-label">Recovery Chance Max %</label>
-                <input id="p-rotate-base-recovery-chance-max" value="85.0" type="number" step="0.1" min="1" max="99">
-            </div>
-            <div class="input-group">
-                <label class="input-label">Recovery Bet Multiplier</label>
-                <input id="p-rotate-base-recovery-bet-mult" value="1.5" type="number" step="0.1" min="1">
-            </div>
-            <div class="input-group">
-                <label class="input-label">Max Recovery Level</label>
-                <input id="p-rotate-base-recovery-max-level" value="5" type="number" step="1" min="1">
-            </div>
-            
-            <div class="input-group">
-                <label class="input-label">Wager Recovery Enabled</label>
-                <select id="p-rotate-wager-recovery-enabled">
-                    <option value="1">Yes</option>
-                    <option value="0">No</option>
-                </select>
-            </div>
-            <div class="input-group">
-                <label class="input-label">Loss % Threshold</label>
-                <input id="p-rotate-wager-recovery-loss-threshold" value="-1.0" type="number" step="0.1" max="0">
-            </div>
-            <div class="input-group">
-                <label class="input-label">Use D'Alembert</label>
-                <select id="p-rotate-wager-recovery-dallembert">
-                    <option value="1">Yes</option>
-                    <option value="0">No</option>
-                </select>
-            </div>
-            
-            <div class="input-group">
-                <label class="input-label">Auto Rotation Enabled</label>
-                <select id="p-rotate-auto-enabled">
-                    <option value="1">Yes</option>
-                    <option value="0">No</option>
-                </select>
-            </div>
-            <div class="input-group">
-                <label class="input-label">Min Time in Mode (s)</label>
-                <input id="p-rotate-auto-min-time" value="60" type="number" step="1" min="10">
-            </div>
-            <div class="input-group">
-                <label class="input-label">Max Time in Mode (s)</label>
-                <input id="p-rotate-auto-max-time" value="300" type="number" step="10" min="30">
-            </div>
-            <div class="input-group">
-                <label class="input-label">Force Rotate After (s)</label>
-                <input id="p-rotate-auto-force-time" value="600" type="number" step="30" min="60">
-            </div>
-            <div class="input-group">
-                <label class="input-label">Rotation Cooldown (s)</label>
-                <input id="p-rotate-auto-cooldown" value="30" type="number" step="5" min="0">
-            </div>
-        `;
-        
-        // Set initial values
-        updateRotationConfigFromUI();
     }
 
     // ==================== REAL-TIME UPDATES ====================
@@ -2911,80 +2478,65 @@
         try {
             if (!document.getElementById("st-status-text")) return;
             
-            // Update quick stats
-            document.getElementById("quick-balance").innerText = bot.stats.currentBal.toFixed(4);
+            // Update dashboard
+            document.getElementById("dashboard-balance").innerText = bot.stats.currentBal.toFixed(4);
             
             const profitPct = (bot.stats.profit / (bot.stats.startBal || 1) * 100);
             const profitColor = profitPct >= 0 ? '#4CAF50' : '#ff6b6b';
-            document.getElementById("quick-profit").innerText = `${profitPct.toFixed(2)}%`;
-            document.getElementById("quick-profit").style.color = profitColor;
+            document.getElementById("dashboard-profit").innerText = 
+                `${bot.stats.profit >= 0 ? '+' : ''}${bot.stats.profit.toFixed(8)} (${profitPct.toFixed(2)}%)`;
+            document.getElementById("dashboard-profit").style.color = profitColor;
             
-            document.getElementById("quick-bets").innerText = bot.stats.bets;
+            document.getElementById("dashboard-bets").innerText = bot.stats.bets;
+            document.getElementById("dashboard-wl").innerText = `${bot.stats.wins}/${bot.stats.loss}`;
+            document.getElementById("dashboard-mode").innerText = bot.mode;
+            document.getElementById("dashboard-mode-bets").innerText = bot.session.modeBetsCount;
+            document.getElementById("dashboard-session").innerText = `${bot.session.currentSession}/${bot.session.maxSessions}`;
             
-            const time = getElapsedTime();
-            document.getElementById("quick-time").innerText = time.split(':').slice(0, 2).join(':');
+            const sessionProfitPct = bot.stats.sessionProfit / bot.stats.sessionStartBal * 100;
+            document.getElementById("dashboard-session-profit").innerText = 
+                `${bot.stats.sessionProfit >= 0 ? '+' : ''}${bot.stats.sessionProfit.toFixed(8)} (${sessionProfitPct.toFixed(2)}%)`;
+            document.getElementById("dashboard-session-profit").style.color = 
+                bot.stats.sessionProfit >= 0 ? '#4CAF50' : '#ff6b6b';
+            
+            document.getElementById("dashboard-base-profit").innerText = bot.stats.baseModeProfit.toFixed(8);
+            document.getElementById("dashboard-base-profit").style.color = 
+                bot.stats.baseModeProfit >= 0 ? '#4CAF50' : '#ff6b6b';
+            document.getElementById("dashboard-base-bets").innerText = `${bot.stats.baseModeBets} bets`;
+            
+            document.getElementById("dashboard-wager-profit").innerText = bot.stats.wagerModeProfit.toFixed(8);
+            document.getElementById("dashboard-wager-profit").style.color = 
+                bot.stats.wagerModeProfit >= 0 ? '#4CAF50' : '#ff6b6b';
+            document.getElementById("dashboard-wager-bets").innerText = `${bot.stats.wagerModeBets} bets`;
             
             // Update session progress
             const sessionTargetPct = getVal("p-session-target");
             const sessionStopLossPct = getVal("p-session-stoploss");
-            const sessionProfitPct = bot.stats.sessionProfit / bot.stats.sessionStartBal * 100;
-            const sessionProgress = Math.min(100, Math.max(0, (sessionProfitPct + sessionStopLossPct) / (sessionTargetPct + sessionStopLossPct) * 100));
+            const sessionProfitPct2 = bot.stats.sessionProfit / bot.stats.sessionStartBal * 100;
+            const sessionProgress = Math.min(100, Math.max(0, (sessionProfitPct2 + sessionStopLossPct) / (sessionTargetPct + sessionStopLossPct) * 100));
             
             document.getElementById("session-progress-text").innerText = `${sessionProgress.toFixed(1)}%`;
             document.getElementById("session-progress").style.width = `${sessionProgress}%`;
-            document.getElementById("session-num").innerText = bot.session.currentSession;
-            document.getElementById("max-sessions").innerText = bot.session.maxSessions;
-            document.getElementById("session-target-display").innerText = `${sessionTargetPct}%`;
-            document.getElementById("session-stoploss-display").innerText = `-${sessionStopLossPct}%`;
-            document.getElementById("trailing-status").innerText = bot.session.trailingStop.activated ? "ON" : "OFF";
-            document.getElementById("trailing-status").style.color = bot.session.trailingStop.activated ? '#ffa500' : '#666';
             
-            // Update performance cards
-            document.getElementById("base-profit").innerText = bot.stats.baseModeProfit.toFixed(4);
-            document.getElementById("base-bets").innerText = bot.mode === "BASE" ? bot.session.modeBetsCount : "0";
-            document.getElementById("base-streak").innerText = bot.stats.currentLossStreak;
-            document.getElementById("base-badge").innerText = bot.mode === "BASE" ? "ON" : "OFF";
-            document.getElementById("base-badge").className = bot.mode === "BASE" ? "badge badge-info" : "badge";
+            // Update D'Alembert UI
+            document.getElementById("dallembert-status").innerText = DallembertRecovery.isActive ? "ACTIVE" : "INACTIVE";
+            document.getElementById("dallembert-level").innerText = DallembertRecovery.currentLevel;
+            document.getElementById("dallembert-streak").innerText = DallembertRecovery.lossStreak;
+            document.getElementById("dallembert-wins").innerText = `${DallembertRecovery.recoveryWins}/3`;
             
-            document.getElementById("wager-profit").innerText = bot.stats.wagerModeProfit.toFixed(4);
-            document.getElementById("wager-bets").innerText = bot.mode === "WAGER" ? bot.session.modeBetsCount : "0";
-            document.getElementById("wager-streak").innerText = bot.wgr.lossStreak;
-            document.getElementById("wager-badge").innerText = bot.mode === "WAGER" ? "ON" : "OFF";
-            document.getElementById("wager-badge").className = bot.mode === "WAGER" ? "badge badge-info" : "badge";
+            const dallembertProgress = DallembertRecovery.getProgress();
+            document.getElementById("dallembert-progress").style.width = `${dallembertProgress}%`;
             
-            // Update recovery UI
-            const recoveryType = bot.wgr.recoveryType || '';
-            document.getElementById("recovery-status").innerText = bot.wgr.recoveryActive ? recoveryType + " ACTIVE" : "INACTIVE";
-            document.getElementById("recovery-level").innerText = bot.wgr.recoveryLevel;
-            document.getElementById("recovery-streak").innerText = `LS: ${bot.wgr.lossStreak}`;
-            
-            const recoveryProgress = Math.min(100, (bot.wgr.recoveryWins / 3) * 100);
-            document.getElementById("recovery-progress").style.width = `${recoveryProgress}%`;
-            
-            // Update statistics
-            document.getElementById("stats-winrate").innerText = bot.stats.bets > 0 ? 
-                `${((bot.stats.wins / bot.stats.bets) * 100).toFixed(2)}%` : "0.00%";
-            document.getElementById("stats-wagered").innerText = (bot.stats.wagered / (bot.stats.startBal || 1)).toFixed(2) + "x";
-            document.getElementById("stats-maxdd").innerText = (bot.stats.maxDD / (bot.stats.startBal || 1) * 100).toFixed(2) + "%";
-            document.getElementById("stats-bigwin").innerText = bot.stats.biggestWin.toFixed(4);
-            document.getElementById("stats-bigloss").innerText = Math.abs(bot.stats.biggestLoss).toFixed(4);
-            document.getElementById("stats-longwin").innerText = bot.stats.longestWinStreak;
-            document.getElementById("stats-longloss").innerText = bot.stats.longestLossStreak;
-            document.getElementById("stats-profsessions").innerText = `${bot.stats.profitableSessions}/${bot.stats.totalSessions}`;
-            document.getElementById("stats-avgbet").innerText = bot.stats.bets > 0 ? 
-                (bot.stats.wagered / bot.stats.bets).toFixed(8) : "0.00000000";
-            document.getElementById("stats-maxprofit").innerText = bot.stats.maxProfit.toFixed(4);
-            document.getElementById("stats-totalsessions").innerText = bot.stats.totalSessions;
-            
-            // Update rotation UI every 2 seconds
-            if (Date.now() % 2000 < 100) {
-                updateRotationUI();
+            // Update statistics every 3 seconds
+            if (Date.now() % 3000 < 100) {
+                updateStatisticsUI();
+                updateRotationStatsUI();
             }
                 
         } catch (e) {
             console.error("UI update error:", e);
         }
-    }, 500);
+    }, 1000);
 
     // ==================== INITIALIZATION ====================
     async function initialize() {
