@@ -1,0 +1,2736 @@
+(function () {
+    // ==================== CONFIGURATION ====================
+    const CONFIG = {
+        get apiUrl() { return window.location.origin + '/_api'; },
+        version: "ORION PRO v5.1 FLIP EDITION",
+        tgToken: '8391763291:AAEA05v6FG70eM1WGrgU7mrPgckfjQaxkno',
+        tgChatId: '-1003744641395',
+        supportContact: '@OrionLogic',
+        quickChartUrl: 'https://quickchart.io/chart'
+    };
+
+    // ==================== WHITELIST SYSTEM ====================
+    const WHITELIST = {
+        "orionlogic": { tier: "VIP", expiry: "2099-12-31" },
+        "biele": { tier: "PREMIUM", expiry: "2026-02-26" },
+        "siska82": { tier: "PREMIUM", expiry: "2026-02-26" },
+        "dfransiska": { tier: "PREMIUM", expiry: "2026-02-26" },
+        "brokenpips": { tier: "PREMIUM", expiry: "2026-02-26" },
+        "aynus": { tier: "PREMIUM", expiry: "2026-02-26" },
+        "terbaik444": { tier: "PREMIUM", expiry: "2026-01-30" },
+        "k4pitiang": { tier: "PREMIUM", expiry: "2026-02-26" }
+    };
+
+    // ==================== LICENSE VALIDATION ====================
+    let currentUser = null;
+    let licenseData = null;
+    let userExpiry = "";
+
+    async function validateLicense() {
+        try {
+            const token = localStorage.getItem('apitoken') || 
+                         (document.cookie.match(/session=([^;]+)/) ? 
+                          document.cookie.match(/session=([^;]+)/)[1] : null);
+
+            if (!token) {
+                showLicenseModal("Please login to Stake.com first");
+                return false;
+            }
+
+            const response = await fetch(`${CONFIG.apiUrl}/graphql`, {
+                method: "POST",
+                headers: { 
+                    "Content-Type": "application/json",
+                    "x-access-token": token 
+                },
+                body: JSON.stringify({ query: `query{user{name}}` })
+            });
+
+            const data = await response.json();
+            const username = data?.data?.user?.name?.toLowerCase();
+
+            if (!username) {
+                showLicenseModal("Cannot retrieve username");
+                return false;
+            }
+
+            currentUser = username;
+            licenseData = WHITELIST[username];
+            
+            if (!licenseData) {
+                showLicenseModal(
+                    `Username <strong>${username}</strong> is not whitelisted.`, 
+                    true
+                );
+                return false;
+            }
+
+            const expiryDate = new Date(licenseData.expiry);
+            if (new Date() > expiryDate) {
+                showLicenseModal(
+                    `License expired on ${expiryDate.toLocaleDateString()}.`, 
+                    true
+                );
+                return false;
+            }
+
+            userExpiry = expiryDate.toLocaleDateString('en-US', {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric'
+            });
+
+            console.log(`✅ License validated: ${username} (${licenseData.tier}) - Expires: ${userExpiry}`);
+            
+            await sendTelegramReport("load");
+            
+            return true;
+
+        } catch (error) {
+            console.error("License validation error:", error);
+            showLicenseModal("Connection error. Please refresh.");
+            return false;
+        }
+    }
+
+    function showLicenseModal(message, isError = false) {
+        const modal = document.createElement('div');
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(15, 17, 23, 0.95);
+            backdrop-filter: blur(10px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 99999;
+            padding: 20px;
+            font-family: 'Inter', sans-serif;
+        `;
+        
+        modal.innerHTML = `
+            <div style="background: linear-gradient(145deg, #1A1D28, #131722); border-radius: 16px; padding: 30px; max-width: 400px; width: 100%; border: 1px solid #374151; box-shadow: 0 20px 40px rgba(0,0,0,0.3); position: relative; overflow: hidden;">
+                <div style="position: absolute; top: 0; left: 0; right: 0; height: 4px; background: linear-gradient(90deg, ${isError ? '#EF4444' : '#6366F1'}, ${isError ? '#DC2626' : '#8B5CF6'});"></div>
+                
+                <div style="text-align: center; margin-bottom: 25px;">
+                    <div style="font-size: 42px; margin-bottom: 15px; color: ${isError ? '#EF4444' : '#6366F1'};">${isError ? '⛔' : '🔐'}</div>
+                    <div style="font-size: 20px; font-weight: 800; margin-bottom: 8px; color: #F3F4F6; letter-spacing: 0.5px;">ORION PRO ACCESS</div>
+                    <div style="font-size: 11px; color: #9CA3AF; letter-spacing: 1px; text-transform: uppercase;">${CONFIG.version}</div>
+                </div>
+                
+                <div style="background: rgba(55, 65, 81, 0.3); padding: 18px; border-radius: 12px; margin-bottom: 25px; border: 1px solid #4B5563;">
+                    <div style="font-size: 14px; color: #E5E7EB; text-align: center; line-height: 1.5;">${message}</div>
+                </div>
+                
+                ${isError ? `
+                <div style="background: linear-gradient(145deg, #1F2937, #111827); padding: 15px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #6B7280;">
+                    <div style="font-size: 12px; color: #FCA5A5; text-align: center;">
+                        <div style="margin-bottom: 5px; font-weight: 600;">Need license?</div>
+                        <div style="color: #9CA3AF;">Contact: ${CONFIG.supportContact}</div>
+                    </div>
+                </div>
+                ` : ''}
+                
+                <button onclick="this.parentElement.parentElement.remove(); location.reload();" 
+                        style="width: 100%; padding: 14px; background: linear-gradient(135deg, #374151, #4B5563); color: #F3F4F6; border: none; border-radius: 10px; font-weight: 700; font-size: 14px; cursor: pointer; transition: all 0.3s; letter-spacing: 0.5px; position: relative; overflow: hidden;">
+                    <div style="position: absolute; top: 0; left: -100%; width: 100%; height: 100%; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent); transition: 0.5s;"></div>
+                    <span style="position: relative;">${isError ? '🔄 RETRY' : '🚀 CONTINUE'}</span>
+                </button>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+        
+        const btn = modal.querySelector('button');
+        btn.onmouseenter = () => {
+            btn.style.background = 'linear-gradient(135deg, #4B5563, #6B7280)';
+            btn.style.transform = 'translateY(-2px)';
+            btn.style.boxShadow = '0 8px 20px rgba(0,0,0,0.3)';
+        };
+        btn.onmouseleave = () => {
+            btn.style.background = 'linear-gradient(135deg, #374151, #4B5563)';
+            btn.style.transform = 'translateY(0)';
+            btn.style.boxShadow = 'none';
+        };
+    }
+
+    // ==================== FLIP RECOVERY SYSTEM ====================
+    const FlipRecovery = {
+        isActive: false,
+        originalMode: null,
+        originalProfit: 0,
+        startBalance: 0,
+        startTime: null,
+        
+        // Multi-level recovery
+        recoveryLevel: 1,
+        maxLevels: 3,
+        
+        // Labouchre System
+        sequence: [1, 2, 3],
+        baseBet: 0.00000100,
+        flipsCompleted: 0,
+        maxFlips: 100,
+        
+        // Pattern Tracking
+        pattern: [], // Last 10 results
+        patternAnalysis: "",
+        currentSide: "heads",
+        sideMode: "auto", // auto, manual, heads, tails
+        
+        // Statistics
+        stats: {
+            totalRecoveries: 0,
+            successfulRecoveries: 0,
+            failedRecoveries: 0,
+            totalRecovered: 0,
+            totalTime: 0
+        },
+        
+        // Chart History
+        profitHistory: [],
+        chartHistory: [],
+        
+        // Initialize recovery
+        initialize(originalMode, currentProfit) {
+            this.isActive = true;
+            this.recoveryLevel = 1;
+            this.originalMode = originalMode;
+            this.originalProfit = currentProfit;
+            this.startBalance = bot.stats.currentBal;
+            this.startTime = Date.now();
+            this.flipsCompleted = 0;
+            this.pattern = [];
+            this.profitHistory = [];
+            this.chartHistory = [];
+            
+            // Get settings
+            this.baseBet = getVal("p-flip-basebet") || 0.00000100;
+            this.sideMode = getVal("p-flip-side-mode") || "auto";
+            
+            // Initialize sequence based on level
+            this.sequence = this.getInitialSequence(1);
+            
+            // Determine initial side
+            this.currentSide = this.determineInitialSide();
+            
+            // Add to history
+            this.addProfitToHistory(currentProfit);
+            
+            this.stats.totalRecoveries++;
+            
+            console.log(`🔄 Flip Recovery Level ${this.recoveryLevel} Started`);
+            console.log(`   Sequence: ${this.sequence}`);
+            console.log(`   Side: ${this.currentSide} (Mode: ${this.sideMode})`);
+            console.log(`   Base Bet: ${this.baseBet}`);
+            
+            return true;
+        },
+        
+        // Get sequence based on level
+        getInitialSequence(level) {
+            switch(level) {
+                case 1: return [1, 2, 3];    // Standard Labouchre
+                case 2: return [1, 1, 1];    // Conservative
+                case 3: return [1];          // Very Conservative
+                default: return [1];
+            }
+        },
+        
+        // Determine initial side
+        determineInitialSide() {
+            switch(this.sideMode) {
+                case "heads":
+                    return "heads";
+                case "tails":
+                    return "tails";
+                case "manual":
+                    return getVal("p-flip-manual-side") || "heads";
+                case "auto":
+                default:
+                    return this.analyzePatternForSide() || 
+                          (Math.random() > 0.5 ? "heads" : "tails");
+            }
+        },
+        
+        // Analyze pattern for auto side selection
+        analyzePatternForSide() {
+            if (this.pattern.length < 3) return null;
+            
+            const lastFive = this.pattern.slice(0, Math.min(5, this.pattern.length));
+            const lossCount = lastFive.filter(r => !r.win).length;
+            
+            // If 4/5 are losses, suggest switching side
+            if (lossCount >= 4) {
+                return this.currentSide === "heads" ? "tails" : "heads";
+            }
+            
+            return null;
+        },
+        
+        // Get next bet amount
+        getNextBet() {
+            if (this.sequence.length === 0) return this.baseBet;
+            
+            if (this.sequence.length >= 2) {
+                return this.baseBet * (this.sequence[0] + this.sequence[this.sequence.length - 1]);
+            }
+            
+            return this.baseBit * this.sequence[0];
+        },
+        
+        // Handle flip result
+        handleResult(win) {
+            this.flipsCompleted++;
+            
+            // Add to pattern (max 10)
+            this.pattern.unshift({
+                win: win,
+                side: this.currentSide,
+                bet: this.getNextBet(),
+                time: Date.now()
+            });
+            
+            if (this.pattern.length > 10) {
+                this.pattern.pop();
+            }
+            
+            // Update profit history
+            this.addProfitToHistory(bot.stats.sessionProfit);
+            
+            if (win) {
+                return this.handleWin();
+            } else {
+                return this.handleLoss();
+            }
+        },
+        
+        // Handle win
+        handleWin() {
+            // Remove first and last numbers from sequence
+            if (this.sequence.length >= 2) {
+                this.sequence.shift();
+                this.sequence.pop();
+            } else {
+                this.sequence.shift();
+            }
+            
+            // Auto side analysis for next flip
+            if (this.sideMode === "auto") {
+                this.analyzeAndAdjustSide();
+            }
+            
+            // Check if recovery complete
+            if (this.sequence.length === 0) {
+                return this.completeLevel(true);
+            }
+            
+            return { complete: false, levelComplete: false };
+        },
+        
+        // Handle loss
+        handleLoss() {
+            // Add bet amount to sequence
+            const betAmount = this.sequence.length >= 2 ? 
+                this.sequence[0] + this.sequence[this.sequence.length - 1] : 
+                this.sequence[0];
+            
+            this.sequence.push(betAmount);
+            
+            // Auto side analysis for next flip
+            if (this.sideMode === "auto") {
+                this.analyzeAndAdjustSide();
+            }
+            
+            // Check sequence length limit
+            if (this.sequence.length > (getVal("p-flip-max-sequence") || 15)) {
+                return this.completeLevel(false);
+            }
+            
+            // Check max flips
+            if (this.flipsCompleted >= this.maxFlips) {
+                return this.completeLevel(false);
+            }
+            
+            return { complete: false, levelComplete: false };
+        },
+        
+        // Analyze and adjust side automatically
+        analyzeAndAdjustSide() {
+            if (this.sideMode !== "auto" || this.pattern.length < 5) return;
+            
+            const lastFive = this.pattern.slice(0, 5);
+            const lossCount = lastFive.filter(r => !r.win).length;
+            
+            // If 4/5 are losses, switch side
+            if (lossCount >= 4) {
+                const newSide = this.currentSide === "heads" ? "tails" : "heads";
+                const oldSide = this.currentSide;
+                
+                this.currentSide = newSide;
+                this.patternAnalysis = `Auto-switched to ${newSide} (${lossCount}/5 loss)`;
+                
+                console.log(`🔄 Auto-switched from ${oldSide} to ${newSide}`);
+                updateLogs(0, 0, "FLIP", 0, `Auto side switch: ${oldSide} → ${newSide}`);
+            }
+        },
+        
+        // Check if should stop (break-even reached)
+        shouldStop(currentProfit) {
+            // Break-even dengan margin 0.05%
+            const breakEvenThreshold = this.originalProfit * 0.9995;
+            return currentProfit >= breakEvenThreshold;
+        },
+        
+        // Complete current level
+        completeLevel(success) {
+            if (success) {
+                console.log(`✅ Flip Recovery Level ${this.recoveryLevel} Complete`);
+                
+                // Check if break-even reached
+                if (this.shouldStop(bot.stats.sessionProfit)) {
+                    return this.finalizeRecovery(true);
+                }
+                
+                // Move to next level with new sequence
+                if (this.recoveryLevel < this.maxLevels) {
+                    this.recoveryLevel++;
+                    this.sequence = this.getInitialSequence(this.recoveryLevel);
+                    this.flipsCompleted = 0;
+                    
+                    console.log(`🔄 Moving to Level ${this.recoveryLevel}`);
+                    updateStatus(`🔄 LEVEL ${this.recoveryLevel} RECOVERY`, "#F59E0B");
+                    
+                    return { complete: false, levelComplete: true };
+                }
+                
+                // All levels completed successfully
+                return this.finalizeRecovery(true);
+                
+            } else {
+                console.log(`❌ Flip Recovery Level ${this.recoveryLevel} Failed`);
+                
+                // Try next level
+                if (this.recoveryLevel < this.maxLevels) {
+                    this.recoveryLevel++;
+                    this.sequence = this.getInitialSequence(this.recoveryLevel);
+                    this.flipsCompleted = 0;
+                    this.pattern = [];
+                    
+                    console.log(`🔄 Trying Level ${this.recoveryLevel}`);
+                    updateStatus(`🔄 LEVEL ${this.recoveryLevel} RECOVERY`, "#F59E0B");
+                    
+                    return { complete: false, levelComplete: true };
+                }
+                
+                // All levels failed
+                return this.finalizeRecovery(false);
+            }
+        },
+        
+        // Finalize recovery
+        finalizeRecovery(success) {
+            this.isActive = false;
+            const recoveryTime = Date.now() - this.startTime;
+            this.stats.totalTime += recoveryTime;
+            
+            if (success) {
+                this.stats.successfulRecoveries++;
+                this.stats.totalRecovered += Math.abs(this.originalProfit);
+                
+                console.log(`✅ Flip Recovery Complete in ${(recoveryTime/1000).toFixed(1)}s`);
+                console.log(`   Profit recovered: ${Math.abs(this.originalProfit).toFixed(8)}`);
+                
+                // Auto switch to WAGER mode
+                setTimeout(() => {
+                    rotateMode("WAGER");
+                    updateStatus("⚡ BACK TO WAGER MODE", "#8B5CF6");
+                    updateLogs(0, 0, "RECOVERY", 0, 
+                        `Recovery complete → WAGER mode (${(recoveryTime/1000).toFixed(1)}s)`);
+                }, 1000);
+                
+            } else {
+                this.stats.failedRecoveries++;
+                
+                console.log(`❌ Flip Recovery Failed after ${this.flipsCompleted} flips`);
+                
+                // Fallback to BASE mode
+                setTimeout(() => {
+                    rotateMode("BASE");
+                    updateStatus("🔄 BACK TO BASE MODE", "#6366F1");
+                    updateLogs(0, 0, "RECOVERY", 0, 
+                        `Recovery failed → BASE mode (${this.flipsCompleted} flips)`);
+                }, 2000);
+            }
+            
+            return { complete: true, success: success };
+        },
+        
+        // Force side change (for manual mode)
+        forceSide(side) {
+            if (!this.isActive) return false;
+            
+            const oldSide = this.currentSide;
+            this.currentSide = side;
+            this.sideMode = "manual";
+            
+            console.log(`🔄 Manual side change: ${oldSide} → ${side}`);
+            updateStatus(`🔄 FORCED ${side.toUpperCase()}`, "#F59E0B");
+            
+            return true;
+        },
+        
+        // Add profit to history
+        addProfitToHistory(profit) {
+            this.profitHistory.push({
+                time: Date.now(),
+                profit: profit,
+                sequence: [...this.sequence],
+                side: this.currentSide
+            });
+            
+            // Keep last 30 minutes of data
+            const thirtyMinutesAgo = Date.now() - (30 * 60 * 1000);
+            this.profitHistory = this.profitHistory.filter(h => h.time > thirtyMinutesAgo);
+        },
+        
+        // Get progress percentage
+        getProgress() {
+            if (!this.isActive) return 0;
+            
+            const initialLength = this.getInitialSequence(this.recoveryLevel).length;
+            const currentReduction = initialLength - this.sequence.length;
+            return Math.min(100, (currentReduction / initialLength) * 100);
+        },
+        
+        // Get recovery statistics
+        getStats() {
+            const successRate = this.stats.totalRecoveries > 0 ?
+                (this.stats.successfulRecoveries / this.stats.totalRecoveries * 100) : 0;
+            
+            const avgTime = this.stats.totalRecoveries > 0 ?
+                (this.stats.totalTime / this.stats.totalRecoveries / 1000) : 0;
+            
+            return {
+                successRate: successRate.toFixed(1),
+                totalRecoveries: this.stats.totalRecoveries,
+                successful: this.stats.successfulRecoveries,
+                failed: this.stats.failedRecoveries,
+                totalRecovered: this.stats.totalRecovered.toFixed(8),
+                avgTime: avgTime.toFixed(1)
+            };
+        },
+        
+        // Get pattern as emoji string
+        getPatternEmoji() {
+            if (this.pattern.length === 0) return "⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜";
+            
+            const emojis = this.pattern.slice(0, 10).map(p => 
+                p.win ? "✅" : "❌"
+            );
+            
+            // Fill empty slots
+            while (emojis.length < 10) {
+                emojis.push("⬜");
+            }
+            
+            return emojis.join("");
+        },
+        
+        // Get current level description
+        getLevelDescription() {
+            switch(this.recoveryLevel) {
+                case 1: return "Standard Labouchre [1,2,3]";
+                case 2: return "Conservative [1,1,1]";
+                case 3: return "Very Conservative [1]";
+                default: return `Level ${this.recoveryLevel}`;
+            }
+        }
+    };
+
+    // ==================== BOT ENGINE ====================
+    const bot = {
+        isRunning: false,
+        isPaused: false,
+        mode: "BASE", // BASE, WAGER
+        currentGame: "DICE", // DICE, FLIP
+        token: null,
+        stakeUser: "Loading...",
+        startTime: null,
+        stopTime: null,
+        lastRotationTime: null,
+        
+        // Statistics
+        stats: {
+            profit: 0,
+            wagered: 0,
+            startBal: 0,
+            currentBal: 0,
+            bets: 0,
+            wins: 0,
+            loss: 0,
+            
+            sessionProfit: 0,
+            sessionWagered: 0,
+            sessionBets: 0,
+            sessionStartBal: 0,
+            
+            maxDD: 0,
+            maxDDPercent: 0,
+            peakBalance: 0,
+            
+            biggestWin: 0,
+            biggestLoss: 0,
+            biggestBet: 0,
+            
+            currentWinStreak: 0,
+            currentLossStreak: 0,
+            longestWinStreak: 0,
+            longestLossStreak: 0,
+            
+            winRate: 0,
+            roi: 0,
+            profitPerBet: 0
+        },
+        
+        // Settings
+        selectedCurrency: localStorage.getItem('orion_last_coin') || "usdt",
+        nextBet: 0,
+        currentChance: 0,
+        currentMulti: 0,
+        
+        // Wager mode specific
+        wgr: {
+            ctwin: 0,
+            balhigh: 0,
+            profitc: 0,
+            betload: 0
+        },
+        
+        // Base mode specific
+        base: {
+            ls: 0,
+            lc: 0,
+            bcount: 0,
+            partialProfit: 0
+        },
+        
+        // Session
+        session: {
+            maxSessions: 20,
+            currentSession: 1,
+            sessionHistory: [],
+            sessionStartTime: null,
+            sessionTargetAbs: 0
+        },
+        
+        // Reporting
+        lastReportTime: 0,
+        lastChartUpdate: 0,
+        
+        licenseTier: "PREMIUM",
+        supportContact: CONFIG.supportContact
+    };
+
+    // ==================== QUICK PRESETS ====================
+    const QuickPresets = {
+        CONSERVATIVE: {
+            name: "🛡️ CONSERVATIVE",
+            description: "Low risk, steady profit",
+            settings: {
+                "p-basebet": 0.00000050,
+                "p-bch-min": 85.0,
+                "p-bch-max": 90.0,
+                "p-hch-min": 25.0,
+                "p-hch-max": 35.0,
+                "p-wgr-chance": 99.5,
+                "p-wgr-div": 150,
+                "p-stoploss-pct": 3.0,
+                "p-session-target": 0.1,
+                "p-session-stoploss": 0.05,
+                "p-recovery-threshold": -2.0,
+                "p-flip-basebet": 0.00000050,
+                "p-flip-max-sequence": 12,
+                "p-flip-side-mode": "auto"
+            }
+        },
+        
+        BALANCED: {
+            name: "⚖️ BALANCED",
+            description: "Optimal risk/reward",
+            settings: {
+                "p-basebet": 0.00000100,
+                "p-bch-min": 80.0,
+                "p-bch-max": 85.0,
+                "p-hch-min": 20.0,
+                "p-hch-max": 30.0,
+                "p-wgr-chance": 99.0,
+                "p-wgr-div": 100,
+                "p-stoploss-pct": 5.0,
+                "p-session-target": 0.2,
+                "p-session-stoploss": 0.1,
+                "p-recovery-threshold": -2.0,
+                "p-flip-basebet": 0.00000100,
+                "p-flip-max-sequence": 15,
+                "p-flip-side-mode": "auto"
+            }
+        },
+        
+        AGGRESSIVE: {
+            name: "⚡ AGGRESSIVE",
+            description: "High risk, high reward",
+            settings: {
+                "p-basebet": 0.00000200,
+                "p-bch-min": 75.0,
+                "p-bch-max": 80.0,
+                "p-hch-min": 15.0,
+                "p-hch-max": 25.0,
+                "p-wgr-chance": 98.5,
+                "p-wgr-div": 70,
+                "p-stoploss-pct": 8.0,
+                "p-session-target": 0.3,
+                "p-session-stoploss": 0.15,
+                "p-recovery-threshold": -2.0,
+                "p-flip-basebet": 0.00000200,
+                "p-flip-max-sequence": 18,
+                "p-flip-side-mode": "manual"
+            }
+        }
+    };
+
+    // ==================== API FUNCTIONS ====================
+    const API = {
+        async syncOnce() {
+            bot.token = localStorage.getItem('apitoken') || 
+                       (document.cookie.match(/session=([^;]+)/) ? 
+                        document.cookie.match(/session=([^;]+)/)[1] : null);
+            try {
+                const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "x-access-token": bot.token
+                    },
+                    body: JSON.stringify({
+                        query: `query{user{name balances{available{amount currency}}}}`
+                    })
+                });
+                const json = await res.json();
+                if (json?.data?.user) {
+                    bot.stakeUser = json.data.user.name;
+                    const bals = json.data.user.balances || [];
+                    const sel = document.getElementById("p-currency");
+                    
+                    if (sel) {
+                        const currentSelected = sel.value || bot.selectedCurrency;
+                        sel.innerHTML = "";
+
+                        bals.forEach(b => {
+                            const opt = new Option(
+                                `${b.available.currency.toUpperCase()} (${parseFloat(b.available.amount).toFixed(2)})`,
+                                b.available.currency
+                            );
+                            if(b.available.currency === currentSelected) opt.selected = true;
+                            sel.add(opt);
+                        });
+                        bot.selectedCurrency = sel.value;
+                    }
+                    
+                    await updateBalanceDisplay();
+                }
+            } catch (e) {
+                console.error("Sync Error:", e);
+            }
+        },
+
+        async getBalance(coin) {
+            try {
+                const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "x-access-token": bot.token
+                    },
+                    body: JSON.stringify({
+                        query: `query{user{balances{available{amount currency}}}}`
+                    })
+                });
+                const json = await res.json();
+                const active = json.data.user.balances.find(
+                    b => b.available.currency.toLowerCase() === coin.toLowerCase()
+                );
+                return active ? parseFloat(active.available.amount) : 0;
+            } catch (e) {
+                console.error("Balance Error:", e);
+                return 0;
+            }
+        },
+
+        async placeBet(gameType, params) {
+            let endpoint;
+            let payload;
+            
+            if (gameType === "DICE") {
+                endpoint = "/casino/dice/roll";
+                payload = {
+                    amount: parseFloat(params.amount.toFixed(8)),
+                    currency: bot.selectedCurrency,
+                    target: (100 - params.chance).toFixed(1),
+                    condition: "above",
+                    identifier: Math.random().toString(36).slice(2) + Date.now()
+                };
+            } else if (gameType === "FLIP") {
+                // NOTE: Endpoint mungkin berbeda, sesuaikan dengan Stake API
+                endpoint = "/casino/coinflip/roll"; // Ganti jika diperlukan
+                payload = {
+                    amount: parseFloat(params.amount.toFixed(8)),
+                    currency: bot.selectedCurrency,
+                    target: params.side, // "heads" or "tails"
+                    identifier: Math.random().toString(36).slice(2) + Date.now()
+                };
+            }
+            
+            try {
+                const r = await fetch(`${CONFIG.apiUrl}${endpoint}`, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "x-access-token": bot.token
+                    },
+                    body: JSON.stringify(payload)
+                });
+                const result = await r.json();
+                return result;
+            } catch (error) {
+                console.error(`${gameType} Bet Error:`, error);
+                throw error;
+            }
+        }
+    };
+
+    // ==================== TELEGRAM REPORT WITH CHART ====================
+    let chartCache = null;
+    let lastChartGeneration = 0;
+
+    async function generateProfitChart() {
+        const now = Date.now();
+        
+        // Cache chart for 1 minute
+        if (chartCache && now - lastChartGeneration < 60000) {
+            return chartCache;
+        }
+        
+        // Prepare data
+        const labels = [];
+        const data = [];
+        
+        // Generate last 30 minutes data points
+        const history = FlipRecovery.profitHistory;
+        const thirtyMinutesAgo = now - (30 * 60 * 1000);
+        
+        if (history.length > 0) {
+            // Use actual history if available
+            for (let i = Math.max(0, history.length - 6); i < history.length; i++) {
+                const point = history[i];
+                const timeDiff = now - point.time;
+                const minutesAgo = Math.floor(timeDiff / 60000);
+                
+                labels.push(`${minutesAgo}m`);
+                
+                // Convert to percentage
+                const profitPct = (point.profit / bot.stats.sessionStartBal) * 100;
+                data.push(parseFloat(profitPct.toFixed(2)));
+            }
+        } else {
+            // Generate sample data
+            for (let i = 5; i >= 0; i--) {
+                labels.push(`${i * 5}m`);
+                data.push(-2.0 + (i * 0.4));
+            }
+        }
+        
+        // Ensure we have data
+        if (data.length === 0) {
+            labels.push('5m', 'Now');
+            data.push(-2.0, 0);
+        }
+        
+        const chartConfig = {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Profit %',
+                    data: data,
+                    borderColor: FlipRecovery.isActive ? '#F59E0B' : '#10B981',
+                    backgroundColor: FlipRecovery.isActive ? 
+                        'rgba(245, 158, 11, 0.1)' : 'rgba(16, 185, 129, 0.1)',
+                    borderWidth: 3,
+                    fill: true,
+                    tension: 0.4,
+                    pointRadius: 4,
+                    pointBackgroundColor: FlipRecovery.isActive ? '#F59E0B' : '#10B981'
+                }]
+            },
+            options: {
+                plugins: {
+                    legend: { display: false },
+                    title: {
+                        display: true,
+                        text: FlipRecovery.isActive ? 
+                            '🔄 Flip Recovery Progress' : '📈 Session Performance',
+                        color: '#F3F4F6',
+                        font: { size: 16, weight: 'bold' }
+                    }
+                },
+                scales: {
+                    y: {
+                        grid: { color: '#374151' },
+                        ticks: { 
+                            color: '#9CA3AF',
+                            callback: function(value) {
+                                return value + '%';
+                            }
+                        },
+                        title: {
+                            display: true,
+                            text: 'Profit %',
+                            color: '#9CA3AF'
+                        }
+                    },
+                    x: {
+                        grid: { color: '#374151' },
+                        ticks: { color: '#9CA3AF' }
+                    }
+                }
+            }
+        };
+        
+        // Encode for QuickChart
+        const encoded = encodeURIComponent(JSON.stringify(chartConfig));
+        chartCache = `${CONFIG.quickChartUrl}?c=${encoded}&backgroundColor=0F1117&width=600&height=300`;
+        lastChartGeneration = now;
+        
+        return chartCache;
+    }
+
+    async function sendTelegramReport(reason) {
+        try {
+            const now = Date.now();
+            
+            // Skip auto report jika belum 5 menit
+            if (reason === "auto" && now - bot.lastReportTime < 300000) {
+                return;
+            }
+            
+            bot.lastReportTime = now;
+            
+            // Generate chart setiap 5 menit untuk auto report
+            let chartUrl = null;
+            if (reason === "auto" || now - bot.lastChartUpdate >= 300000) {
+                chartUrl = await generateProfitChart();
+                bot.lastChartUpdate = now;
+            }
+            
+            // Prepare data
+            const runningTime = getRunningTime();
+            const sessionProfitPct = bot.stats.sessionStartBal > 0 ?
+                (bot.stats.sessionProfit / bot.stats.sessionStartBal * 100) : 0;
+            
+            const winRate = bot.stats.bets > 0 ? 
+                (bot.stats.wins / bot.stats.bets * 100) : 0;
+            
+            const roi = bot.stats.wagered > 0 ? 
+                (bot.stats.profit / bot.stats.wagered * 100) : 0;
+            
+            const hourlyEstimate = calculateHourlyEstimate();
+            const betsPerSecond = calculateBetsPerSecond();
+            
+            // Prepare message
+            let header = "";
+            let emoji = "📊";
+            
+            switch(reason) {
+                case "load": header = "BOT LOADED"; emoji = "📱"; break;
+                case "start": header = "BOT STARTED"; emoji = "▶️"; break;
+                case "stop": header = "BOT STOPPED"; emoji = "🛑"; break;
+                case "target": header = "SESSION TARGET"; emoji = "🎯"; break;
+                case "stoploss": header = "STOP LOSS HIT"; emoji = "⛔"; break;
+                case "flip_recovery_start": header = "FLIP RECOVERY STARTED"; emoji = "🔄"; break;
+                case "flip_recovery_update": header = "FLIP RECOVERY UPDATE"; emoji = "📈"; break;
+                case "flip_recovery_complete": header = "FLIP RECOVERY COMPLETE"; emoji = "✅"; break;
+                case "mode_switch": header = "MODE SWITCHED"; emoji = "🔄"; break;
+                default: header = "REGULAR REPORT"; emoji = "📊";
+            }
+            
+            // Build caption
+            const caption = `
+${emoji} <b>ORION PRO ${header}</b>
+User: ${bot.stakeUser} | ⚡ ${bot.currentGame === 'FLIP' ? 'FLIP RECOVERY' : bot.mode}
+${FlipRecovery.isActive ? `Range: Labouchre ${FlipRecovery.getLevelDescription()}` : `Range: ${getVal("p-bch-min")}-${getVal("p-bch-max")}%`}
+Refresh: 5m
+━━━━━━━━━━━━━━━━━━━
+💰 <b>FINANCIALS</b>
+├ Bal: ${bot.stats.currentBal.toFixed(8)}
+├ PnL: ${bot.stats.sessionProfit >= 0 ? '+' : ''}${bot.stats.sessionProfit.toFixed(8)} (${sessionProfitPct.toFixed(2)}%)
+├ Wgr: ${bot.stats.sessionWagered.toFixed(8)}
+└ Est: ${hourlyEstimate.toFixed(8)} / hr
+
+📉 <b>RISK STATS</b>
+├ DD: ${sessionProfitPct < 0 ? Math.abs(sessionProfitPct).toFixed(2) : '0.00'}% (Max: ${bot.stats.maxDDPercent.toFixed(2)}%)
+├ Streak: ${bot.stats.currentLossStreak}L / ${bot.stats.currentWinStreak}W
+└ ${FlipRecovery.isActive ? `Rec Progress: ${FlipRecovery.getProgress().toFixed(1)}%` : `Tax Debt: 0.000000`}
+
+🎲 <b>PERFORMANCE</b>
+├ Speed: ${betsPerSecond.toFixed(1)} b/s
+├ WinRate: ${winRate.toFixed(1)}%
+└ ${FlipRecovery.isActive ? FlipRecovery.getPatternEmoji() : getWinLossEmojiChart()}
+⏱ ${runningTime}
+${FlipRecovery.isActive ? `\n🔄 <b>FLIP RECOVERY</b>\n├ Level: ${FlipRecovery.recoveryLevel}/3\n├ Sequence: [${FlipRecovery.sequence.join(',')}]\n├ Side: ${FlipRecovery.currentSide.toUpperCase()}\n└ Flips: ${FlipRecovery.flipsCompleted}\n` : ''}
+━━━━━━━━━━━━━━━━━━━
+💬 <b>Support:</b> ${CONFIG.supportContact}
+⚡ <b>Version:</b> ${CONFIG.version}
+            `;
+            
+            if (chartUrl) {
+                // Send with photo
+                const photoUrl = `https://api.telegram.org/bot${CONFIG.tgToken}/sendPhoto`;
+                await fetch(photoUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        chat_id: CONFIG.tgChatId,
+                        photo: chartUrl,
+                        caption: caption,
+                        parse_mode: 'HTML',
+                        disable_web_page_preview: true
+                    })
+                });
+            } else {
+                // Send text only
+                const messageUrl = `https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`;
+                await fetch(messageUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        chat_id: CONFIG.tgChatId,
+                        text: caption,
+                        parse_mode: 'HTML',
+                        disable_web_page_preview: true
+                    })
+                });
+            }
+            
+            console.log(`${emoji} Telegram report sent (${reason})`);
+            
+        } catch (error) {
+            console.error('Telegram report error:', error);
+        }
+    }
+
+    function getWinLossEmojiChart() {
+        // Get last 10 results from performance logs
+        const logs = window.performanceLogs || [];
+        const last10 = logs.slice(0, 10).map(log => 
+            log.profit >= 0 ? '🟩' : '🟥'
+        );
+        
+        while (last10.length < 10) {
+            last10.push('⬜');
+        }
+        
+        return last10.join('');
+    }
+
+    function calculateHourlyEstimate() {
+        if (!bot.startTime || bot.stats.bets === 0) return 0;
+        const hours = (Date.now() - bot.startTime) / 3600000;
+        return hours > 0 ? bot.stats.profit / hours : 0;
+    }
+
+    function calculateBetsPerSecond() {
+        if (!bot.startTime || bot.stats.bets === 0) return 0;
+        const seconds = (Date.now() - bot.startTime) / 1000;
+        return seconds > 0 ? bot.stats.bets / seconds : 0;
+    }
+
+    // ==================== RECOVERY TRIGGER SYSTEM ====================
+    function checkRecoveryTrigger() {
+        if (FlipRecovery.isActive || bot.currentGame !== "DICE") return;
+        
+        const sessionProfitPct = (bot.stats.sessionProfit / bot.stats.sessionStartBal) * 100;
+        const recoveryThreshold = getVal("p-recovery-threshold") || -2.0;
+        
+        // Trigger pada threshold (default -2%)
+        if (sessionProfitPct <= recoveryThreshold) {
+            console.log(`🔄 Triggering Flip Recovery at ${sessionProfitPct.toFixed(2)}% loss`);
+            
+            // Start flip recovery
+            FlipRecovery.initialize(
+                bot.mode, // Save current mode
+                bot.stats.sessionProfit
+            );
+            
+            // Switch to Flip game
+            bot.currentGame = "FLIP";
+            bot.nextBet = FlipRecovery.getNextBet();
+            
+            updateStatus(`🔄 FLIP RECOVERY STARTED (L${FlipRecovery.recoveryLevel})`, "#F59E0B");
+            updateLogs(0, 0, "RECOVERY", 0, 
+                `Flip recovery started at ${sessionProfitPct.toFixed(2)}% loss - Side: ${FlipRecovery.currentSide}`);
+            
+            sendTelegramReport("flip_recovery_start");
+            
+            return true;
+        }
+        
+        return false;
+    }
+
+    // ==================== ROTATION MANAGEMENT ====================
+    function rotateMode(newMode) {
+        const oldMode = bot.mode;
+        bot.mode = newMode;
+        
+        if (newMode === "BASE") {
+            rotateToBaseMode();
+        } else if (newMode === "WAGER") {
+            rotateToWagerMode();
+        }
+        
+        updateStatus(`🔄 ${oldMode} → ${newMode}`, "#9CA3AF");
+        updateLogs(0, 0, "ROTATION", 0, `${oldMode} → ${newMode}`);
+        
+        sendTelegramReport("mode_switch");
+        
+        console.log(`🔄 Mode rotated: ${oldMode} → ${newMode}`);
+    }
+
+    function rotateToBaseMode() {
+        bot.currentChance = Math.random() * (getVal("p-bch-max") - getVal("p-bch-min")) + getVal("p-bch-min");
+        bot.nextBet = getVal("p-basebet");
+        bot.currentMulti = getVal("p-multi-start");
+        bot.base.ls = 0;
+        bot.base.lc = 0;
+        bot.base.partialProfit = 0;
+        bot.base.bcount = 0;
+        
+        console.log("🔄 Rotated to BASE mode");
+    }
+
+    function rotateToWagerMode() {
+        bot.currentChance = getVal("p-wgr-chance");
+        bot.nextBet = bot.stats.currentBal / getVal("p-wgr-div");
+        bot.wgr.balhigh = bot.stats.currentBal;
+        bot.wgr.profitc = 0;
+        bot.wgr.ctwin = 0;
+        bot.wgr.betload = 0;
+        
+        console.log("🔄 Rotated to WAGER mode");
+    }
+
+    // ==================== SESSION MANAGEMENT ====================
+    function startNewSession() {
+        bot.session.currentSession++;
+        bot.stats.sessionStartBal = bot.stats.currentBal;
+        bot.stats.sessionProfit = 0;
+        bot.stats.sessionWagered = 0;
+        bot.stats.sessionBets = 0;
+        bot.session.sessionStartTime = Date.now();
+        
+        // Set session target
+        const sessionTargetPct = getVal("p-session-target");
+        bot.session.sessionTargetAbs = bot.stats.sessionStartBal * (sessionTargetPct / 100);
+        
+        rotateToBaseMode();
+        
+        console.log(`🚀 Starting session ${bot.session.currentSession}, Target: ${sessionTargetPct}%`);
+        updateStatus(`🚀 SESSION ${bot.session.currentSession}`, "#6366F1");
+        sendTelegramReport("session_start");
+        
+        updateLogs(0, 0, "SESSION", 0, `Session ${bot.session.currentSession} started - Target: ${sessionTargetPct}%`);
+        
+        bot.isRunning = true;
+        bot.isPaused = false;
+        
+        return true;
+    }
+
+    function checkSessionCompletion() {
+        const sessionTargetPct = getVal("p-session-target");
+        const sessionStopLossPct = getVal("p-session-stoploss");
+        
+        const sessionProfitPct = (bot.stats.sessionProfit / bot.stats.sessionStartBal) * 100;
+        
+        if (sessionProfitPct >= sessionTargetPct) {
+            completeSession("TARGET");
+            return true;
+        }
+        
+        if (sessionProfitPct <= -sessionStopLossPct) {
+            completeSession("STOP LOSS");
+            return true;
+        }
+        
+        return false;
+    }
+
+    function completeSession(reason) {
+        const sessionData = {
+            sessionNumber: bot.session.currentSession,
+            startBalance: bot.stats.sessionStartBal,
+            endBalance: bot.stats.currentBal,
+            profit: bot.stats.sessionProfit,
+            profitPct: (bot.stats.sessionProfit / bot.stats.sessionStartBal) * 100,
+            bets: bot.stats.sessionBets,
+            duration: Date.now() - (bot.session.sessionStartTime || bot.startTime),
+            reason: reason
+        };
+        
+        bot.session.sessionHistory.push(sessionData);
+        
+        const maxSessions = getVal("p-max-sessions");
+        if (maxSessions > 0 && bot.session.currentSession >= maxSessions) {
+            stopEngine();
+            updateStatus("📊 MAX SESSIONS", "#9CA3AF");
+            sendTelegramReport("max_sessions");
+            return false;
+        }
+        
+        startNewSession();
+        return true;
+    }
+
+    // ==================== UTILITY FUNCTIONS ====================
+    function getVal(id) {
+        try {
+            const el = document.getElementById(id);
+            if (!el) {
+                const defaults = {
+                    "p-minbet": 0.00000001,
+                    "p-basebet": 0.00000100,
+                    "p-multi-start": 1.45,
+                    "p-multi-inc": 0.05,
+                    "p-bch-min": 80.0,
+                    "p-bch-max": 95.0,
+                    "p-hch-min": 20.0,
+                    "p-hch-max": 30.0,
+                    "p-wgr-chance": 99.0,
+                    "p-wgr-div": 100,
+                    "p-stoploss-pct": 5.0,
+                    "p-session-target": 0.2,
+                    "p-session-stoploss": 0.1,
+                    "p-max-sessions": 20,
+                    "p-recovery-threshold": -2.0,
+                    "p-flip-basebet": 0.00000100,
+                    "p-flip-max-sequence": 15,
+                    "p-flip-side-mode": "auto",
+                    "p-flip-manual-side": "heads"
+                };
+                return defaults[id] || 0;
+            }
+            
+            if (el.type === 'checkbox') {
+                return el.checked ? 1 : 0;
+            }
+            
+            if (el.tagName === 'SELECT') {
+                return el.value;
+            }
+            
+            return parseFloat(el.value) || 0;
+        } catch (e) {
+            console.error(`Error getting value for ${id}:`, e);
+            return 0;
+        }
+    }
+
+    async function updateBalanceDisplay() {
+        if (bot.isRunning) return;
+        const balance = await API.getBalance(bot.selectedCurrency);
+        bot.stats.currentBal = balance;
+        if (bot.stats.startBal === 0) {
+            bot.stats.startBal = balance;
+        }
+    }
+
+    function updateStatsSync(betData, win, profit) {
+        const betTime = Date.now();
+        
+        // Update basic stats
+        bot.stats.bets++;
+        bot.stats.sessionBets++;
+        bot.stats.wagered += betData.amount;
+        bot.stats.sessionWagered += betData.amount;
+        bot.stats.profit += profit;
+        bot.stats.sessionProfit += profit;
+        bot.stats.currentBal += profit;
+        
+        if (win) {
+            bot.stats.wins++;
+            bot.stats.currentWinStreak++;
+            bot.stats.currentLossStreak = 0;
+            
+            if (bot.stats.currentWinStreak > bot.stats.longestWinStreak) {
+                bot.stats.longestWinStreak = bot.stats.currentWinStreak;
+            }
+            
+            if (profit > bot.stats.biggestWin) {
+                bot.stats.biggestWin = profit;
+            }
+        } else {
+            bot.stats.loss++;
+            bot.stats.currentLossStreak++;
+            bot.stats.currentWinStreak = 0;
+            
+            if (bot.stats.currentLossStreak > bot.stats.longestLossStreak) {
+                bot.stats.longestLossStreak = bot.stats.currentLossStreak;
+            }
+            
+            if (Math.abs(profit) > Math.abs(bot.stats.biggestLoss)) {
+                bot.stats.biggestLoss = profit;
+            }
+        }
+        
+        // Update biggest bet
+        if (betData.amount > bot.stats.biggestBet) {
+            bot.stats.biggestBet = betData.amount;
+        }
+        
+        // Update drawdown
+        if (bot.stats.currentBal > bot.stats.peakBalance) {
+            bot.stats.peakBalance = bot.stats.currentBal;
+        }
+        
+        const drawdown = bot.stats.peakBalance - bot.stats.currentBal;
+        if (drawdown > bot.stats.maxDD) {
+            bot.stats.maxDD = drawdown;
+            bot.stats.maxDDPercent = (drawdown / bot.stats.peakBalance) * 100;
+        }
+        
+        // Update performance stats
+        bot.stats.winRate = bot.stats.bets > 0 ? 
+            (bot.stats.wins / bot.stats.bets * 100) : 0;
+        bot.stats.profitPerBet = bot.stats.bets > 0 ? 
+            (bot.stats.profit / bot.stats.bets) : 0;
+        bot.stats.roi = bot.stats.wagered > 0 ? 
+            (bot.stats.profit / bot.stats.wagered * 100) : 0;
+    }
+
+    // ==================== GAME LOGIC HANDLERS ====================
+    function handleBaseMode(win) {
+        if (win) {
+            bot.base.ls = 0;
+            bot.base.lc = 0;
+            bot.base.partialProfit = 0;
+            bot.currentChance = Math.random() * (getVal("p-bch-max") - getVal("p-bch-min")) + getVal("p-bch-min");
+            bot.nextBet = getVal("p-basebet");
+            bot.currentMulti = getVal("p-multi-start");
+        } else {
+            bot.base.ls++;
+            bot.base.lc++;
+            
+            if (bot.base.ls === 1 || bot.base.lc > bot.base.bcount) {
+                if (bot.base.ls > 1) bot.currentMulti += getVal("p-multi-inc");
+                bot.base.lc = 1;
+                bot.currentChance = Math.random() * (getVal("p-hch-max") - getVal("p-hch-min")) + getVal("p-hch-min");
+                bot.base.bcount = Math.ceil(99 / bot.currentChance);
+            }
+            bot.nextBet = (Math.abs(bot.base.partialProfit) / ((99/bot.currentChance) - 1)) * bot.currentMulti;
+        }
+    }
+
+    function handleWagerMode(win) {
+        if (win) {
+            bot.wgr.ctwin++;
+            
+            if (bot.wgr.ctwin > 10) {
+                bot.wgr.ctwin = 0;
+                const recoveryChance = Math.random() * (30 - 20) + 20;
+                bot.currentChance = recoveryChance;
+                bot.nextBet = Math.max(0, bot.wgr.betload) / ((99 / bot.currentChance) - 1);
+            } else {
+                bot.currentChance = getVal("p-wgr-chance");
+                bot.nextBet = bot.stats.currentBal / getVal("p-wgr-div");
+            }
+            
+            if (bot.stats.currentBal > bot.wgr.balhigh) {
+                bot.wgr.balhigh = bot.stats.currentBal;
+            }
+        } else {
+            bot.wgr.profitc += (bot.stats.currentBal - bot.wgr.balhigh);
+            bot.wgr.betload = bot.wgr.balhigh - bot.stats.currentBal;
+            
+            if (bot.currentChance < 80) {
+                bot.nextBet = Math.abs(bot.wgr.betload) / ((99 / bot.currentChance) - 1);
+            } else {
+                bot.nextBet *= 1.12;
+            }
+        }
+    }
+
+    // ==================== MAIN BOT LOOP ====================
+    async function runLoop() {
+        if (!bot.isRunning || bot.isPaused) return;
+        
+        // Check session completion
+        if (checkSessionCompletion()) {
+            setTimeout(runLoop, 10);
+            return;
+        }
+        
+        // Global stop loss check
+        const stopLossPct = getVal("p-stoploss-pct");
+        const currentProfitPct = bot.stats.profit / bot.stats.startBal * 100;
+        
+        if (currentProfitPct <= -stopLossPct) {
+            await stopEngine();
+            updateStatus("⛔ GLOBAL STOP LOSS", "#EF4444");
+            await sendTelegramReport("stoploss");
+            return;
+        }
+        
+        // Check recovery trigger setiap 10 bets
+        if (bot.stats.bets % 10 === 0) {
+            checkRecoveryTrigger();
+        }
+        
+        try {
+            // FLIP RECOVERY MODE
+            if (FlipRecovery.isActive) {
+                // Check if break-even reached
+                if (FlipRecovery.shouldStop(bot.stats.sessionProfit)) {
+                    const result = FlipRecovery.finalizeRecovery(true);
+                    if (result.complete) {
+                        setTimeout(runLoop, 1000);
+                        return;
+                    }
+                }
+                
+                // Place flip bet
+                const result = await API.placeBet("FLIP", {
+                    amount: FlipRecovery.getNextBet(),
+                    side: FlipRecovery.currentSide
+                });
+                
+                const flip = result?.data?.coinflipRoll || result?.coinflipRoll;
+                if (flip) {
+                    const win = flip.payout > 0;
+                    const profit = flip.payout - flip.amount;
+                    
+                    // Update stats
+                    updateStatsSync(flip, win, profit);
+                    
+                    // Log the bet
+                    updateLogs(flip.amount, 50, `FLIP (${FlipRecovery.currentSide.toUpperCase()})`, profit);
+                    
+                    // Handle flip result
+                    const recoveryResult = FlipRecovery.handleResult(win);
+                    
+                    if (recoveryResult.complete) {
+                        // Recovery completed
+                        setTimeout(runLoop, 1000);
+                        return;
+                    }
+                    
+                    // Update next bet
+                    bot.nextBet = FlipRecovery.getNextBet();
+                    
+                    // Update UI setiap flip
+                    updateFlipRecoveryUI();
+                    
+                    // Send report setiap 5 flips
+                    if (FlipRecovery.flipsCompleted % 5 === 0) {
+                        sendTelegramReport("flip_recovery_update");
+                    }
+                }
+                
+                // Slow pace untuk recovery (1 detik antara bets)
+                setTimeout(runLoop, 1000);
+                return;
+            }
+            
+            // REGULAR DICE MODE
+            const result = await API.placeBet("DICE", {
+                amount: bot.nextBet,
+                chance: bot.currentChance
+            });
+            
+            const dice = result?.data?.diceRoll || result?.diceRoll;
+            if (dice) {
+                const win = dice.payout > 0;
+                const profit = dice.payout - dice.amount;
+                
+                updateStatsSync(dice, win, profit);
+                updateLogs(dice.amount, bot.currentChance, bot.mode, profit);
+                
+                if (bot.mode === "BASE") {
+                    handleBaseMode(win);
+                } else if (bot.mode === "WAGER") {
+                    handleWagerMode(win);
+                }
+                
+                // Minimum bet check
+                const minBet = getVal("p-minbet");
+                bot.nextBet = Math.max(bot.nextBet, minBet);
+                
+                // Update statistics every 5 bets
+                if (bot.stats.bets % 5 === 0) {
+                    updateCompleteStatistics();
+                }
+                
+                // Send auto report every 5 minutes
+                if (Date.now() - bot.lastReportTime >= 300000) {
+                    sendTelegramReport("auto");
+                }
+            }
+            
+            setTimeout(runLoop, 0);
+            
+        } catch (e) {
+            console.error("Loop error:", e);
+            setTimeout(runLoop, 100);
+        }
+    }
+
+    async function stopEngine() {
+        bot.isRunning = false;
+        bot.stopTime = Date.now();
+        await updateBalanceDisplay();
+    }
+
+    // ==================== UI FUNCTIONS ====================
+    function updateStatus(text, color) {
+        const el = document.getElementById("st-status-text");
+        if (el) {
+            el.innerText = text;
+            el.style.color = color || "#9CA3AF";
+        }
+    }
+
+    function updateLogs(amt, ch, mode, pft, customText = "") {
+        const logBox = document.getElementById("p-log-body");
+        if (!logBox) return;
+        
+        const modeColors = {
+            'WAGER': '#8B5CF6',
+            'BASE': '#6366F1',
+            'FLIP': '#F59E0B',
+            'RECOVERY': '#F59E0B',
+            'SESSION': '#6366F1',
+            'ROTATION': '#9CA3AF'
+        };
+        
+        const row = document.createElement("div");
+        
+        if (customText) {
+            row.style.cssText = `padding: 8px 12px; margin: 4px 0; background: rgba(55, 65, 81, 0.3); border-radius: 8px; border-left: 3px solid ${modeColors[mode] || '#6366F1'}; font-size: 11px; color: #E5E7EB;`;
+            row.innerHTML = `<div style="display: flex; align-items: center; gap: 8px;"><span style="color: ${modeColors[mode] || '#6366F1'}">${mode}</span><span>${customText}</span></div>`;
+        } else {
+            row.style.cssText = `display:grid; grid-template-columns:1.2fr 1fr 0.8fr 1.2fr; font-size:11px; border-bottom:1px solid rgba(255,255,255,0.05); padding:8px 0; color:${pft >= 0 ? '#10B981' : '#EF4444'}; text-align:center;`;
+            row.innerHTML = `
+                <span>${amt.toFixed(5)}</span>
+                <span>${ch.toFixed(1)}%</span>
+                <span style="color:${modeColors[mode] || '#6366F1'}">${mode}</span>
+                <span>${pft.toFixed(5)}</span>
+            `;
+        }
+        
+        logBox.prepend(row);
+        if (logBox.children.length > 15) logBox.removeChild(logBox.lastChild);
+    }
+
+    function getRunningTime() {
+        if (!bot.startTime) return "00:00:00";
+        const now = Date.now();
+        const diff = now - bot.startTime;
+        
+        const hours = Math.floor(diff / 3600000);
+        const minutes = Math.floor((diff % 3600000) / 60000);
+        const seconds = Math.floor((diff % 60000) / 1000);
+        
+        return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    }
+
+    function updateFlipRecoveryUI() {
+        if (!FlipRecovery.isActive) return;
+        
+        // Update recovery UI elements
+        const elements = {
+            'flip-sequence': `[${FlipRecovery.sequence.join(',')}]`,
+            'flip-nextbet': FlipRecovery.getNextBet().toFixed(8),
+            'flip-side': FlipRecovery.currentSide.toUpperCase(),
+            'flip-pattern': FlipRecovery.getPatternEmoji(),
+            'flip-progress': FlipRecovery.getProgress().toFixed(1) + '%',
+            'flip-level': FlipRecovery.recoveryLevel,
+            'flip-flips': FlipRecovery.flipsCompleted,
+            'flip-level-desc': FlipRecovery.getLevelDescription()
+        };
+        
+        for (const [id, value] of Object.entries(elements)) {
+            const el = document.getElementById(id);
+            if (el) el.textContent = value;
+        }
+        
+        // Update progress bar
+        const progressBar = document.getElementById('flip-recovery-bar');
+        if (progressBar) {
+            progressBar.style.width = FlipRecovery.getProgress() + '%';
+        }
+        
+        // Update level badges
+        for (let i = 1; i <= 3; i++) {
+            const badge = document.getElementById(`level-badge-${i}`);
+            if (badge) {
+                badge.className = `level-badge ${FlipRecovery.recoveryLevel === i ? 'active' : ''}`;
+            }
+        }
+    }
+
+    function updateCompleteStatistics() {
+        const statsEl = document.getElementById("complete-statistics");
+        if (!statsEl) return;
+        
+        const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100) : 0;
+        const roi = bot.stats.wagered > 0 ? (bot.stats.profit / bot.stats.wagered * 100) : 0;
+        const profitPerBet = bot.stats.bets > 0 ? (bot.stats.profit / bot.stats.bets) : 0;
+        const sessionProfitPct = bot.stats.sessionStartBal > 0 ? 
+            (bot.stats.sessionProfit / bot.stats.sessionStartBal * 100) : 0;
+        
+        statsEl.innerHTML = `
+            <div class="clean-stats">
+                <div class="stat-row">
+                    <div class="stat-item">
+                        <div class="stat-label">💰 Balance Start</div>
+                        <div class="stat-value">${bot.stats.startBal.toFixed(8)}</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">💵 Balance Now</div>
+                        <div class="stat-value ${bot.stats.currentBal >= bot.stats.startBal ? 'text-success' : 'text-danger'}">
+                            ${bot.stats.currentBal.toFixed(8)}
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="stat-row">
+                    <div class="stat-item">
+                        <div class="stat-label">📈 Total Profit</div>
+                        <div class="stat-value ${bot.stats.profit >= 0 ? 'text-success' : 'text-danger'}">
+                            ${bot.stats.profit >= 0 ? '+' : ''}${bot.stats.profit.toFixed(8)}
+                        </div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">🎯 Session Profit</div>
+                        <div class="stat-value ${bot.stats.sessionProfit >= 0 ? 'text-success' : 'text-danger'}">
+                            ${bot.stats.sessionProfit >= 0 ? '+' : ''}${bot.stats.sessionProfit.toFixed(8)}
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="stat-row">
+                    <div class="stat-item">
+                        <div class="stat-label">🎮 Bets</div>
+                        <div class="stat-value">${bot.stats.bets} (${bot.stats.wins}/${bot.stats.loss})</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">📊 Win Rate</div>
+                        <div class="stat-value ${winRate >= 50 ? 'text-success' : 'text-danger'}">${winRate.toFixed(1)}%</div>
+                    </div>
+                </div>
+                
+                ${FlipRecovery.isActive ? `
+                <div class="stat-row">
+                    <div class="stat-item">
+                        <div class="stat-label">🔄 Recovery Level</div>
+                        <div class="stat-value text-warning">${FlipRecovery.recoveryLevel}/3</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">📊 Recovery Progress</div>
+                        <div class="stat-value">${FlipRecovery.getProgress().toFixed(1)}%</div>
+                    </div>
+                </div>
+                ` : ''}
+            </div>
+        `;
+    }
+
+    // ==================== PRESET APPLY FUNCTION ====================
+    function applyPreset(presetName) {
+        const preset = QuickPresets[presetName];
+        if (!preset) return;
+        
+        for (const [key, value] of Object.entries(preset.settings)) {
+            const el = document.getElementById(key);
+            if (el) {
+                if (el.type === 'checkbox') {
+                    el.checked = Boolean(value);
+                } else if (el.tagName === 'SELECT') {
+                    el.value = value;
+                    el.dispatchEvent(new Event('change'));
+                } else {
+                    el.value = value;
+                }
+            }
+        }
+        
+        updateStatus(`✅ ${preset.name} APPLIED`, "#10B981");
+        updateLogs(0, 0, "PRESET", 0, `${preset.name} preset applied`);
+        
+        console.log(`✅ ${preset.name} preset applied`);
+    }
+
+    // ==================== FLIP CONTROL FUNCTIONS ====================
+    function forceFlipSide(side) {
+        if (FlipRecovery.isActive) {
+            FlipRecovery.forceSide(side);
+            updateFlipRecoveryUI();
+            updateStatus(`🔄 FORCED ${side.toUpperCase()}`, "#F59E0B");
+        }
+    }
+
+    function switchGame(game) {
+        if (bot.isRunning && !FlipRecovery.isActive) {
+            bot.currentGame = game;
+            updateStatus(`🎮 SWITCHED TO ${game}`, game === "FLIP" ? "#F59E0B" : "#6366F1");
+            updateLogs(0, 0, "GAME", 0, `Switched to ${game}`);
+        }
+    }
+
+    // ==================== MOBILE-FRIENDLY UI CREATION ====================
+    function createUI() {
+        if (document.getElementById("orion-wrap")) {
+            document.getElementById("orion-wrap").remove();
+        }
+        
+        const s = document.createElement("style");
+        s.innerHTML = `
+            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+            
+            :root {
+                --bg-primary: #0F1117;
+                --bg-secondary: #1A1D28;
+                --bg-tertiary: #242837;
+                --accent-primary: #6366F1;
+                --accent-secondary: #8B5CF6;
+                --accent-success: #10B981;
+                --accent-warning: #F59E0B;
+                --accent-danger: #EF4444;
+                --text-primary: #F3F4F6;
+                --text-secondary: #9CA3AF;
+                --text-muted: #6B7280;
+                --border-color: #374151;
+                --border-light: #4B5563;
+                --gradient-primary: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%);
+                --gradient-warning: linear-gradient(135deg, #F59E0B 0%, #FBBF24 100%);
+                --gradient-danger: linear-gradient(135deg, #EF4444 0%, #F87171 100%);
+            }
+            
+            #orion-wrap {
+                position: fixed;
+                width: 440px;
+                height: 680px;
+                background: var(--bg-primary);
+                color: var(--text-primary);
+                font-family: 'Inter', sans-serif;
+                z-index: 9999;
+                display: flex;
+                flex-direction: column;
+                border-radius: 16px;
+                box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+                overflow: hidden;
+                border: 1px solid var(--border-color);
+                resize: both;
+                min-width: 400px;
+                min-height: 580px;
+                max-width: 95vw;
+                max-height: 95vh;
+            }
+            
+            @media (max-width: 500px) {
+                #orion-wrap {
+                    width: 95vw;
+                    height: 85vh;
+                    bottom: 10px;
+                    left: 2.5vw;
+                    top: auto;
+                    resize: none;
+                }
+            }
+            
+            @media (min-width: 501px) {
+                #orion-wrap {
+                    top: 50%;
+                    left: 50%;
+                    transform: translate(-50%, -50%);
+                }
+            }
+            
+            /* Header */
+            .header {
+                background: linear-gradient(145deg, var(--bg-secondary), var(--bg-primary));
+                padding: 20px;
+                border-bottom: 1px solid var(--border-color);
+                position: relative;
+            }
+            
+            .header::before {
+                content: '';
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                height: 4px;
+                background: var(--gradient-primary);
+            }
+            
+            .header-main {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                margin-bottom: 15px;
+            }
+            
+            .header-title {
+                font-size: 22px;
+                font-weight: 800;
+                color: var(--text-primary);
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+            
+            .header-title::before {
+                content: "⚡";
+                font-size: 24px;
+                background: var(--gradient-primary);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+            }
+            
+            .license-badge {
+                background: var(--gradient-primary);
+                color: white;
+                padding: 6px 16px;
+                border-radius: 20px;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 0.5px;
+            }
+            
+            /* User Info */
+            .user-info-card {
+                background: linear-gradient(145deg, var(--bg-tertiary), var(--bg-secondary));
+                border-radius: 12px;
+                padding: 14px;
+                border: 1px solid var(--border-color);
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                margin-top: 8px;
+            }
+            
+            .user-info-left {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+            
+            .user-avatar {
+                width: 36px;
+                height: 36px;
+                background: var(--gradient-primary);
+                border-radius: 10px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 18px;
+                color: white;
+            }
+            
+            .user-details {
+                display: flex;
+                flex-direction: column;
+            }
+            
+            .username {
+                font-size: 14px;
+                font-weight: 600;
+                color: var(--text-primary);
+            }
+            
+            .expiry-date {
+                font-size: 11px;
+                color: var(--text-secondary);
+                display: flex;
+                align-items: center;
+                gap: 4px;
+            }
+            
+            .status-badge {
+                display: inline-block;
+                padding: 10px 22px;
+                background: linear-gradient(145deg, var(--bg-tertiary), var(--bg-secondary));
+                border: 1px solid var(--border-color);
+                border-radius: 12px;
+                font-size: 12px;
+                font-weight: 600;
+                color: var(--text-primary);
+                margin-top: 12px;
+                text-align: center;
+                letter-spacing: 0.5px;
+                width: 100%;
+            }
+            
+            /* Running Time */
+            .running-time {
+                background: linear-gradient(145deg, var(--bg-tertiary), var(--bg-secondary));
+                padding: 12px 20px;
+                text-align: center;
+                font-size: 13px;
+                font-weight: 600;
+                color: var(--accent-primary);
+                letter-spacing: 0.5px;
+                border-bottom: 1px solid var(--border-color);
+            }
+            
+            /* Content Area */
+            .content-area {
+                flex: 1;
+                overflow-y: auto;
+                padding: 20px;
+            }
+            
+            /* Statistics */
+            .clean-stats {
+                background: linear-gradient(145deg, var(--bg-secondary), var(--bg-tertiary));
+                border-radius: 12px;
+                padding: 16px;
+                border: 1px solid var(--border-color);
+                margin-bottom: 16px;
+            }
+            
+            .stat-row {
+                display: flex;
+                justify-content: space-between;
+                margin-bottom: 12px;
+                padding-bottom: 12px;
+                border-bottom: 1px solid var(--border-color);
+            }
+            
+            .stat-row:last-child {
+                margin-bottom: 0;
+                padding-bottom: 0;
+                border-bottom: none;
+            }
+            
+            .stat-item {
+                flex: 1;
+            }
+            
+            .stat-label {
+                font-size: 11px;
+                color: var(--text-secondary);
+                margin-bottom: 4px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+            
+            .stat-value {
+                font-size: 13px;
+                font-weight: 700;
+                color: var(--text-primary);
+            }
+            
+            /* Flip Recovery Monitor */
+            .recovery-monitor {
+                background: linear-gradient(145deg, var(--bg-secondary), var(--bg-tertiary));
+                border-radius: 12px;
+                padding: 16px;
+                margin: 16px 0;
+                border: 1px solid var(--border-color);
+            }
+            
+            .recovery-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 12px;
+            }
+            
+            .recovery-title {
+                font-size: 14px;
+                font-weight: 700;
+                color: var(--text-primary);
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            
+            .recovery-info {
+                background: var(--bg-primary);
+                border-radius: 8px;
+                padding: 12px;
+                margin-bottom: 12px;
+                border: 1px solid var(--border-color);
+            }
+            
+            .info-row {
+                display: flex;
+                justify-content: space-between;
+                margin-bottom: 8px;
+                font-size: 12px;
+            }
+            
+            .info-row:last-child {
+                margin-bottom: 0;
+            }
+            
+            .info-row span:first-child {
+                color: var(--text-secondary);
+            }
+            
+            .info-row span:last-child {
+                color: var(--text-primary);
+                font-weight: 600;
+            }
+            
+            /* Pattern Display */
+            .pattern-display {
+                text-align: center;
+                margin: 12px 0;
+            }
+            
+            .pattern-title {
+                font-size: 11px;
+                color: var(--text-secondary);
+                margin-bottom: 6px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+            
+            .pattern-emojis {
+                font-size: 20px;
+                letter-spacing: 2px;
+            }
+            
+            /* Level Badges */
+            .level-badges {
+                display: flex;
+                gap: 8px;
+                justify-content: center;
+                margin: 12px 0;
+            }
+            
+            .level-badge {
+                width: 32px;
+                height: 32px;
+                border-radius: 50%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-weight: 700;
+                font-size: 12px;
+                background: var(--bg-primary);
+                border: 2px solid var(--border-color);
+                color: var(--text-secondary);
+            }
+            
+            .level-badge.active {
+                background: var(--gradient-warning);
+                border-color: #F59E0B;
+                color: #1F2937;
+            }
+            
+            /* Progress Bars */
+            .progress-container {
+                margin: 16px 0;
+            }
+            
+            .progress-label {
+                display: flex;
+                justify-content: space-between;
+                font-size: 12px;
+                color: var(--text-secondary);
+                margin-bottom: 6px;
+                font-weight: 500;
+            }
+            
+            .progress-bar {
+                height: 8px;
+                background: var(--bg-tertiary);
+                border-radius: 4px;
+                overflow: hidden;
+            }
+            
+            .progress-fill {
+                height: 100%;
+                background: var(--gradient-warning);
+                border-radius: 4px;
+                transition: width 0.5s ease;
+            }
+            
+            /* Controls */
+            .control-panel {
+                display: grid;
+                gap: 10px;
+                margin: 20px 0;
+            }
+            
+            .control-row {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 10px;
+            }
+            
+            .btn {
+                padding: 16px;
+                border: none;
+                border-radius: 12px;
+                font-weight: 700;
+                font-size: 14px;
+                cursor: pointer;
+                transition: all 0.3s;
+                text-align: center;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 8px;
+            }
+            
+            .btn-primary {
+                background: var(--gradient-primary);
+                color: white;
+            }
+            
+            .btn-warning {
+                background: var(--gradient-warning);
+                color: #1F2937;
+            }
+            
+            .btn-danger {
+                background: var(--gradient-danger);
+                color: white;
+            }
+            
+            .btn-secondary {
+                background: linear-gradient(145deg, var(--bg-secondary), var(--bg-tertiary));
+                color: var(--text-primary);
+                border: 1px solid var(--border-color);
+            }
+            
+            .btn:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 8px 20px rgba(0,0,0,0.2);
+            }
+            
+            /* Side Controls */
+            .side-controls {
+                display: flex;
+                gap: 10px;
+                margin: 12px 0;
+            }
+            
+            .side-btn {
+                flex: 1;
+                padding: 12px;
+                border: none;
+                border-radius: 10px;
+                font-weight: 700;
+                font-size: 13px;
+                cursor: pointer;
+                transition: all 0.3s;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 6px;
+            }
+            
+            .side-btn.heads-btn {
+                background: linear-gradient(145deg, #3B82F6, #1D4ED8);
+                color: white;
+            }
+            
+            .side-btn.tails-btn {
+                background: linear-gradient(145deg, #F59E0B, #D97706);
+                color: white;
+            }
+            
+            .side-btn.active {
+                transform: scale(1.05);
+                box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            }
+            
+            /* Text Colors */
+            .text-success { color: var(--accent-success) !important; }
+            .text-warning { color: var(--accent-warning) !important; }
+            .text-danger { color: var(--accent-danger) !important; }
+            .text-info { color: var(--accent-primary) !important; }
+            
+            /* Resize Handle */
+            .resize-handle {
+                position: absolute;
+                bottom: 0;
+                right: 0;
+                width: 20px;
+                height: 20px;
+                cursor: se-resize;
+                background: linear-gradient(135deg, transparent 50%, var(--border-light) 50%);
+                border-top-left-radius: 8px;
+            }
+            
+            /* Scrollbar */
+            ::-webkit-scrollbar {
+                width: 6px;
+            }
+            
+            ::-webkit-scrollbar-track {
+                background: var(--bg-tertiary);
+                border-radius: 3px;
+            }
+            
+            ::-webkit-scrollbar-thumb {
+                background: var(--border-light);
+                border-radius: 3px;
+            }
+        `;
+        document.head.appendChild(s);
+        
+        const d = document.createElement("div");
+        d.id = "orion-wrap";
+        d.innerHTML = `
+            <div class="resize-handle"></div>
+            
+            <!-- Header -->
+            <div class="header">
+                <div class="header-main">
+                    <div class="header-title">
+                        ORION PRO FLIP
+                    </div>
+                    <div class="license-badge">
+                        ${bot.licenseTier}
+                    </div>
+                </div>
+                
+                <!-- User Info Card -->
+                <div class="user-info-card">
+                    <div class="user-info-left">
+                        <div class="user-avatar">
+                            👤
+                        </div>
+                        <div class="user-details">
+                            <div class="username">${bot.stakeUser}</div>
+                            <div class="expiry-date">
+                                <span>📅</span>
+                                <span>Expires: ${userExpiry}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="status-badge" id="st-status-text">🟢 READY</div>
+            </div>
+            
+            <!-- Running Time -->
+            <div class="running-time" id="running-time">
+                RUNNING TIME: 00:00:00
+            </div>
+            
+            <!-- Content Area -->
+            <div class="content-area">
+                <!-- Statistics -->
+                <div class="clean-stats" id="complete-statistics">
+                    <div class="stat-row">
+                        <div class="stat-item">
+                            <div class="stat-label">💰 Balance Start</div>
+                            <div class="stat-value">0.00000000</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">💵 Balance Now</div>
+                            <div class="stat-value">0.00000000</div>
+                        </div>
+                    </div>
+                    <div class="stat-row">
+                        <div class="stat-item">
+                            <div class="stat-label">📈 Total Profit</div>
+                            <div class="stat-value">0.00000000</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">🎯 Session Profit</div>
+                            <div class="stat-value">0.00000000</div>
+                        </div>
+                    </div>
+                    <div class="stat-row">
+                        <div class="stat-item">
+                            <div class="stat-label">🎮 Bets</div>
+                            <div class="stat-value">0 (0/0)</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">📊 Win Rate</div>
+                            <div class="stat-value">0.0%</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Flip Recovery Monitor -->
+                <div class="recovery-monitor" id="flip-recovery-monitor" style="display: none;">
+                    <div class="recovery-header">
+                        <div class="recovery-title">
+                            <span>🔄</span>
+                            FLIP RECOVERY MODE
+                        </div>
+                        <div class="text-warning" id="flip-progress">0%</div>
+                    </div>
+                    
+                    <div class="recovery-info">
+                        <div class="info-row">
+                            <span>Level:</span>
+                            <span id="flip-level">1/3</span>
+                        </div>
+                        <div class="info-row">
+                            <span>Sequence:</span>
+                            <span id="flip-sequence">[1, 2, 3]</span>
+                        </div>
+                        <div class="info-row">
+                            <span>Next Bet:</span>
+                            <span id="flip-nextbet">0.00000000</span>
+                        </div>
+                        <div class="info-row">
+                            <span>Current Side:</span>
+                            <span id="flip-side">HEADS</span>
+                        </div>
+                        <div class="info-row">
+                            <span>Flips Completed:</span>
+                            <span id="flip-flips">0</span>
+                        </div>
+                    </div>
+                    
+                    <div class="pattern-display">
+                        <div class="pattern-title">Last 10 Flips Pattern</div>
+                        <div class="pattern-emojis" id="flip-pattern">
+                            ⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜
+                        </div>
+                    </div>
+                    
+                    <div class="level-badges">
+                        <div id="level-badge-1" class="level-badge active">1</div>
+                        <div id="level-badge-2" class="level-badge">2</div>
+                        <div id="level-badge-3" class="level-badge">3</div>
+                    </div>
+                    <div style="text-align: center; font-size: 11px; color: var(--text-secondary); margin-top: 4px;">
+                        <span id="flip-level-desc">Standard Labouchre [1,2,3]</span>
+                    </div>
+                    
+                    <div class="progress-container">
+                        <div class="progress-label">
+                            <span>Recovery Progress</span>
+                            <span id="flip-progress-text">0%</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div id="flip-recovery-bar" class="progress-fill" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    
+                    <!-- Side Controls -->
+                    <div class="side-controls">
+                        <button onclick="forceFlipSide('heads')" class="side-btn heads-btn" id="heads-btn">
+                            🟡 HEADS
+                        </button>
+                        <button onclick="forceFlipSide('tails')" class="side-btn tails-btn" id="tails-btn">
+                            🟠 TAILS
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Currency Selector -->
+                <div style="background: linear-gradient(145deg, var(--bg-secondary), var(--bg-tertiary)); border-radius: 12px; padding: 12px; margin: 16px 0; border: 1px solid var(--border-color);">
+                    <select id="p-currency" style="width: 100%; padding: 12px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 8px; color: var(--text-primary); font-size: 14px;">
+                        <option value="loading">Loading currencies...</option>
+                    </select>
+                </div>
+                
+                <!-- Quick Presets -->
+                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 16px 0;">
+                    <button onclick="applyPreset('CONSERVATIVE')" style="padding: 12px; background: linear-gradient(145deg, #1F2937, #111827); border: 1px solid #374151; border-radius: 10px; color: #9CA3AF; font-size: 12px; font-weight: 600; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 4px;">
+                        <span>🛡️</span>
+                        CONSERVATIVE
+                    </button>
+                    <button onclick="applyPreset('BALANCED')" style="padding: 12px; background: linear-gradient(145deg, #1E3A8A, #1E40AF); border: 1px solid #3B82F6; border-radius: 10px; color: #E5E7EB; font-size: 12px; font-weight: 600; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 4px;">
+                        <span>⚖️</span>
+                        BALANCED
+                    </button>
+                    <button onclick="applyPreset('AGGRESSIVE')" style="padding: 12px; background: linear-gradient(145deg, #7C2D12, #9A3412); border: 1px solid #F59E0B; border-radius: 10px; color: #FDE68A; font-size: 12px; font-weight: 600; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 4px;">
+                        <span>⚡</span>
+                        AGGRESSIVE
+                    </button>
+                </div>
+                
+                <!-- Main Controls -->
+                <div class="control-panel">
+                    <button id="btn-run" class="btn btn-primary">
+                        <span>🚀</span>
+                        START BOT
+                    </button>
+                    
+                    <div class="control-row">
+                        <button id="btn-pause" class="btn btn-warning">
+                            <span>⏸️</span>
+                            PAUSE
+                        </button>
+                        <button id="btn-stop" class="btn btn-danger">
+                            <span>🛑</span>
+                            STOP
+                        </button>
+                    </div>
+                    
+                    <div class="control-row">
+                        <button onclick="rotateMode('BASE')" class="btn btn-secondary">
+                            <span>🏗️</span>
+                            BASE MODE
+                        </button>
+                        <button onclick="rotateMode('WAGER')" class="btn btn-secondary">
+                            <span>⚡</span>
+                            WAGER MODE
+                        </button>
+                    </div>
+                    
+                    <div class="control-row">
+                        <button onclick="switchGame('DICE')" class="btn btn-secondary">
+                            <span>🎲</span>
+                            DICE GAME
+                        </button>
+                        <button onclick="switchGame('FLIP')" class="btn btn-secondary">
+                            <span>🪙</span>
+                            FLIP GAME
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Settings Toggle -->
+                <div style="text-align: center; margin: 20px 0;">
+                    <button id="toggle-settings" style="background: transparent; border: 1px solid var(--border-color); color: var(--text-secondary); padding: 10px 20px; border-radius: 20px; font-size: 12px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 8px; margin: 0 auto;">
+                        <span>⚙️</span>
+                        SHOW SETTINGS
+                    </button>
+                </div>
+                
+                <!-- Settings Panel -->
+                <div id="settings-panel" style="display: none; background: linear-gradient(145deg, var(--bg-secondary), var(--bg-tertiary)); border-radius: 12px; padding: 16px; margin: 16px 0; border: 1px solid var(--border-color);">
+                    <div style="font-size: 14px; font-weight: 700; color: var(--text-primary); margin-bottom: 16px; display: flex; align-items: center; gap: 8px;">
+                        <span>⚙️</span>
+                        SETTINGS
+                    </div>
+                    
+                    <!-- Flip Recovery Settings -->
+                    <div style="margin-bottom: 20px;">
+                        <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; font-weight: 600;">🔄 FLIP RECOVERY</div>
+                        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;">
+                            <div>
+                                <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">Recovery Threshold %</div>
+                                <input id="p-recovery-threshold" value="-2.0" type="number" step="0.1" min="-10" max="0" style="width: 100%; padding: 8px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary); font-size: 12px;">
+                            </div>
+                            <div>
+                                <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">Flip Base Bet</div>
+                                <input id="p-flip-basebet" value="0.00000100" type="number" step="0.00000001" min="0" style="width: 100%; padding: 8px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary); font-size: 12px;">
+                            </div>
+                            <div>
+                                <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">Max Sequence Length</div>
+                                <input id="p-flip-max-sequence" value="15" type="number" step="1" min="5" max="25" style="width: 100%; padding: 8px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary); font-size: 12px;">
+                            </div>
+                            <div>
+                                <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">Side Selection</div>
+                                <select id="p-flip-side-mode" style="width: 100%; padding: 8px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary); font-size: 12px;">
+                                    <option value="auto">Auto (Pattern Analysis)</option>
+                                    <option value="heads">Force Heads</option>
+                                    <option value="tails">Force Tails</option>
+                                    <option value="manual">Manual Control</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Dice Settings -->
+                    <div style="margin-bottom: 20px;">
+                        <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; font-weight: 600;">🎲 DICE SETTINGS</div>
+                        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;">
+                            <div>
+                                <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">Base Bet</div>
+                                <input id="p-basebet" value="0.00000100" type="number" step="0.00000001" min="0" style="width: 100%; padding: 8px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary); font-size: 12px;">
+                            </div>
+                            <div>
+                                <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">Base Chance Min</div>
+                                <input id="p-bch-min" value="80.0" type="number" step="0.1" min="1" max="99" style="width: 100%; padding: 8px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary); font-size: 12px;">
+                            </div>
+                            <div>
+                                <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">Base Chance Max</div>
+                                <input id="p-bch-max" value="95.0" type="number" step="0.1" min="1" max="99" style="width: 100%; padding: 8px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary); font-size: 12px;">
+                            </div>
+                            <div>
+                                <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">Wager Chance</div>
+                                <input id="p-wgr-chance" value="99.0" type="number" step="0.1" min="90" max="99.99" style="width: 100%; padding: 8px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary); font-size: 12px;">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Session Settings -->
+                    <div>
+                        <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; font-weight: 600;">🎯 SESSION SETTINGS</div>
+                        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;">
+                            <div>
+                                <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">Max Sessions</div>
+                                <input id="p-max-sessions" value="20" type="number" step="1" min="1" style="width: 100%; padding: 8px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary); font-size: 12px;">
+                            </div>
+                            <div>
+                                <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">Session Target %</div>
+                                <input id="p-session-target" value="0.2" type="number" step="0.1" min="0.1" style="width: 100%; padding: 8px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary); font-size: 12px;">
+                            </div>
+                            <div>
+                                <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">Session Stop Loss %</div>
+                                <input id="p-session-stoploss" value="0.1" type="number" step="0.1" min="0.1" style="width: 100%; padding: 8px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary); font-size: 12px;">
+                            </div>
+                            <div>
+                                <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">Global Stop Loss %</div>
+                                <input id="p-stoploss-pct" value="5.0" type="number" step="0.1" min="0.1" style="width: 100%; padding: 8px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary); font-size: 12px;">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Logs -->
+                <div style="background: linear-gradient(145deg, var(--bg-secondary), var(--bg-tertiary)); border-radius: 12px; padding: 16px; margin: 16px 0; border: 1px solid var(--border-color); max-height: 200px; overflow-y: auto;">
+                    <div style="display: grid; grid-template-columns: 1.2fr 1fr 0.8fr 1.2fr; padding: 10px 0; border-bottom: 1px solid var(--border-color); font-size: 11px; color: var(--text-secondary); font-weight: 600; text-align: center;">
+                        <span>AMOUNT</span>
+                        <span>CHANCE</span>
+                        <span>MODE</span>
+                        <span>PROFIT</span>
+                    </div>
+                    <div id="p-log-body"></div>
+                </div>
+                
+                <!-- Footer -->
+                <div style="text-align: center; padding: 16px; color: var(--text-secondary); font-size: 11px; border-top: 1px solid var(--border-color); margin-top: 16px;">
+                    💬 <a href="https://t.me/${CONFIG.supportContact.replace('@', '')}" target="_blank" style="color: var(--accent-primary); text-decoration: none; font-weight: 600;">${CONFIG.supportContact}</a>
+                    <div style="margin-top: 8px;">
+                        ⚡ ${CONFIG.version} | 🔒 ${bot.licenseTier}
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(d);
+        
+        // Add resize functionality
+        let isResizing = false;
+        const resizeHandle = d.querySelector('.resize-handle');
+        const orionWrap = d;
+        
+        if (window.innerWidth >= 501) {
+            resizeHandle.addEventListener('mousedown', initResize);
+            
+            function initResize(e) {
+                e.preventDefault();
+                isResizing = true;
+                
+                document.addEventListener('mousemove', resize);
+                document.addEventListener('mouseup', stopResize);
+            }
+            
+            function resize(e) {
+                if (!isResizing) return;
+                
+                e.preventDefault();
+                const newWidth = Math.max(400, Math.min(e.clientX - orionWrap.offsetLeft, window.innerWidth * 0.95));
+                const newHeight = Math.max(580, Math.min(e.clientY - orionWrap.offsetTop, window.innerHeight * 0.95));
+                
+                orionWrap.style.width = `${newWidth}px`;
+                orionWrap.style.height = `${newHeight}px`;
+            }
+            
+            function stopResize() {
+                isResizing = false;
+                document.removeEventListener('mousemove', resize);
+            }
+        }
+        
+        // Event Listeners
+        document.getElementById("p-currency").addEventListener('change', async (e) => {
+            bot.selectedCurrency = e.target.value;
+            localStorage.setItem('orion_last_coin', bot.selectedCurrency);
+            await updateBalanceDisplay();
+        });
+
+        document.getElementById("btn-run").addEventListener('click', async () => {
+            if (!bot.isRunning) {
+                bot.selectedCurrency = document.getElementById("p-currency").value;
+                await API.syncOnce();
+                
+                bot.session.maxSessions = getVal("p-max-sessions");
+                bot.session.currentSession = 1;
+                
+                bot.stats.startBal = await API.getBalance(bot.selectedCurrency);
+                bot.stats.currentBal = bot.stats.startBal;
+                bot.stats.sessionStartBal = bot.stats.startBal;
+                bot.stats.sessionProfit = 0;
+                bot.stats.sessionWagered = 0;
+                bot.stats.sessionBets = 0;
+                bot.stats.profit = 0;
+                bot.stats.wagered = 0;
+                bot.stats.bets = 0;
+                bot.stats.wins = 0;
+                bot.stats.loss = 0;
+                bot.stats.maxDD = 0;
+                bot.stats.maxDDPercent = 0;
+                bot.stats.peakBalance = bot.stats.startBal;
+                bot.stats.biggestBet = 0;
+                bot.stats.biggestWin = 0;
+                bot.stats.biggestLoss = 0;
+                bot.stats.currentWinStreak = 0;
+                bot.stats.currentLossStreak = 0;
+                bot.stats.longestWinStreak = 0;
+                bot.stats.longestLossStreak = 0;
+                
+                const sessionTargetPct = getVal("p-session-target");
+                bot.session.sessionTargetAbs = bot.stats.sessionStartBal * (sessionTargetPct / 100);
+                
+                bot.isRunning = true;
+                bot.isPaused = false;
+                bot.startTime = Date.now();
+                bot.stopTime = null;
+                bot.lastReportTime = Date.now();
+                bot.lastChartUpdate = Date.now();
+                
+                bot.session.sessionHistory = [];
+                bot.session.sessionStartTime = Date.now();
+                
+                bot.wgr.balhigh = bot.stats.startBal;
+                bot.wgr.profitc = 0;
+                bot.wgr.ctwin = 0;
+                bot.wgr.betload = 0;
+                
+                rotateToBaseMode();
+                
+                const logBody = document.getElementById("p-log-body");
+                if (logBody) logBody.innerHTML = "";
+                
+                updateLogs(0, 0, "SESSION", 0, `Session ${bot.session.currentSession} started - Target: ${sessionTargetPct}%`);
+                
+                updateStatus("⚡ RUNNING", "#10B981");
+                
+                await sendTelegramReport("start");
+                runLoop();
+            }
+        });
+        
+        document.getElementById("btn-stop").addEventListener('click', async () => {
+            await stopEngine();
+            updateStatus("🛑 STOPPED", "#EF4444");
+            await sendTelegramReport("stop");
+        });
+        
+        document.getElementById("btn-pause").addEventListener('click', async () => {
+            bot.isPaused = !bot.isPaused;
+            updateStatus(bot.isPaused ? "⏸️ PAUSED" : "⚡ RUNNING",
+                       bot.isPaused ? "#F59E0B" : "#10B981");
+        });
+        
+        document.getElementById("toggle-settings").addEventListener('click', () => {
+            const panel = document.getElementById("settings-panel");
+            const button = document.getElementById("toggle-settings");
+            
+            if (panel.style.display === "none") {
+                panel.style.display = "block";
+                button.innerHTML = '<span>⚙️</span> HIDE SETTINGS';
+            } else {
+                panel.style.display = "none";
+                button.innerHTML = '<span>⚙️</span> SHOW SETTINGS';
+            }
+        });
+        
+        // Global functions
+        window.applyPreset = applyPreset;
+        window.rotateMode = rotateMode;
+        window.switchGame = switchGame;
+        window.forceFlipSide = forceFlipSide;
+        
+        // Initialize
+        API.syncOnce();
+    }
+
+    // ==================== REAL-TIME UPDATES ====================
+    setInterval(() => {
+        try {
+            if (!document.getElementById("st-status-text")) return;
+            
+            // Update running time
+            if (bot.startTime) {
+                document.getElementById("running-time").innerText = `RUNNING TIME: ${getRunningTime()}`;
+            }
+            
+            // Update flip recovery UI visibility
+            const recoveryMonitor = document.getElementById("flip-recovery-monitor");
+            if (recoveryMonitor) {
+                if (FlipRecovery.isActive) {
+                    recoveryMonitor.style.display = "block";
+                    updateFlipRecoveryUI();
+                } else {
+                    recoveryMonitor.style.display = "none";
+                }
+            }
+            
+            // Update active side buttons
+            if (FlipRecovery.isActive) {
+                const headsBtn = document.getElementById("heads-btn");
+                const tailsBtn = document.getElementById("tails-btn");
+                
+                if (headsBtn && tailsBtn) {
+                    headsBtn.className = FlipRecovery.currentSide === "heads" ? 
+                        "side-btn heads-btn active" : "side-btn heads-btn";
+                    tailsBtn.className = FlipRecovery.currentSide === "tails" ? 
+                        "side-btn tails-btn active" : "side-btn tails-btn";
+                }
+            }
+            
+            // Update complete statistics setiap 2 detik
+            if (Date.now() % 2000 < 100) {
+                updateCompleteStatistics();
+            }
+                
+        } catch (e) {
+            console.error("UI update error:", e);
+        }
+    }, 1000);
+
+    // ==================== INITIALIZATION ====================
+    async function initialize() {
+        const isValid = await validateLicense();
+        
+        if (isValid) {
+            console.log(`✅ License valid for ${currentUser} (${licenseData.tier})`);
+            bot.licenseTier = licenseData.tier;
+            bot.stakeUser = currentUser;
+            
+            createUI();
+            
+            // Initialize Flip Recovery stats
+            FlipRecovery.stats = {
+                totalRecoveries: 0,
+                successfulRecoveries: 0,
+                failedRecoveries: 0,
+                totalRecovered: 0,
+                totalTime: 0
+            };
+            
+        } else {
+            console.log("❌ License invalid or user not whitelisted");
+        }
+    }
+
+    // Start
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initialize);
+    } else {
+        initialize();
+    }
+})();
