@@ -4,7 +4,8 @@
         apiUrl: window.location.origin + '/_api',
         tgToken: '8391763291:AAEA05v6FG70eM1WGrgU7mrPgckfjQaxkno',
         tgChatId: '-1003744641395',
-        supportContact: '@OrionLogic'
+        supportContact: '@OrionLogic',
+        wsUrl: 'wss://ws.stake.com'
     };
 
     const WHITELIST = {
@@ -21,6 +22,8 @@
     // ==================== LICENSE VALIDATION ====================
     let currentUser = null;
     let licenseData = null;
+    let websocket = null;
+    let isWsConnected = false;
 
     async function validateLicense() {
         try {
@@ -74,75 +77,6 @@
         }
     }
 
-    function showLicenseModal(message, showPurchase = false) {
-        const modal = document.createElement('div');
-        modal.id = 'orion-license-modal';
-        modal.style.cssText = `
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(5,15,25,0.98); display: flex; align-items: center;
-            justify-content: center; z-index: 99999; backdrop-filter: blur(20px);
-            font-family: 'Segoe UI', system-ui;
-            padding: 20px;
-            box-sizing: border-box;
-        `;
-
-        modal.innerHTML = `
-            <div style="
-                background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-                border: 2px solid ${showPurchase ? '#8b5cf6' : '#3b82f6'}; 
-                border-radius: 16px; padding: 24px;
-                width: 100%; max-width: 400px; color: #e2e8f0; text-align: center;
-                box-shadow: 0 20px 60px rgba(59, 130, 246, 0.3);
-            ">
-                <div style="font-size: 24px; font-weight: 800; margin-bottom: 10px;
-                    background: linear-gradient(90deg, #3b82f6, #8b5cf6);
-                    -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
-                    🔐 ORION PREMIUM
-                </div>
-                
-                <div style="color: #94a3b8; margin-bottom: 20px; font-size: 14px; line-height: 1.5;">
-                    ${message}
-                </div>
-                
-                ${currentUser ? `
-                <div style="background: rgba(59, 130, 246, 0.1); padding: 12px; 
-                    border-radius: 10px; margin: 16px 0; text-align: center;">
-                    <div style="font-size: 11px; color: #60a5fa; margin-bottom: 5px;">
-                        🔍 Detected Username:
-                    </div>
-                    <div style="font-size: 16px; font-weight: bold; color: white; font-family: monospace;">
-                        ${currentUser}
-                    </div>
-                </div>
-                ` : ''}
-                
-                ${showPurchase ? `
-                <div style="margin: 20px 0;">
-                    <button onclick="window.open('https://t.me/${CONFIG.supportContact.replace('@', '')}', '_blank')"
-                        style="background: linear-gradient(135deg, #3b82f6, #8b5cf6);
-                        color: white; border: none; padding: 14px; border-radius: 10px;
-                        font-weight: 600; cursor: pointer; width: 100%; margin-bottom: 8px;
-                        font-size: 14px;">
-                        📱 CONTACT ON TELEGRAM
-                    </button>
-                </div>
-                ` : ''}
-                
-                <button onclick="location.reload()"
-                    style="background: ${showPurchase ? 'transparent' : 'linear-gradient(135deg, #3b82f6, #8b5cf6)'}; 
-                    border: 1px solid ${showPurchase ? '#475569' : 'transparent'};
-                    color: ${showPurchase ? '#94a3b8' : 'white'}; 
-                    padding: 12px; border-radius: 10px;
-                    font-weight: 600; cursor: pointer; width: 100%;
-                    font-size: 14px;">
-                    ${showPurchase ? 'Close' : '🔁 Retry'}
-                </button>
-            </div>
-        `;
-
-        document.body.appendChild(modal);
-    }
-
     // ==================== BOT ENGINE ====================
     const bot = {
         isRunning: false, 
@@ -179,13 +113,17 @@
         activeModes: {
             base: true,
             wager: true,
-            autoswitch: true
+            autoswitch: true,
+            useWebSocket: false
         },
         sessionHigh: 0,
         sessionLow: 0,
-        partialProfit: 0
+        partialProfit: 0,
+        lastReportTime: 0,
+        lastWsUpdate: 0
     };
 
+    // ==================== API FUNCTIONS ====================
     const API = {
         async syncOnce() {
             bot.token = localStorage.getItem('apitoken') || (document.cookie.match(/session=([^;]+)/) ? document.cookie.match(/session=([^;]+)/)[1] : null);
@@ -244,7 +182,6 @@
                 );
                 return active ? parseFloat(active.available.amount) : 0;
             } catch (e) { 
-                console.error("Balance Error:", e);
                 return 0; 
             }
         },
@@ -257,7 +194,7 @@
                 condition: "above", 
                 identifier: Math.random().toString(36).slice(2) 
             };
-            console.log("Dice Bet Payload:", payload);
+            
             try {
                 const r = await fetch(`${CONFIG.apiUrl}/casino/dice/roll`, { 
                     method: "POST", 
@@ -267,22 +204,8 @@
                     }, 
                     body: JSON.stringify(payload) 
                 });
-                const responseText = await r.text();
-                console.log("Dice Raw Response:", responseText);
-                
-                let responseData;
-                try {
-                    responseData = JSON.parse(responseText);
-                } catch (parseError) {
-                    console.error("Dice JSON Parse Error:", parseError);
-                    throw new Error(`Invalid JSON response: ${responseText.substring(0, 200)}`);
-                }
-                
-                console.log("Dice Response Data:", responseData);
-                return responseData;
-                
+                return await r.json();
             } catch (error) {
-                console.error("Dice Bet Error:", error);
                 throw error;
             }
         },
@@ -295,8 +218,6 @@
                 identifier: Math.random().toString(36).slice(2) 
             };
             
-            console.log("Limbo Request:", payload);
-            
             try {
                 const r = await fetch(`${CONFIG.apiUrl}/casino/limbo/bet`, { 
                     method: "POST", 
@@ -306,35 +227,56 @@
                     }, 
                     body: JSON.stringify(payload) 
                 });
-                
-                const responseText = await r.text();
-                let responseData;
-                
-                try {
-                    responseData = JSON.parse(responseText);
-                } catch (parseError) {
-                    console.error("Limbo JSON Parse Error:", parseError);
-                    throw new Error(`Invalid JSON response: ${responseText.substring(0, 200)}`);
-                }
-                
-                console.log("Limbo Response:", responseData);
-                return responseData;
-                
+                return await r.json();
             } catch (error) {
-                console.error("Limbo Bet Error:", error);
                 throw error;
             }
         }
     };
 
-    // ==================== LABOUCHERE SYSTEM ====================
+    // ==================== TELEGRAM REPORT ====================
+    async function sendTelegramReport(reason = "SESSION_END") {
+        try {
+            const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100).toFixed(2) : "0.00";
+            const profitPct = bot.stats.startBal > 0 ? ((bot.stats.profit / bot.stats.startBal) * 100).toFixed(2) : "0.00";
+            
+            const reportMessage = `ORION BOT REPORT\n\n` +
+                                `User: ${bot.stakeUser}\n` +
+                                `Session: ${getElapsedTime()}\n` +
+                                `Profit: ${bot.stats.profit.toFixed(8)} (${profitPct}%)\n` +
+                                `Bets: ${bot.stats.bets} (${bot.stats.wins}W/${bot.stats.loss}L)\n` +
+                                `Win Rate: ${winRate}%\n` +
+                                `Current Streak: ${bot.stats.currentStreak}\n` +
+                                `Max Drawdown: ${bot.stats.maxDD.toFixed(8)}\n` +
+                                `Mode: ${bot.mode}\n` +
+                                `Game: ${bot.gameMode}\n` +
+                                `Reason: ${reason}`;
+            
+            const formattedReport = `\`\`\`\n${reportMessage}\n\`\`\``;
+            
+            await fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    chat_id: CONFIG.tgChatId,
+                    text: formattedReport,
+                    parse_mode: "MarkdownV2"
+                })
+            });
+            
+            console.log("Telegram report sent");
+        } catch (error) {
+            console.error("Telegram report error:", error);
+        }
+    }
+
+    // ==================== BOT LOGIC ====================
     function initLabouchere(baseBet, chance) {
         const sequenceLength = Math.floor(Math.random() * 5) + 3;
         bot.labouchereList = [];
         for (let i = 0; i < sequenceLength; i++) {
             bot.labouchereList.push(baseBet * (i + 1));
         }
-        console.log(`Labouchere initialized: ${bot.labouchereList}`);
     }
 
     function getNextLabouchereBet() {
@@ -365,22 +307,15 @@
         }
     }
 
-    // ==================== GAME MODE SWITCHING ====================
     function switchGameMode() {
-        if (!bot.activeModes.autoswitch || bot.stats.bets < 10) return;
+        if (!bot.activeModes.autoswitch || bot.stats.bets < 10) return false;
         
         if (bot.stats.bets - bot.lastSwitchBet > Math.floor(Math.random() * 25) + 15) {
-            const modes = ["DICE", "LIMBO"];
-            const currentIndex = modes.indexOf(bot.gameMode);
-            const newIndex = (currentIndex + 1) % modes.length;
-            const newMode = modes[newIndex];
-            
-            bot.gameMode = newMode;
+            bot.gameMode = bot.gameMode === "DICE" ? "LIMBO" : "DICE";
             bot.lastSwitchBet = bot.stats.bets;
             updateStatus(`Switched to ${bot.gameMode}`, "#a855f7");
-            console.log(`Game mode switched to ${bot.gameMode} at bet #${bot.stats.bets}`);
             
-            if (newMode === "LIMBO") {
+            if (bot.gameMode === "LIMBO") {
                 bot.currentPayout = 2.0;
             } else {
                 bot.currentChance = 85.0;
@@ -391,49 +326,29 @@
         return false;
     }
 
-    // ==================== STATISTICS UPDATES ====================
     function updateStatistics(win, amount, payout) {
+        bot.stats.currentStreak = win ? 
+            Math.max(0, bot.stats.currentStreak) + 1 : 
+            Math.min(0, bot.stats.currentStreak) - 1;
+        
         if (win) {
-            bot.stats.currentStreak = Math.max(0, bot.stats.currentStreak) + 1;
             bot.stats.maxWinStreak = Math.max(bot.stats.maxWinStreak, bot.stats.currentStreak);
         } else {
-            bot.stats.currentStreak = Math.min(0, bot.stats.currentStreak) - 1;
             bot.stats.maxLossStreak = Math.max(Math.abs(bot.stats.maxLossStreak), Math.abs(bot.stats.currentStreak));
         }
 
-        if (amount > bot.stats.maxBet) {
-            bot.stats.maxBet = amount;
-        }
-
-        if (bot.stats.profit > bot.stats.maxProfit) {
-            bot.stats.maxProfit = bot.stats.profit;
-        }
-
-        if (bot.stats.currentBal > bot.stats.maxBalance) {
-            bot.stats.maxBalance = bot.stats.currentBal;
-        }
-        if (bot.stats.currentBal < bot.stats.minBalance || bot.stats.minBalance === 0) {
-            bot.stats.minBalance = bot.stats.currentBal;
-        }
+        bot.stats.maxBet = Math.max(bot.stats.maxBet, amount);
+        bot.stats.maxProfit = Math.max(bot.stats.maxProfit, bot.stats.profit);
+        bot.stats.maxBalance = Math.max(bot.stats.maxBalance, bot.stats.currentBal);
+        bot.stats.minBalance = bot.stats.minBalance === 0 ? bot.stats.currentBal : Math.min(bot.stats.minBalance, bot.stats.currentBal);
 
         const currentDD = bot.stats.startBal - bot.stats.currentBal;
-        if (currentDD > bot.stats.maxDD) {
-            bot.stats.maxDD = currentDD;
-        }
+        bot.stats.maxDD = Math.max(bot.stats.maxDD, currentDD);
 
-        if (payout > 0) {
-            bot.stats.totalPayout += payout;
-        }
-
-        if (bot.stats.currentBal > bot.sessionHigh) {
-            bot.sessionHigh = bot.stats.currentBal;
-        }
-        if (bot.stats.currentBal < bot.sessionLow || bot.sessionLow === 0) {
-            bot.sessionLow = bot.stats.currentBal;
-        }
+        bot.sessionHigh = Math.max(bot.sessionHigh, bot.stats.currentBal);
+        bot.sessionLow = bot.sessionLow === 0 ? bot.stats.currentBal : Math.min(bot.sessionLow, bot.stats.currentBal);
     }
 
-    // ==================== BOT LOGIC FUNCTIONS ====================
     function getVal(id) { 
         try {
             const el = document.getElementById(id);
@@ -458,13 +373,11 @@
             }
             return parseFloat(el.value) || 0;
         } catch (e) {
-            console.error(`Error getting value for ${id}:`, e);
             return 0;
         }
     }
 
     async function updateBalanceDisplay() {
-        if (bot.isRunning) return;
         const balance = await API.getBalance(bot.selectedCurrency);
         bot.stats.currentBal = balance;
         if (bot.stats.startBal === 0) {
@@ -474,234 +387,147 @@
         }
     }
 
+    // ==================== OPTIMIZED BET LOOP ====================
     async function runLoop() {
-        console.log("RunLoop called:", {
-            running: bot.isRunning,
-            paused: bot.isPaused,
-            gameMode: bot.gameMode,
-            nextBet: bot.nextBet,
-            chance: bot.currentChance,
-            payout: bot.currentPayout
-        });
-        
         if (!bot.isRunning || bot.isPaused) return;
         
+        // Auto report every 100 bets
+        if (bot.stats.bets % 100 === 0 && Date.now() - bot.lastReportTime > 60000) {
+            await sendTelegramReport("AUTO_REPORT");
+            bot.lastReportTime = Date.now();
+        }
+
+        // Target profit check
         const targetAbs = bot.stats.startBal * (getVal("p-target-pct") / 100);
         if (targetAbs > 0 && bot.stats.profit >= targetAbs) { 
             await stopEngine(); 
-            updateStatus("TARGET REACHED", "#10b981"); 
+            updateStatus("TARGET REACHED", "#10b981");
+            await sendTelegramReport("TARGET_REACHED");
             return; 
         }
 
         try {
-            let res;
-            if (bot.gameMode === "DICE") {
-                res = await API.placeDiceBet(bot.nextBet, bot.currentChance);
-            } else {
-                res = await API.placeLimboBet(bot.nextBet, bot.currentPayout);
-            }
+            // Place bet
+            const res = bot.gameMode === "DICE" 
+                ? await API.placeDiceBet(bot.nextBet, bot.currentChance)
+                : await API.placeLimboBet(bot.nextBet, bot.currentPayout);
             
-            console.log("Full API Response:", res);
+            const betData = res?.data || res;
             
-            let betData;
-            if (bot.gameMode === "DICE") {
-                // Coba berbagai struktur untuk Dice
-                betData = res?.data?.diceRoll || 
-                         res?.diceRoll || 
-                         res?.data?.roll ||
-                         res?.roll ||
-                         res?.data;
-                
-                console.log("Dice betData extracted:", betData);
-                
-                if (!betData) {
-                    // Jika masih kosong, mungkin respons langsung adalah data
-                    betData = res;
-                }
-            } else {
-                // Untuk Limbo
-                betData = res?.limboBet || 
-                         res?.data?.limboBet ||
-                         res?.bet ||
-                         res?.data?.bet ||
-                         res?.data;
-                
-                console.log("Limbo betData extracted:", betData);
-                
-                if (!betData && res?.data) {
-                    betData = res.data;
-                }
-            }
+            if (!betData) throw new Error("Invalid bet response");
             
-            if (!betData) {
-                console.error("No bet data found in response:", res);
-                console.error("Response structure:", Object.keys(res || {}));
-                console.error("Response data structure:", Object.keys(res?.data || {}));
-                throw new Error(`Invalid bet response structure for ${bot.gameMode}`);
-            }
-            
-            console.log("Final betData:", betData);
-            
-            let win, payout, pft, amount;
+            // Process result - FIXED AMOUNT EXTRACTION
+            let win, payout, profit, amount;
             
             if (bot.gameMode === "DICE") {
-                // Logic untuk Dice
-                amount = betData.amount || betData.betAmount || 0;
+                // Try multiple possible fields for amount
+                amount = betData.amount || betData.betAmount || betData.wager || bot.nextBet;
+                win = betData.payoutMultiplier > 0 || betData.win === true || (betData.payout && betData.payout > 0);
                 
-                // Cek berbagai field untuk win condition
-                win = betData.payoutMultiplier > 0 || 
-                      betData.payout > 0 || 
-                      betData.win === true ||
-                      (betData.result && betData.result >= betData.target);
-                
-                // Hitung payout dari berbagai field
+                // Calculate payout correctly
                 if (betData.payout !== undefined && betData.payout > 0) {
                     payout = betData.payout;
                 } else if (betData.payoutMultiplier && betData.payoutMultiplier > 0) {
                     payout = amount * betData.payoutMultiplier;
-                } else if (win && betData.multiplier) {
-                    payout = amount * betData.multiplier;
                 } else if (win) {
-                    // Default payout jika menang
                     payout = amount * (100 / bot.currentChance);
                 } else {
                     payout = 0;
                 }
-                
-                pft = payout - amount;
-                
-                console.log("Dice Calculation:", {
-                    amount,
-                    win,
-                    payout,
-                    profit: pft,
-                    payoutMultiplier: betData.payoutMultiplier,
-                    result: betData.result,
-                    target: betData.target
-                });
-                
             } else {
-                // Logic untuk Limbo
-                amount = betData.amount || 0;
-                
-                // Gunakan state untuk hasil
-                const result = betData.state?.result || 0;
-                const target = betData.state?.multiplierTarget || betData.multiplierTarget || 0;
-                
-                // Win jika result >= target
+                // For Limbo
+                amount = betData.amount || betData.betAmount || betData.wager || bot.nextBet;
+                const result = betData.state?.result || betData.result || 0;
+                const target = betData.state?.multiplierTarget || betData.multiplierTarget || bot.currentPayout;
                 win = result >= target;
                 
-                // Hitung payout
                 if (betData.payout !== undefined && betData.payout > 0) {
                     payout = betData.payout;
                 } else if (win) {
-                    // Jika menang, payout = amount * target multiplier
                     payout = amount * target;
                 } else {
                     payout = 0;
                 }
-                
-                pft = payout - amount;
-                
-                console.log("Limbo Calculation:", {
-                    amount,
-                    result,
-                    target,
-                    win,
-                    payout,
-                    profit: pft,
-                    state: betData.state
-                });
             }
             
-            // Update bot stats
+            profit = payout - amount;
+            
+            // Update stats
             bot.stats.bets++; 
             bot.stats.wagered += amount;
-            bot.stats.profit += pft; 
-            bot.stats.currentBal += pft;
-            bot.partialProfit += pft;
+            bot.stats.profit += profit; 
+            bot.stats.currentBal += profit;
+            bot.partialProfit += profit;
             
-            if (win) {
-                bot.stats.wins++; 
-            } else {
-                bot.stats.loss++;
-            }
-
+            win ? bot.stats.wins++ : bot.stats.loss++;
+            
             // Update statistics
             updateStatistics(win, amount, payout);
-
-            updateLogs(amount, bot.gameMode === "DICE" ? bot.currentChance : bot.currentPayout, bot.mode, pft, bot.gameMode);
+            
+            // Update stats display immediately
+            updateStatsDisplay();
+            
+            // Log bet - FIXED AMOUNT DISPLAY
+            updateLogs(amount, bot.gameMode === "DICE" ? bot.currentChance : bot.currentPayout, bot.mode, profit, bot.gameMode);
             
             // Mode switching logic
-            if (bot.activeModes.base && bot.activeModes.wager) {
-                if (bot.stats.bets % 100 === 0) {
-                    bot.mode = (bot.mode === "BASE") ? "WAGER" : "BASE";
-                    updateStatus(`Mode: ${bot.mode}`, "#a855f7");
-                    bot.partialProfit = 0;
-                }
+            if (bot.activeModes.base && bot.activeModes.wager && bot.stats.bets % 100 === 0) {
+                bot.mode = bot.mode === "BASE" ? "WAGER" : "BASE";
+                updateStatus(`Mode: ${bot.mode}`, "#a855f7");
+                bot.partialProfit = 0;
             }
             
-            // Labouchere recovery (hanya untuk BASE mode)
-            if (bot.mode === "BASE") {
-                if (win) {
-                    updateLabouchere(true);
-                } else {
-                    updateLabouchere(false);
-                }
-                bot.nextBet = getNextLabouchereBet();
-            }
-            
-            // Regular betting logic
+            // Bet calculation
             if (win) {
                 if (bot.mode === "WAGER") {
+                    bot.nextBet = bot.stats.currentBal / getVal("p-wgr-div");
                     if (bot.gameMode === "DICE") {
                         bot.currentChance = getVal("p-wgr-chance");
                     } else {
                         bot.currentPayout = 1.5;
                     }
-                    bot.nextBet = bot.stats.currentBal / getVal("p-wgr-div");
                 } else {
+                    bot.nextBet = getVal("p-basebet");
                     if (bot.gameMode === "DICE") {
                         bot.currentChance = Math.random() * (getVal("p-bch-max") - getVal("p-bch-min")) + getVal("p-bch-min");
                     } else {
                         bot.currentPayout = Math.random() * (getVal("p-limbo-max-payout") - 1.1) + 1.1;
                     }
-                    bot.nextBet = getVal("p-basebet");
+                    if (bot.labouchereList.length > 0) {
+                        updateLabouchere(true);
+                        bot.nextBet = getNextLabouchereBet();
+                    }
                 }
                 bot.partialProfit = 0;
             } else {
                 if (bot.mode === "WAGER") {
                     bot.nextBet = amount * 1.12;
-                    if (bot.gameMode === "DICE") {
-                        bot.currentChance = getVal("p-wgr-chance");
-                    } else {
-                        bot.currentPayout = 1.5;
-                    }
                 } else {
                     if (bot.gameMode === "DICE") {
                         bot.currentChance = Math.random() * (getVal("p-hch-max") - getVal("p-hch-min")) + getVal("p-hch-min");
                         bot.nextBet = (Math.abs(bot.partialProfit) / ((99/bot.currentChance) - 1)) * 1.5;
                     } else {
-                        // Untuk Limbo loss, turunkan payout (lebih mudah menang)
                         bot.currentPayout = Math.max(1.1, bot.currentPayout * 0.95);
                         bot.nextBet = (Math.abs(bot.partialProfit) / (bot.currentPayout - 1)) * 1.5;
+                    }
+                    if (bot.labouchereList.length > 0) {
+                        updateLabouchere(false);
+                        bot.nextBet = getNextLabouchereBet();
                     }
                 }
             }
             
-            // Apply min bet limit
-            const minBet = getVal("p-minbet");
-            bot.nextBet = Math.max(bot.nextBet, minBet);
+            // Apply min bet
+            bot.nextBet = Math.max(bot.nextBet, getVal("p-minbet"));
             
             // Auto switch game mode
-            if (bot.activeModes.autoswitch) {
-                switchGameMode();
-            }
+            switchGameMode();
             
-            setTimeout(runLoop, 75);
+            // Next bet with minimal delay
+            setTimeout(runLoop, 50);
             
         } catch (e) { 
-            console.error("Loop error:", e);
+            console.error("Bet error:", e);
             updateStatus(`Error: ${e.message}`, "#ef4444");
             setTimeout(runLoop, 1000); 
         }
@@ -709,6 +535,7 @@
 
     async function stopEngine() { 
         bot.isRunning = false; 
+        await sendTelegramReport("MANUAL_STOP");
         await updateBalanceDisplay();
     }
 
@@ -724,27 +551,22 @@
         const logBox = document.getElementById("p-log-body");
         if (!logBox) return;
         
-        const modeColors = {
-            'WAGER': '#60a5fa',
-            'BASE': '#fbbf24'
-        };
-        
-        const gameIcons = {
-            'DICE': '🎲',
-            'LIMBO': '🎯'
-        };
-        
         const row = document.createElement("div");
         row.style.cssText = `display:grid; grid-template-columns:1fr 1fr 0.8fr 1fr 0.8fr; font-size:9px; border-bottom:1px solid rgba(0,255,255,0.05); padding:2px 0; color:${pft >= 0 ? '#00ffcc' : '#ff3366'}; text-align:center;`;
         
         const valueDisplay = game === "DICE" ? `${value.toFixed(1)}%` : `${value.toFixed(2)}x`;
+        const modeColors = { 'WAGER': '#60a5fa', 'BASE': '#fbbf24' };
+        const gameText = game === "DICE" ? "DICE" : "LIMBO";
+        
+        // FIXED: Display amount with proper decimal places
+        const displayAmount = amt.toFixed(8);
         
         row.innerHTML = `
-            <span>${amt.toFixed(5)}</span>
+            <span title="${amt}">${displayAmount}</span>
             <span>${valueDisplay}</span>
             <span style="color:${modeColors[mode] || '#94a3b8'}">${mode}</span>
-            <span>${pft.toFixed(5)}</span>
-            <span>${gameIcons[game] || '?'}</span>
+            <span>${pft.toFixed(8)}</span>
+            <span>${gameText}</span>
         `;
         logBox.prepend(row);
         if (logBox.children.length > 10) logBox.lastChild.remove();
@@ -756,7 +578,7 @@
         return `${Math.floor(d/3600).toString().padStart(2,'0')}:${Math.floor((d%3600)/60).toString().padStart(2,'0')}:${(d%60).toString().padStart(2,'0')}`;
     }
 
-    // ==================== UI CREATION ====================
+    // ==================== PROFESSIONAL TEXT-ONLY UI ====================
     function createUI() {
         if (document.getElementById("orion-wrap")) document.getElementById("orion-wrap").remove();
         
@@ -767,19 +589,20 @@
                 top: 10px;
                 right: 10px;
                 width: 95%;
-                max-width: 480px;
-                background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-                border: 2px solid #3b82f6;
-                border-radius: 16px;
-                padding: 16px;
+                max-width: 450px;
+                background: rgba(15, 23, 42, 0.98);
+                border: 1px solid #2d3748;
+                border-radius: 10px;
+                padding: 15px;
                 color: #e2e8f0;
-                font-family: 'Segoe UI', system-ui;
+                font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
                 z-index: 9999;
-                box-shadow: 0 10px 30px rgba(59, 130, 246, 0.3);
-                backdrop-filter: blur(10px);
+                box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
                 overflow-y: auto;
                 max-height: 95vh;
                 box-sizing: border-box;
+                font-size: 13px;
+                line-height: 1.4;
             }
             
             @media (max-width: 768px) {
@@ -792,306 +615,64 @@
                 }
             }
             
-            @media (max-width: 480px) {
-                #orion-wrap {
-                    width: 98%;
-                    right: 1%;
-                    left: 1%;
-                    padding: 10px;
-                    top: 5px;
-                    max-height: 98vh;
-                }
-            }
-            
-            #orion-wrap * {
-                box-sizing: border-box;
-            }
-            
             .header {
                 text-align: center;
                 margin-bottom: 15px;
+                padding-bottom: 12px;
+                border-bottom: 1px solid #2d3748;
             }
             
             .header-title {
-                font-size: 18px;
-                font-weight: 800;
-                letter-spacing: 1px;
-                background: linear-gradient(90deg, #3b82f6, #8b5cf6);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                margin-bottom: 5px;
-                line-height: 1.2;
-            }
-            
-            @media (max-width: 480px) {
-                .header-title {
-                    font-size: 16px;
-                }
+                font-size: 15px;
+                font-weight: 700;
+                letter-spacing: 0.5px;
+                color: #4299e1;
+                margin-bottom: 6px;
+                text-transform: uppercase;
             }
             
             .status-badge {
                 display: inline-block;
-                padding: 4px 12px;
-                border-radius: 20px;
-                font-size: 11px;
-                font-weight: 600;
-                background: #1e293b;
-                border: 1px solid #334155;
-                margin: 0 auto;
-                display: block;
-                width: fit-content;
-            }
-            
-            .stats-container {
-                background: rgba(30, 41, 59, 0.5);
+                padding: 4px 10px;
                 border-radius: 12px;
-                padding: 12px;
-                margin: 10px 0;
-                border: 1px solid #334155;
-                max-height: 300px;
-                overflow-y: auto;
-            }
-            
-            @media (max-width: 480px) {
-                .stats-container {
-                    padding: 10px;
-                    max-height: 250px;
-                }
-            }
-            
-            .stats-grid {
-                display: grid;
-                grid-template-columns: 1fr;
-                gap: 8px;
-            }
-            
-            .stat-row {
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                padding: 6px 0;
-                border-bottom: 1px solid rgba(51, 65, 85, 0.3);
-                font-size: 11px;
-                align-items: center;
-            }
-            
-            @media (max-width: 480px) {
-                .stat-row {
-                    font-size: 10px;
-                    padding: 5px 0;
-                }
-            }
-            
-            .stat-label {
-                color: #94a3b8;
-                text-align: left;
-                word-break: break-word;
-                padding-right: 5px;
-            }
-            
-            .stat-value {
-                color: #f1f5f9;
+                font-size: 10px;
                 font-weight: 600;
-                text-align: right;
-                font-family: monospace;
-                word-break: break-all;
-            }
-            
-            .profit-positive {
-                color: #10b981;
-            }
-            
-            .profit-negative {
-                color: #ef4444;
-            }
-            
-            .control-panel {
-                display: grid;
-                grid-template-columns: 1fr;
-                gap: 8px;
-                margin: 15px 0;
-            }
-            
-            .button-row {
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 8px;
-            }
-            
-            .btn {
-                padding: 14px;
-                border: none;
-                border-radius: 10px;
-                font-weight: 700;
-                font-size: 13px;
-                cursor: pointer;
-                transition: all 0.2s;
+                background: #2d3748;
+                border: 1px solid #4a5568;
                 text-transform: uppercase;
                 letter-spacing: 0.5px;
-                text-align: center;
-                display: block;
-                width: 100%;
-                min-height: 44px;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                gap: 6px;
-            }
-            
-            @media (max-width: 480px) {
-                .btn {
-                    padding: 12px;
-                    font-size: 12px;
-                    min-height: 42px;
-                }
-            }
-            
-            .btn-run {
-                background: linear-gradient(135deg, #10b981, #059669);
-                color: white;
-            }
-            
-            .btn-pause {
-                background: linear-gradient(135deg, #f59e0b, #d97706);
-                color: white;
-            }
-            
-            .btn-stop {
-                background: linear-gradient(135deg, #ef4444, #dc2626);
-                color: white;
-            }
-            
-            .btn-support {
-                background: linear-gradient(135deg, #3b82f6, #8b5cf6);
-                color: white;
-                margin-top: 5px;
-            }
-            
-            .btn:hover {
-                transform: translateY(-2px);
-                opacity: 0.9;
-            }
-            
-            .btn:active {
-                transform: translateY(0);
-            }
-            
-            .settings-section {
-                background: rgba(30, 41, 59, 0.5);
-                border-radius: 12px;
-                padding: 12px;
-                margin: 10px 0;
-                border: 1px solid #334155;
-            }
-            
-            @media (max-width: 480px) {
-                .settings-section {
-                    padding: 10px;
-                }
-            }
-            
-            .section-title {
-                font-size: 12px;
-                font-weight: 600;
-                color: #94a3b8;
-                margin-bottom: 10px;
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-            }
-            
-            .section-content {
-                display: grid;
-                grid-template-columns: repeat(2, 1fr);
-                gap: 10px;
-            }
-            
-            @media (max-width: 480px) {
-                .section-content {
-                    grid-template-columns: 1fr;
-                    gap: 8px;
-                }
-            }
-            
-            .input-group {
-                margin-bottom: 8px;
-            }
-            
-            .input-label {
-                font-size: 10px;
-                color: #94a3b8;
-                margin-bottom: 4px;
-                display: block;
-            }
-            
-            input, select {
-                width: 100%;
-                padding: 10px 12px;
-                background: #1e293b;
-                border: 1px solid #334155;
-                border-radius: 8px;
-                color: #e2e8f0;
-                font-size: 12px;
-                min-height: 40px;
-                -webkit-appearance: none;
-                appearance: none;
-            }
-            
-            @media (max-width: 480px) {
-                input, select {
-                    padding: 8px 10px;
-                    font-size: 11px;
-                    min-height: 38px;
-                }
-            }
-            
-            .log-container {
-                background: rgba(15, 23, 42, 0.7);
-                border-radius: 8px;
-                padding: 10px;
-                margin-top: 10px;
-                max-height: 120px;
-                overflow-y: auto;
-                border: 1px solid #334155;
             }
             
             .tabs {
-                display: flex;
-                gap: 5px;
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 6px;
                 margin-bottom: 15px;
-                border-bottom: 1px solid #334155;
                 padding-bottom: 10px;
-                overflow-x: auto;
-                -webkit-overflow-scrolling: touch;
+                border-bottom: 1px solid #2d3748;
             }
             
             .tab {
-                flex: 1;
-                min-width: 80px;
-                padding: 10px 12px;
-                background: rgba(30, 41, 59, 0.5);
-                border: 1px solid #334155;
-                border-radius: 8px;
+                padding: 8px 4px;
+                background: #2d3748;
+                border: 1px solid #4a5568;
+                border-radius: 6px;
                 cursor: pointer;
                 text-align: center;
-                font-size: 11px;
+                font-size: 10px;
                 font-weight: 600;
-                color: #94a3b8;
-                transition: all 0.3s;
+                color: #a0aec0;
+                transition: all 0.2s;
                 white-space: nowrap;
-            }
-            
-            @media (max-width: 480px) {
-                .tab {
-                    padding: 8px 10px;
-                    font-size: 10px;
-                    min-width: 70px;
-                }
+                overflow: hidden;
+                text-overflow: ellipsis;
+                text-transform: uppercase;
             }
             
             .tab.active {
-                background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+                background: #4299e1;
                 color: white;
-                border-color: #3b82f6;
+                border-color: #4299e1;
             }
             
             .tab-content {
@@ -1102,18 +683,160 @@
                 display: block;
             }
             
+            .stats-grid {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 8px;
+                margin-bottom: 15px;
+            }
+            
+            .stat-card {
+                background: #2d3748;
+                border: 1px solid #4a5568;
+                border-radius: 6px;
+                padding: 10px;
+            }
+            
+            .stat-label {
+                font-size: 9px;
+                color: #a0aec0;
+                margin-bottom: 4px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+            
+            .stat-value {
+                font-size: 12px;
+                font-weight: 600;
+                color: #edf2f7;
+                font-family: 'Roboto Mono', monospace;
+            }
+            
+            .profit-positive { color: #48bb78; }
+            .profit-negative { color: #f56565; }
+            
+            .control-panel {
+                display: grid;
+                gap: 8px;
+                margin: 15px 0;
+            }
+            
+            .button-row {
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 8px;
+            }
+            
+            .btn {
+                padding: 10px;
+                border: none;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 11px;
+                cursor: pointer;
+                transition: all 0.2s;
+                text-align: center;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                background: #4a5568;
+                color: #e2e8f0;
+                border: 1px solid #718096;
+            }
+            
+            .btn-run { background: #38a169; color: white; border: none; }
+            .btn-pause { background: #d69e2e; color: white; border: none; }
+            .btn-stop { background: #e53e3e; color: white; border: none; }
+            .btn-support { background: #4299e1; color: white; border: none; }
+            .btn-report { background: #805ad5; color: white; border: none; }
+            
+            .btn:hover {
+                opacity: 0.9;
+                transform: translateY(-1px);
+            }
+            
+            .settings-section {
+                margin-bottom: 15px;
+            }
+            
+            .section-title {
+                font-size: 11px;
+                font-weight: 600;
+                color: #a0aec0;
+                margin-bottom: 8px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                border-bottom: 1px solid #4a5568;
+                padding-bottom: 4px;
+            }
+            
+            .input-grid {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 8px;
+            }
+            
+            .input-group {
+                margin-bottom: 8px;
+            }
+            
+            .input-label {
+                font-size: 10px;
+                color: #a0aec0;
+                margin-bottom: 4px;
+                display: block;
+            }
+            
+            input, select {
+                width: 100%;
+                padding: 8px 10px;
+                background: #2d3748;
+                border: 1px solid #4a5568;
+                border-radius: 4px;
+                color: #e2e8f0;
+                font-size: 11px;
+                font-family: 'Roboto Mono', monospace;
+            }
+            
+            .log-container {
+                background: #1a202c;
+                border-radius: 6px;
+                padding: 10px;
+                max-height: 120px;
+                overflow-y: auto;
+                border: 1px solid #4a5568;
+                margin-bottom: 10px;
+            }
+            
+            .log-header {
+                font-size: 10px;
+                color: #a0aec0;
+                margin-bottom: 8px;
+                text-align: center;
+                font-weight: 600;
+                text-transform: uppercase;
+            }
+            
+            .mode-toggle {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                margin-bottom: 10px;
+                padding: 8px;
+                background: #2d3748;
+                border-radius: 6px;
+                border: 1px solid #4a5568;
+            }
+            
+            .mode-label {
+                font-size: 11px;
+                color: #e2e8f0;
+            }
+            
             .toggle-switch {
                 position: relative;
                 display: inline-block;
-                width: 44px;
-                height: 24px;
-            }
-            
-            @media (max-width: 480px) {
-                .toggle-switch {
-                    width: 40px;
-                    height: 22px;
-                }
+                width: 36px;
+                height: 20px;
             }
             
             .toggle-switch input {
@@ -1129,73 +852,29 @@
                 left: 0;
                 right: 0;
                 bottom: 0;
-                background-color: #334155;
-                transition: .4s;
-                border-radius: 24px;
+                background-color: #4a5568;
+                transition: .2s;
+                border-radius: 20px;
             }
             
             .toggle-slider:before {
                 position: absolute;
                 content: "";
-                height: 18px;
-                width: 18px;
-                left: 3px;
-                bottom: 3px;
+                height: 16px;
+                width: 16px;
+                left: 2px;
+                bottom: 2px;
                 background-color: white;
-                transition: .4s;
+                transition: .2s;
                 border-radius: 50%;
             }
             
-            @media (max-width: 480px) {
-                .toggle-slider:before {
-                    height: 16px;
-                    width: 16px;
-                }
-            }
-            
             input:checked + .toggle-slider {
-                background-color: #3b82f6;
+                background-color: #4299e1;
             }
             
             input:checked + .toggle-slider:before {
-                transform: translateX(20px);
-            }
-            
-            @media (max-width: 480px) {
-                input:checked + .toggle-slider:before {
-                    transform: translateX(18px);
-                }
-            }
-            
-            .mode-toggle {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                margin-bottom: 10px;
-                padding: 8px 0;
-            }
-            
-            .mode-label {
-                font-size: 12px;
-                color: #e2e8f0;
-            }
-            
-            .progress-container {
-                margin: 5px 0;
-            }
-            
-            .progress-bar {
-                height: 6px;
-                background: #1e293b;
-                border-radius: 3px;
-                overflow: hidden;
-            }
-            
-            .progress-fill {
-                height: 100%;
-                background: linear-gradient(90deg, #3b82f6, #8b5cf6);
-                border-radius: 3px;
-                transition: width 0.3s;
+                transform: translateX(16px);
             }
             
             .drag-handle {
@@ -1203,60 +882,43 @@
                 top: 0;
                 left: 0;
                 right: 0;
-                height: 30px;
+                height: 24px;
                 cursor: move;
                 z-index: 10;
-                border-radius: 16px 16px 0 0;
+                border-radius: 10px 10px 0 0;
             }
             
-            .collapse-btn {
+            .close-btn {
                 position: absolute;
-                top: 10px;
-                left: 10px;
-                background: rgba(59, 130, 246, 0.2);
+                top: 8px;
+                right: 8px;
+                background: none;
                 border: none;
-                color: #60a5fa;
-                width: 30px;
-                height: 30px;
-                border-radius: 50%;
+                color: #a0aec0;
+                font-size: 16px;
                 cursor: pointer;
+                width: 24px;
+                height: 24px;
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                font-size: 14px;
-                z-index: 11;
+                border-radius: 50%;
+                transition: background 0.2s;
+                font-weight: bold;
             }
             
-            @media (max-width: 480px) {
-                .collapse-btn {
-                    width: 28px;
-                    height: 28px;
-                    font-size: 12px;
-                }
+            .close-btn:hover {
+                background: rgba(229, 62, 62, 0.1);
+                color: #e53e3e;
             }
             
-            .mobile-controls {
-                display: none;
-            }
-            
-            @media (max-width: 768px) {
-                .mobile-controls {
-                    display: flex;
-                    gap: 10px;
-                    margin-bottom: 15px;
-                }
-                
-                .mobile-btn {
-                    flex: 1;
-                    padding: 10px;
-                    background: rgba(59, 130, 246, 0.2);
-                    border: 1px solid #3b82f6;
-                    border-radius: 8px;
-                    color: #60a5fa;
-                    font-size: 11px;
-                    text-align: center;
-                    cursor: pointer;
-                }
+            .connection-status {
+                font-size: 9px;
+                color: #a0aec0;
+                text-align: center;
+                margin-top: 5px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
             }
         `;
         document.head.appendChild(s);
@@ -1265,42 +927,32 @@
         d.id = "orion-wrap";
         d.innerHTML = `
             <div class="drag-handle"></div>
-            <button class="collapse-btn" id="collapse-btn">➖</button>
+            <button class="close-btn" id="close-btn">×</button>
             
             <div class="header">
-                <div class="header-title">
-                    🚀 ORION PREMIUM BOT
-                </div>
-                <div class="status-badge" id="st-status-text">🟢 READY</div>
+                <div class="header-title">ORION TRADING BOT</div>
+                <div class="status-badge" id="st-status-text">READY</div>
             </div>
             
             <div class="tabs">
-                <div class="tab active" data-tab="stats">📊 STATS</div>
-                <div class="tab" data-tab="settings">⚙️ SETTINGS</div>
-                <div class="tab" data-tab="modes">🎮 MODES</div>
-                <div class="tab" data-tab="logs">📝 LOGS</div>
-            </div>
-            
-            <div class="mobile-controls">
-                <div class="mobile-btn" id="mobile-start">▶️ START</div>
-                <div class="mobile-btn" id="mobile-pause">⏸️ PAUSE</div>
-                <div class="mobile-btn" id="mobile-stop">🛑 STOP</div>
+                <div class="tab active" data-tab="stats">STATS</div>
+                <div class="tab" data-tab="settings">SETTINGS</div>
+                <div class="tab" data-tab="modes">MODES</div>
+                <div class="tab" data-tab="logs">LOGS</div>
             </div>
             
             <!-- STATISTICS TAB -->
             <div id="tab-stats" class="tab-content active">
-                <div class="stats-container">
-                    <div class="stats-grid" id="stats-grid">
-                        <!-- Statistics will be populated here -->
-                    </div>
+                <div class="stats-grid" id="stats-grid">
+                    <!-- Dynamic stats -->
                 </div>
                 
                 <div class="control-panel">
-                    <button id="btn-run" class="btn btn-run">🚀 START ENGINE</button>
-                    
+                    <button id="btn-run" class="btn btn-run">START</button>
                     <div class="button-row">
-                        <button id="btn-pause" class="btn btn-pause">⏸️ PAUSE</button>
-                        <button id="btn-stop" class="btn btn-stop">🛑 STOP</button>
+                        <button id="btn-pause" class="btn btn-pause">PAUSE</button>
+                        <button id="btn-stop" class="btn btn-stop">STOP</button>
+                        <button id="btn-report" class="btn btn-report">REPORT</button>
                     </div>
                 </div>
             </div>
@@ -1308,92 +960,70 @@
             <!-- SETTINGS TAB -->
             <div id="tab-settings" class="tab-content">
                 <div class="settings-section">
-                    <div class="section-title">💰 CURRENCY</div>
+                    <div class="section-title">Currency</div>
                     <select id="p-currency"></select>
                 </div>
                 
                 <div class="settings-section">
-                    <div class="section-title">🎲 DICE SETTINGS</div>
-                    <div class="section-content">
+                    <div class="section-title">Dice Settings</div>
+                    <div class="input-grid">
                         <div class="input-group">
                             <label class="input-label">Base Bet</label>
                             <input id="p-basebet" value="0.00000100" type="number" step="0.00000001">
                         </div>
                         <div class="input-group">
-                            <label class="input-label">Base Chance Min %</label>
+                            <label class="input-label">Base Chance %</label>
                             <input id="p-bch-min" value="80.0" type="number" step="0.1">
                         </div>
                         <div class="input-group">
-                            <label class="input-label">Base Chance Max %</label>
-                            <input id="p-bch-max" value="95.0" type="number" step="0.1">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Hunt Chance Min %</label>
+                            <label class="input-label">Hunt Chance %</label>
                             <input id="p-hch-min" value="20.0" type="number" step="0.1">
                         </div>
                         <div class="input-group">
-                            <label class="input-label">Hunt Chance Max %</label>
-                            <input id="p-hch-max" value="30.0" type="number" step="0.1">
+                            <label class="input-label">Max Chance %</label>
+                            <input id="p-bch-max" value="95.0" type="number" step="0.1">
                         </div>
                     </div>
                 </div>
                 
                 <div class="settings-section">
-                    <div class="section-title">🎯 LIMBO SETTINGS</div>
-                    <div class="section-content">
+                    <div class="section-title">Limbo Settings</div>
+                    <div class="input-grid">
                         <div class="input-group">
-                            <label class="input-label">Min Payout (x)</label>
+                            <label class="input-label">Min Payout</label>
                             <input id="p-limbo-min-payout" value="1.1" type="number" step="0.1">
                         </div>
                         <div class="input-group">
-                            <label class="input-label">Max Payout (x)</label>
+                            <label class="input-label">Max Payout</label>
                             <input id="p-limbo-max-payout" value="3.0" type="number" step="0.1">
                         </div>
                     </div>
                 </div>
                 
                 <div class="settings-section">
-                    <div class="section-title">⚡ WAGER MODE</div>
-                    <div class="section-content">
+                    <div class="section-title">Wager Mode</div>
+                    <div class="input-grid">
                         <div class="input-group">
-                            <label class="input-label">Wager Chance %</label>
+                            <label class="input-label">Chance %</label>
                             <input id="p-wgr-chance" value="99.0" type="number" step="0.1">
                         </div>
                         <div class="input-group">
-                            <label class="input-label">Wager Divider</label>
+                            <label class="input-label">Divider</label>
                             <input id="p-wgr-div" value="100" type="number" step="1">
                         </div>
                     </div>
                 </div>
                 
                 <div class="settings-section">
-                    <div class="section-title">🔄 LABOUCHERE</div>
-                    <div class="section-content">
-                        <div class="input-group">
-                            <label class="input-label">Base Bet</label>
-                            <input id="p-lab-basebet" value="0.00000100" type="number" step="0.00000001">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Chance %</label>
-                            <input id="p-lab-chance" value="50.0" type="number" step="0.1">
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="settings-section">
-                    <div class="section-title">🛡️ SAFETY</div>
-                    <div class="section-content">
+                    <div class="section-title">Safety</div>
+                    <div class="input-grid">
                         <div class="input-group">
                             <label class="input-label">Min Bet</label>
                             <input id="p-minbet" value="0.00000001" type="number" step="0.00000001">
                         </div>
                         <div class="input-group">
-                            <label class="input-label">Target Profit %</label>
+                            <label class="input-label">Target %</label>
                             <input id="p-target-pct" value="5.0" type="number" step="0.1">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Wager Target (x)</label>
-                            <input id="p-wagertarget" value="200" type="number" step="10">
                         </div>
                     </div>
                 </div>
@@ -1402,7 +1032,7 @@
             <!-- MODES TAB -->
             <div id="tab-modes" class="tab-content">
                 <div class="settings-section">
-                    <div class="section-title">🎮 MODE TOGGLES</div>
+                    <div class="section-title">Mode Toggles</div>
                     <div class="mode-toggle">
                         <span class="mode-label">Base Mode</span>
                         <label class="toggle-switch">
@@ -1418,7 +1048,7 @@
                         </label>
                     </div>
                     <div class="mode-toggle">
-                        <span class="mode-label">Auto Switch Games</span>
+                        <span class="mode-label">Auto Switch</span>
                         <label class="toggle-switch">
                             <input type="checkbox" id="toggle-autoswitch" checked>
                             <span class="toggle-slider"></span>
@@ -1427,36 +1057,25 @@
                 </div>
                 
                 <div class="settings-section">
-                    <div class="section-title">🎮 CURRENT GAME</div>
-                    <div style="text-align: center; padding: 20px; font-size: 24px;" id="current-game-display">
-                        🎲 Dice
-                    </div>
-                    <div style="text-align: center; font-size: 14px; color: #94a3b8;" id="current-settings-display">
-                        Chance: 85.0%
+                    <div class="section-title">Current Game</div>
+                    <div style="text-align: center; padding: 15px; background: #2d3748; border-radius: 6px; border: 1px solid #4a5568;">
+                        <div style="font-size: 14px; font-weight: 700; color: #4299e1;" id="current-game-display">DICE</div>
+                        <div style="font-size: 11px; color: #a0aec0; margin-top: 5px;" id="current-settings-display">Chance: 85.0%</div>
                     </div>
                 </div>
                 
-                <div>
-                    <button id="btn-support" class="btn btn-support">
-                        💬 CONTACT SUPPORT
-                    </button>
+                <div style="margin-top: 15px;">
+                    <button id="btn-support" class="btn btn-support">SUPPORT</button>
                 </div>
             </div>
             
             <!-- LOGS TAB -->
             <div id="tab-logs" class="tab-content">
                 <div class="log-container">
-                    <div style="font-size:10px; color:#94a3b8; margin-bottom:8px; text-align: center; font-weight: 600;">
-                        📝 LIVE BET LOG
-                    </div>
+                    <div class="log-header">Live Bet Log</div>
                     <div id="p-log-body"></div>
                 </div>
-                
-                <div style="margin-top: 15px; text-align: center;">
-                    <button id="clear-logs" class="btn" style="background: #475569; color: white; padding: 10px;">
-                        🗑️ CLEAR LOGS
-                    </button>
-                </div>
+                <button id="clear-logs" class="btn" style="width: 100%;">CLEAR LOGS</button>
             </div>
         `;
         
@@ -1495,72 +1114,47 @@
             bot.selectedCurrency = e.target.value;
             localStorage.setItem('orion_last_coin', bot.selectedCurrency);
             await updateBalanceDisplay();
+            updateStatsDisplay();
         };
 
-        // Start button
+        // Buttons
         document.getElementById("btn-run").onclick = async () => {
             await startBotEngine();
         };
         
-        // Mobile start button
-        document.getElementById("mobile-start").onclick = async () => {
-            await startBotEngine();
-        };
-        
-        // Pause button
-        document.getElementById("btn-pause").onclick = async () => {
+        document.getElementById("btn-pause").onclick = () => {
             bot.isPaused = !bot.isPaused;
-            updateStatus(bot.isPaused ? "⏸️ PAUSED" : "⚡ RUNNING", 
-                       bot.isPaused ? "#f59e0b" : "#10b981");
+            updateStatus(bot.isPaused ? "PAUSED" : "RUNNING", 
+                       bot.isPaused ? "#d69e2e" : "#38a169");
         };
         
-        // Mobile pause button
-        document.getElementById("mobile-pause").onclick = async () => {
-            bot.isPaused = !bot.isPaused;
-            updateStatus(bot.isPaused ? "⏸️ PAUSED" : "⚡ RUNNING", 
-                       bot.isPaused ? "#f59e0b" : "#10b981");
-        };
-        
-        // Stop button
         document.getElementById("btn-stop").onclick = async () => { 
             await stopEngine(); 
-            updateStatus("🛑 STOPPED", "#ef4444"); 
+            updateStatus("STOPPED", "#e53e3e"); 
         };
         
-        // Mobile stop button
-        document.getElementById("mobile-stop").onclick = async () => { 
-            await stopEngine(); 
-            updateStatus("🛑 STOPPED", "#ef4444"); 
+        document.getElementById("btn-report").onclick = async () => {
+            await sendTelegramReport("MANUAL_REPORT");
+            updateStatus("REPORT SENT", "#805ad5");
+            setTimeout(() => {
+                if (bot.isRunning) updateStatus("RUNNING", "#38a169");
+            }, 2000);
         };
         
-        // Support button
         document.getElementById("btn-support").onclick = () => {
             window.open(`https://t.me/${CONFIG.supportContact.replace('@', '')}`, '_blank');
         };
         
-        // Clear logs button
         document.getElementById("clear-logs").onclick = () => {
             const logBox = document.getElementById("p-log-body");
             if (logBox) logBox.innerHTML = "";
         };
         
-        // Collapse button
-        document.getElementById("collapse-btn").onclick = () => {
-            const wrap = document.getElementById("orion-wrap");
-            const isCollapsed = wrap.style.height === '50px';
-            
-            if (isCollapsed) {
-                wrap.style.height = '';
-                wrap.style.overflow = 'auto';
-                document.getElementById("collapse-btn").innerHTML = "➖";
-            } else {
-                wrap.style.height = '50px';
-                wrap.style.overflow = 'hidden';
-                document.getElementById("collapse-btn").innerHTML = "➕";
-            }
+        document.getElementById("close-btn").onclick = () => {
+            document.getElementById("orion-wrap").style.display = 'none';
         };
         
-        // Initialize stats display
+        // Initialize
         updateStatsDisplay();
         API.syncOnce();
     }
@@ -1576,7 +1170,6 @@
         }
 
         function dragMouseDown(e) {
-            e = e || window.event;
             e.preventDefault();
             pos3 = e.clientX;
             pos4 = e.clientY;
@@ -1584,17 +1177,7 @@
             document.onmousemove = elementDrag;
         }
 
-        function dragTouchStart(e) {
-            e.preventDefault();
-            const touch = e.touches[0];
-            pos3 = touch.clientX;
-            pos4 = touch.clientY;
-            document.ontouchend = closeDragElement;
-            document.ontouchmove = elementDragTouch;
-        }
-
         function elementDrag(e) {
-            e = e || window.event;
             e.preventDefault();
             pos1 = pos3 - e.clientX;
             pos2 = pos4 - e.clientY;
@@ -1604,13 +1187,26 @@
             let newTop = element.offsetTop - pos2;
             let newLeft = element.offsetLeft - pos1;
             
-            // Boundary checking
             newTop = Math.max(5, Math.min(window.innerHeight - element.offsetHeight - 5, newTop));
             newLeft = Math.max(5, Math.min(window.innerWidth - element.offsetWidth - 5, newLeft));
             
             element.style.top = newTop + "px";
             element.style.right = "auto";
             element.style.left = newLeft + "px";
+        }
+
+        function closeDragElement() {
+            document.onmouseup = null;
+            document.onmousemove = null;
+        }
+
+        function dragTouchStart(e) {
+            e.preventDefault();
+            const touch = e.touches[0];
+            pos3 = touch.clientX;
+            pos4 = touch.clientY;
+            document.ontouchend = closeDragElementTouch;
+            document.ontouchmove = elementDragTouch;
         }
 
         function elementDragTouch(e) {
@@ -1631,9 +1227,7 @@
             element.style.left = newLeft + "px";
         }
 
-        function closeDragElement() {
-            document.onmouseup = null;
-            document.onmousemove = null;
+        function closeDragElementTouch() {
             document.ontouchend = null;
             document.ontouchmove = null;
         }
@@ -1674,11 +1268,16 @@
             bot.sessionHigh = bot.stats.startBal;
             bot.sessionLow = bot.stats.startBal;
             bot.partialProfit = 0;
+            bot.lastReportTime = Date.now();
+            bot.lastWsUpdate = Date.now();
             
             initLabouchere(getVal("p-lab-basebet"), getVal("p-lab-chance"));
             
             document.getElementById("p-log-body").innerHTML = "";
-            updateStatus("⚡ RUNNING", "#10b981");
+            updateStatus("RUNNING", "#38a169");
+            
+            // Initial stats update
+            updateStatsDisplay();
             
             runLoop();
         }
@@ -1692,34 +1291,26 @@
         
         if (!statsGrid) return;
         
-        const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100) : 0;
-        const profitPct = bot.stats.startBal > 0 ? (bot.stats.profit / bot.stats.startBal * 100) : 0;
+        const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100).toFixed(2) : "0.00";
+        const profitPct = bot.stats.startBal > 0 ? (bot.stats.profit / bot.stats.startBal * 100).toFixed(2) : "0.00";
         const currentDD = bot.stats.startBal - bot.stats.currentBal;
-        const currentDDPct = bot.stats.startBal > 0 ? (currentDD / bot.stats.startBal * 100) : 0;
-        const wagerProgress = bot.stats.startBal > 0 ? Math.min(100, (bot.stats.wagered / (bot.stats.startBal * getVal("p-wagertarget")) * 100)) : 0;
-        const sessionRange = bot.sessionHigh - bot.sessionLow;
-        const sessionRangePct = bot.sessionHigh > 0 ? (sessionRange / bot.sessionHigh * 100) : 0;
+        const currentDDPct = bot.stats.startBal > 0 ? (currentDD / bot.stats.startBal * 100).toFixed(2) : "0.00";
         
         const stats = [
-            { label: "👤 Username", value: bot.stakeUser },
-            { label: "💰 Current Balance", value: bot.stats.currentBal.toFixed(8) },
-            { label: "📈 Profit", value: `${bot.stats.profit.toFixed(8)} (${profitPct.toFixed(2)}%)`, 
-              class: bot.stats.profit >= 0 ? "profit-positive" : "profit-negative" },
-            { label: "📊 Bets (W/L)", value: `${bot.stats.bets} (${bot.stats.wins}/${bot.stats.loss})` },
-            { label: "🎯 Win Rate", value: `${winRate.toFixed(2)}%` },
-            { label: "🔥 Current Streak", value: bot.stats.currentStreak > 0 ? `+${bot.stats.currentStreak}` : bot.stats.currentStreak },
-            { label: "📉 Current Drawdown", value: `${currentDD.toFixed(8)} (${currentDDPct.toFixed(2)}%)` },
-            { label: "💰 Total Wager", value: bot.stats.wagered.toFixed(8) },
-            { label: "⏱️ Running Time", value: getElapsedTime() },
-            { label: "🎮 Game Mode", value: bot.gameMode === "DICE" ? "🎲 Dice" : "🎯 Limbo" },
-            { label: "⚡ Bot Mode", value: bot.mode },
-            { label: bot.gameMode === "DICE" ? "🎯 Current Chance" : "🎯 Current Payout", 
-              value: bot.gameMode === "DICE" ? `${bot.currentChance.toFixed(2)}%` : `${bot.currentPayout.toFixed(2)}x` },
-            { label: "🔄 Lab Items", value: bot.labouchereList.length }
+            { label: "BALANCE", value: bot.stats.currentBal.toFixed(8) },
+            { label: "PROFIT", value: `${bot.stats.profit.toFixed(8)} (${profitPct}%)`, class: bot.stats.profit >= 0 ? "profit-positive" : "profit-negative" },
+            { label: "BETS", value: `${bot.stats.bets} (${bot.stats.wins}W/${bot.stats.loss}L)` },
+            { label: "WIN RATE", value: `${winRate}%` },
+            { label: "WAGERED", value: bot.stats.wagered.toFixed(8) },
+            { label: "TIME", value: getElapsedTime() },
+            { label: "MODE", value: bot.mode },
+            { label: "GAME", value: bot.gameMode },
+            { label: "STREAK", value: bot.stats.currentStreak > 0 ? `+${bot.stats.currentStreak}` : bot.stats.currentStreak },
+            { label: "DRAWDOWN", value: `${currentDD.toFixed(8)} (${currentDDPct}%)` }
         ];
         
         statsGrid.innerHTML = stats.map(stat => `
-            <div class="stat-row">
+            <div class="stat-card">
                 <div class="stat-label">${stat.label}</div>
                 <div class="stat-value ${stat.class || ''}">${stat.value}</div>
             </div>
@@ -1727,17 +1318,13 @@
         
         // Update game display
         if (gameDisplay) {
-            gameDisplay.innerHTML = bot.gameMode === "DICE" ? "🎲 Dice" : "🎯 Limbo";
-            gameDisplay.style.color = bot.gameMode === "DICE" ? "#60a5fa" : "#8b5cf6";
+            gameDisplay.textContent = bot.gameMode;
         }
         
-        // Update settings display
         if (settingsDisplay) {
-            if (bot.gameMode === "DICE") {
-                settingsDisplay.innerHTML = `Chance: ${bot.currentChance.toFixed(2)}%`;
-            } else {
-                settingsDisplay.innerHTML = `Payout: ${bot.currentPayout.toFixed(2)}x`;
-            }
+            settingsDisplay.textContent = bot.gameMode === "DICE" 
+                ? `Chance: ${bot.currentChance.toFixed(2)}%`
+                : `Payout: ${bot.currentPayout.toFixed(2)}x`;
         }
     }
 
@@ -1745,9 +1332,7 @@
     setInterval(() => {
         try {
             if (!document.getElementById("stats-grid")) return;
-            
             updateStatsDisplay();
-            
         } catch (e) {
             console.error("UI update error:", e);
         }
@@ -1758,11 +1343,11 @@
         const isValid = await validateLicense();
         
         if (isValid) {
-            console.log(`✅ License valid for ${currentUser} (${licenseData.tier})`);
+            console.log(`License valid for ${currentUser} (${licenseData.tier})`);
             bot.stakeUser = currentUser;
             createUI();
         } else {
-            console.log("❌ License invalid or user not whitelisted");
+            console.log("License invalid or user not whitelisted");
         }
     }
 
