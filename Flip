@@ -11,7 +11,12 @@
         stats: { profit: 0, wagered: 0, startBal: 0, currentBal: 0, bets: 0, wins: 0, loss: 0, startTime: null, maxDD: 0, maxDDPerc: 0 },
         selectedCurrency: "doge", tg: 0, perStep: 0, baseChance: 0, currentChance: 0,
         singleChanceBets: 0, singleChanceLimit: 0, targetAbs: 0, stopLossAbs: 0,
-        mode: "orion", // orion, wager, labouchere
+        mode: "orion",
+        enabledModes: {
+            orion: true,
+            wager: true,
+            labouchere: true
+        },
         wagerStats: {
             betlose: 0, betsafe: false, basebet: 0, nextbet: 0, 
             chanceNormal: 97, chanceRecovery: 25, chanceMax: 99,
@@ -19,7 +24,7 @@
                 stopwin: false, reset: false, recov: false, mostbet: 0, balhi: 0, balst: 0,
                 maxdrop: 0, profitc: 0, drop: 0
             },
-            xstopwin: [0, 0, 0, 0, 0, 5] // Default values
+            xstopwin: [0, 0, 0, 0, 0, 5]
         },
         labouchere: {
             sequence: [1, 2, 3, 4],
@@ -27,20 +32,20 @@
             targetProfit: 10,
             betAmount: 0,
             nextBetIndex: 0,
-            betOn: 'black', // black/red
+            betOn: 'black',
             recoveryMode: false
         },
         rotationState: {
             initialBalance: 0,
-            wagerLossThreshold: 0.001, // 0.1%
-            severeLossThreshold: 0.01, // 1%
+            wagerLossThreshold: 0.001,
+            severeLossThreshold: 0.01,
             inRecovery: false,
             stepLimit: 10000,
-            stepLimitMultiplier: 1.1 // 10% increase,
+            stepLimitMultiplier: 1.1
         },
         telegramReport: {
             lastReportTime: 0,
-            reportInterval: 5 * 60 * 1000, // 5 minutes
+            reportInterval: 5 * 60 * 1000,
             isReporting: false
         }
     };
@@ -215,7 +220,7 @@
         }
         
         if (ss.recov) {
-            ws.chanceNormal = Math.random() * 10 + 5; // 5-15
+            ws.chanceNormal = Math.random() * 10 + 5;
             ws.nextbet = Math.abs(ss.profitc)/((99/ws.chanceNormal)-1);
             const minbet = parseFloat(document.getElementById("w-minbet")?.value) || 0.00000001;
             if (ws.nextbet < minbet) ws.nextbet = minbet;
@@ -311,30 +316,63 @@
         const currentLoss = (rs.initialBalance - bot.stats.currentBal) / rs.initialBalance;
         
         if (rs.inRecovery && bot.stats.currentBal >= rs.initialBalance) {
-            bot.mode = "wager";
-            rs.inRecovery = false;
-            initWagerMode();
-            updateLogs(0, 0, 0, "ROTATION: Returning to Wager mode (Balance recovered)", true);
-            return true;
+            if (bot.enabledModes.wager) {
+                bot.mode = "wager";
+                rs.inRecovery = false;
+                initWagerMode();
+                updateLogs(0, 0, 0, "ROTATION: Returning to Wager mode (Balance recovered)", true);
+                return true;
+            } else {
+                const nextMode = getNextEnabledMode();
+                bot.mode = nextMode;
+                rs.inRecovery = false;
+                updateLogs(0, 0, 0, `ROTATION: Switching to ${nextMode.toUpperCase()} mode`, true);
+                return true;
+            }
         }
         
         if (bot.mode === "wager" && currentLoss > rs.wagerLossThreshold) {
-            bot.mode = "labouchere";
-            rs.inRecovery = true;
-            initLabouchere();
-            updateLogs(0, 0, 0, `ROTATION: Switching to Labouchere (Loss: ${(currentLoss*100).toFixed(2)}%)`, true);
-            return true;
+            if (bot.enabledModes.labouchere) {
+                bot.mode = "labouchere";
+                rs.inRecovery = true;
+                initLabouchere();
+                updateLogs(0, 0, 0, `ROTATION: Switching to Labouchere (Loss: ${(currentLoss*100).toFixed(2)}%)`, true);
+                return true;
+            } else if (bot.enabledModes.orion) {
+                bot.mode = "orion";
+                rs.inRecovery = true;
+                setNewBaseChance();
+                updateLogs(0, 0, 0, `ROTATION: Switching to Orion (Loss: ${(currentLoss*100).toFixed(2)}%)`, true);
+                return true;
+            }
         }
         
         if (bot.mode === "labouchere" && currentLoss > rs.severeLossThreshold) {
-            bot.mode = "orion";
-            rs.inRecovery = true;
-            setNewBaseChance();
-            updateLogs(0, 0, 0, `ROTATION: Switching to Orion (Severe Loss: ${(currentLoss*100).toFixed(2)}%)`, true);
-            return true;
+            if (bot.enabledModes.orion) {
+                bot.mode = "orion";
+                rs.inRecovery = true;
+                setNewBaseChance();
+                updateLogs(0, 0, 0, `ROTATION: Switching to Orion (Severe Loss: ${(currentLoss*100).toFixed(2)}%)`, true);
+                return true;
+            }
         }
         
         return false;
+    }
+
+    function getNextEnabledMode() {
+        const modes = ['orion', 'wager', 'labouchere'];
+        let currentIndex = modes.indexOf(bot.mode);
+        
+        for (let i = 1; i <= modes.length; i++) {
+            const nextIndex = (currentIndex + i) % modes.length;
+            const nextMode = modes[nextIndex];
+            if (bot.enabledModes[nextMode]) {
+                return nextMode;
+            }
+        }
+        
+        return bot.mode;
     }
 
     function generateTelegramReport() {
@@ -387,6 +425,11 @@
         const initialLoss = bot.rotationState.initialBalance > 0 ? 
             ((bot.rotationState.initialBalance - bot.stats.currentBal) / bot.rotationState.initialBalance * 100).toFixed(2) : 0;
         
+        const enabledModesText = Object.entries(bot.enabledModes)
+            .filter(([_, enabled]) => enabled)
+            .map(([mode]) => mode.toUpperCase())
+            .join(', ');
+        
         const report = `
 🚀 <b>ORION v8.0 - AUTO REPORT</b>
 ⏰ ${now.toLocaleString()}
@@ -395,6 +438,7 @@
 👤 <b>USER:</b> ${bot.stakeUser}
 💰 <b>CURRENCY:</b> ${bot.selectedCurrency.toUpperCase()}
 🎮 <b>MODE:</b> ${bot.mode.toUpperCase()} ${rotationStatus}
+✅ <b>ENABLED MODES:</b> ${enabledModesText || 'NONE'}
 ⏱️ <b>RUNTIME:</b> ${hours}h ${minutes}m ${seconds}s
 ━━━━━━━━━━━━━━━━━━━━
 
@@ -561,9 +605,11 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
                 }
                 else if (bot.mode === "orion" && bot.stats.bets >= bot.rotationState.stepLimit) { 
                     bot.rotationState.stepLimit = Math.round(bot.rotationState.stepLimit * bot.rotationState.stepLimitMultiplier);
-                    bot.mode = "wager";
-                    initWagerMode();
-                    updateLogs(0, 0, 0, `🔄 ORION: Step limit reached. New limit: ${bot.rotationState.stepLimit}. Switching to Wager.`, true);
+                    const nextEnabledMode = getNextEnabledMode();
+                    bot.mode = nextEnabledMode;
+                    if (nextEnabledMode === "wager") initWagerMode();
+                    else if (nextEnabledMode === "labouchere") initLabouchere();
+                    updateLogs(0, 0, 0, `🔄 ORION: Step limit reached. New limit: ${bot.rotationState.stepLimit}. Switching to ${nextEnabledMode.toUpperCase()}.`, true);
                 }
             }
             
@@ -700,56 +746,66 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
             
             :root {
                 --primary: #3b82f6;
+                --primary-dark: #2563eb;
                 --success: #10b981;
+                --success-dark: #059669;
                 --danger: #ef4444;
+                --danger-dark: #dc2626;
                 --warning: #f59e0b;
-                --dark: #111827;
-                --darker: #0f172a;
+                --warning-dark: #d97706;
+                --dark: #0f172a;
+                --darker: #020617;
                 --light: #f8fafc;
                 --gray: #64748b;
+                --gray-dark: #475569;
                 --border: #334155;
-                --card-bg: rgba(30, 41, 59, 0.8);
+                --border-light: #475569;
+                --card-bg: rgba(30, 41, 59, 0.95);
+                --card-bg-hover: rgba(30, 41, 59, 1);
+                --sidebar-bg: rgba(15, 23, 42, 0.98);
             }
             
             #orion-wrap {
                 position: fixed;
                 top: 20px;
                 right: 20px;
-                width: 480px;
-                max-height: 90vh;
+                width: 520px;
+                max-height: 92vh;
                 overflow-y: auto;
-                z-index: 9999;
-                border-radius: 16px;
+                z-index: 999999;
+                border-radius: 20px;
                 font-family: 'Inter', sans-serif;
                 background: var(--darker);
                 color: var(--light);
                 border: 1px solid var(--border);
-                box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3),
-                            0 0 0 1px rgba(255, 255, 255, 0.05);
+                box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5),
+                            0 0 0 1px rgba(255, 255, 255, 0.08),
+                            inset 0 1px 0 rgba(255, 255, 255, 0.05);
                 backdrop-filter: blur(20px);
                 -webkit-backdrop-filter: blur(20px);
             }
             
             #orion-wrap::-webkit-scrollbar {
-                width: 6px;
+                width: 8px;
             }
             
             #orion-wrap::-webkit-scrollbar-track {
-                background: rgba(0,0,0,0.2);
-                border-radius: 3px;
+                background: rgba(0,0,0,0.3);
+                border-radius: 4px;
             }
             
             #orion-wrap::-webkit-scrollbar-thumb {
-                background: var(--primary);
-                border-radius: 3px;
+                background: linear-gradient(to bottom, var(--primary), var(--primary-dark));
+                border-radius: 4px;
             }
             
             .header {
-                padding: 24px;
+                padding: 24px 28px;
                 border-bottom: 1px solid var(--border);
-                background: linear-gradient(135deg, var(--dark) 0%, rgba(59, 130, 246, 0.1) 100%);
+                background: linear-gradient(135deg, var(--dark) 0%, rgba(59, 130, 246, 0.15) 100%);
                 position: relative;
                 overflow: hidden;
+                border-radius: 20px 20px 0 0;
             }
             
             .header::before {
@@ -758,161 +814,294 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
                 top: 0;
                 left: 0;
                 right: 0;
-                height: 1px;
-                background: linear-gradient(90deg, transparent, var(--primary), transparent);
+                height: 2px;
+                background: linear-gradient(90deg, transparent, var(--primary), var(--warning), transparent);
+            }
+            
+            .header-content {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 16px;
             }
             
             .app-title {
-                font-size: 22px;
-                font-weight: 700;
+                font-size: 24px;
+                font-weight: 800;
                 margin-bottom: 4px;
-                background: linear-gradient(135deg, #fff 0%, #93c5fd 100%);
+                background: linear-gradient(135deg, #fff 0%, #93c5fd 50%, #c7d2fe 100%);
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
                 letter-spacing: -0.5px;
+                text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
             }
             
             .app-subtitle {
                 font-size: 12px;
                 color: var(--gray);
-                font-weight: 500;
-                letter-spacing: 0.5px;
+                font-weight: 600;
+                letter-spacing: 1px;
                 text-transform: uppercase;
+                opacity: 0.8;
+            }
+            
+            .version-badge {
+                background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+                color: white;
+                padding: 6px 16px;
+                border-radius: 12px;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 0.5px;
+                box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+                border: 1px solid rgba(255, 255, 255, 0.1);
             }
             
             .user-info-bar {
                 display: flex;
                 align-items: center;
                 justify-content: space-between;
-                margin-top: 12px;
-                padding: 8px 12px;
-                background: rgba(15, 23, 42, 0.6);
-                border-radius: 8px;
+                padding: 12px 16px;
+                background: rgba(15, 23, 42, 0.7);
+                border-radius: 12px;
                 border: 1px solid var(--border);
-                font-size: 11px;
+                font-size: 12px;
+                backdrop-filter: blur(10px);
             }
             
             .user-info-left {
                 display: flex;
                 align-items: center;
-                gap: 8px;
+                gap: 10px;
             }
             
             .user-info-right {
                 display: flex;
                 align-items: center;
-                gap: 8px;
+                gap: 10px;
             }
             
             .user-badge {
-                background: var(--primary);
+                background: linear-gradient(135deg, var(--success), var(--success-dark));
                 color: white;
-                padding: 2px 6px;
-                border-radius: 4px;
-                font-weight: 600;
+                padding: 4px 10px;
+                border-radius: 8px;
+                font-weight: 700;
+                font-size: 11px;
+                border: 1px solid rgba(255, 255, 255, 0.1);
             }
             
             .date-badge {
                 background: rgba(16, 185, 129, 0.2);
                 color: #10b981;
-                padding: 2px 6px;
-                border-radius: 4px;
-                font-weight: 600;
-                border: 1px solid rgba(16, 185, 129, 0.3);
-            }
-            
-            .version-badge {
-                position: absolute;
-                top: 20px;
-                right: 20px;
-                background: var(--primary);
-                color: white;
                 padding: 4px 10px;
-                border-radius: 20px;
-                font-size: 10px;
-                font-weight: 600;
-                letter-spacing: 0.5px;
+                border-radius: 8px;
+                font-weight: 700;
+                border: 1px solid rgba(16, 185, 129, 0.3);
+                font-size: 11px;
             }
             
             .content {
-                padding: 24px;
+                padding: 28px;
             }
             
-            .section {
+            .status-indicator {
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 16px;
+                margin-bottom: 24px;
+            }
+            
+            .status-card {
                 background: var(--card-bg);
-                border-radius: 12px;
-                padding: 20px;
-                margin-bottom: 20px;
+                border-radius: 14px;
+                padding: 18px;
                 border: 1px solid var(--border);
                 transition: all 0.3s ease;
+                position: relative;
+                overflow: hidden;
             }
             
-            .section:hover {
-                border-color: rgba(59, 130, 246, 0.3);
-                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            .status-card:hover {
+                transform: translateY(-2px);
+                border-color: var(--primary);
+                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
             }
             
-            .section-title {
-                font-size: 14px;
+            .status-card::before {
+                content: '';
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                height: 2px;
+                background: linear-gradient(90deg, var(--primary), transparent);
+            }
+            
+            .status-label {
+                font-size: 11px;
+                color: var(--gray);
+                text-transform: uppercase;
+                letter-spacing: 0.8px;
                 font-weight: 600;
-                color: var(--light);
-                margin-bottom: 16px;
+                margin-bottom: 8px;
                 display: flex;
                 align-items: center;
-                gap: 8px;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
+                gap: 6px;
             }
             
-            .section-title::before {
+            .status-label::before {
                 content: '';
-                width: 4px;
-                height: 16px;
+                width: 6px;
+                height: 6px;
                 background: var(--primary);
-                border-radius: 2px;
+                border-radius: 50%;
+                display: block;
             }
             
-            .tabs {
+            .status-value {
+                font-size: 16px;
+                font-weight: 700;
+                color: var(--light);
+                font-family: 'JetBrains Mono', monospace;
+            }
+            
+            .mode-indicator {
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                padding: 6px 14px;
+                border-radius: 10px;
+                font-size: 11px;
+                font-weight: 700;
+                text-transform: uppercase;
+                letter-spacing: 0.8px;
+                background: rgba(15, 23, 42, 0.6);
+                border: 1px solid var(--border);
+            }
+            
+            .mode-dot {
+                width: 10px;
+                height: 10px;
+                border-radius: 50%;
+                animation: pulse 2s infinite;
+            }
+            
+            @keyframes pulse {
+                0%, 100% { 
+                    opacity: 1; 
+                    transform: scale(1);
+                }
+                50% { 
+                    opacity: 0.7; 
+                    transform: scale(1.1);
+                }
+            }
+            
+            .tabs-container {
+                background: rgba(30, 41, 59, 0.4);
+                border-radius: 14px;
+                padding: 6px;
+                margin-bottom: 24px;
+                border: 1px solid var(--border);
                 display: flex;
                 gap: 4px;
-                background: rgba(30, 41, 59, 0.5);
-                padding: 4px;
-                border-radius: 8px;
-                margin-bottom: 20px;
             }
             
             .tab {
                 flex: 1;
-                padding: 10px;
+                padding: 14px;
                 text-align: center;
-                border-radius: 6px;
+                border-radius: 10px;
                 font-size: 12px;
-                font-weight: 600;
+                font-weight: 700;
                 cursor: pointer;
-                transition: all 0.2s ease;
+                transition: all 0.3s ease;
                 color: var(--gray);
                 text-transform: uppercase;
-                letter-spacing: 0.5px;
+                letter-spacing: 0.8px;
+                position: relative;
+                overflow: hidden;
+            }
+            
+            .tab:hover {
+                background: rgba(255, 255, 255, 0.05);
+                color: var(--light);
             }
             
             .tab.active {
-                background: var(--primary);
+                background: linear-gradient(135deg, var(--primary), var(--primary-dark));
                 color: white;
-                box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+                box-shadow: 0 4px 16px rgba(59, 130, 246, 0.4);
+                transform: translateY(-1px);
+            }
+            
+            .tab.active::before {
+                content: '';
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                height: 2px;
+                background: rgba(255, 255, 255, 0.3);
             }
             
             .tab-content {
                 display: none;
+                animation: fadeIn 0.3s ease;
+            }
+            
+            @keyframes fadeIn {
+                from { opacity: 0; transform: translateY(10px); }
+                to { opacity: 1; transform: translateY(0); }
             }
             
             .tab-content.active {
                 display: block;
             }
             
+            .section {
+                background: var(--card-bg);
+                border-radius: 16px;
+                padding: 24px;
+                margin-bottom: 20px;
+                border: 1px solid var(--border);
+                transition: all 0.3s ease;
+                position: relative;
+            }
+            
+            .section:hover {
+                border-color: rgba(59, 130, 246, 0.4);
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+                transform: translateY(-1px);
+            }
+            
+            .section-title {
+                font-size: 14px;
+                font-weight: 700;
+                color: var(--light);
+                margin-bottom: 20px;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                text-transform: uppercase;
+                letter-spacing: 0.8px;
+                padding-bottom: 12px;
+                border-bottom: 2px solid rgba(59, 130, 246, 0.3);
+            }
+            
+            .section-title::before {
+                content: '';
+                width: 6px;
+                height: 20px;
+                background: linear-gradient(to bottom, var(--primary), var(--primary-dark));
+                border-radius: 3px;
+            }
+            
             .grid-2, .grid-3, .grid-4 {
                 display: grid;
-                gap: 12px;
-                margin-bottom: 16px;
+                gap: 16px;
+                margin-bottom: 20px;
             }
             
             .grid-2 { grid-template-columns: 1fr 1fr; }
@@ -920,7 +1109,7 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
             .grid-4 { grid-template-columns: repeat(4, 1fr); }
             
             .input-group {
-                margin-bottom: 12px;
+                margin-bottom: 16px;
             }
             
             .input-label {
@@ -928,48 +1117,115 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
                 font-size: 11px;
                 font-weight: 600;
                 color: var(--gray);
-                margin-bottom: 6px;
+                margin-bottom: 8px;
                 text-transform: uppercase;
-                letter-spacing: 0.5px;
+                letter-spacing: 0.8px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            
+            .input-label-text {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+            
+            .input-label-text::before {
+                content: '•';
+                color: var(--primary);
+                font-size: 16px;
             }
             
             .input-field {
                 width: 100%;
-                background: rgba(15, 23, 42, 0.6);
-                border: 1px solid var(--border);
-                padding: 10px 12px;
-                border-radius: 8px;
+                background: rgba(15, 23, 42, 0.7);
+                border: 2px solid var(--border);
+                padding: 14px 16px;
+                border-radius: 10px;
                 color: var(--light);
                 font-size: 13px;
                 font-family: 'JetBrains Mono', monospace;
-                transition: all 0.2s ease;
+                transition: all 0.3s ease;
+                font-weight: 500;
             }
             
             .input-field:focus {
                 outline: none;
                 border-color: var(--primary);
+                background: rgba(59, 130, 246, 0.1);
                 box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+                transform: translateY(-1px);
             }
             
             .input-field::placeholder {
                 color: var(--gray);
+                opacity: 0.6;
+            }
+            
+            .select-field {
+                width: 100%;
+                background: rgba(15, 23, 42, 0.7);
+                border: 2px solid var(--border);
+                padding: 14px 16px;
+                border-radius: 10px;
+                color: var(--light);
+                font-size: 13px;
+                font-family: 'Inter', sans-serif;
+                transition: all 0.3s ease;
+                font-weight: 500;
+                cursor: pointer;
+                appearance: none;
+                background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+                background-repeat: no-repeat;
+                background-position: right 16px center;
+                background-size: 16px;
+                padding-right: 40px;
+            }
+            
+            .select-field:focus {
+                outline: none;
+                border-color: var(--primary);
+                background-color: rgba(59, 130, 246, 0.1);
+                box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+                transform: translateY(-1px);
+            }
+            
+            .info-text {
+                font-size: 11px;
+                color: var(--gray);
+                margin-top: 6px;
+                line-height: 1.4;
+                font-style: italic;
+                padding-left: 12px;
+                border-left: 2px solid rgba(59, 130, 246, 0.3);
             }
             
             .logs-container {
-                background: rgba(15, 23, 42, 0.6);
+                background: rgba(15, 23, 42, 0.7);
                 border: 1px solid var(--border);
-                border-radius: 8px;
-                padding: 16px;
-                height: 150px;
+                border-radius: 12px;
+                padding: 20px;
+                height: 160px;
                 overflow-y: auto;
                 margin-bottom: 20px;
+                backdrop-filter: blur(10px);
             }
             
             .log-entry {
-                padding: 8px 0;
+                padding: 10px 0;
                 border-bottom: 1px solid rgba(255, 255, 255, 0.05);
                 font-size: 11px;
                 font-family: 'JetBrains Mono', monospace;
+                transition: all 0.2s ease;
+            }
+            
+            .log-entry:hover {
+                background: rgba(255, 255, 255, 0.02);
+                padding-left: 8px;
+                padding-right: 8px;
+                margin: 0 -8px;
+                border-radius: 6px;
             }
             
             .log-entry:first-child {
@@ -978,179 +1234,407 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
             
             .stats-grid {
                 display: grid;
-                grid-template-columns: repeat(2, 1fr);
-                gap: 12px;
-                margin-bottom: 20px;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 16px;
+                margin-bottom: 24px;
             }
             
-            .stat-item {
-                background: rgba(15, 23, 42, 0.6);
-                border-radius: 8px;
-                padding: 12px;
+            .stat-card {
+                background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.9));
+                border-radius: 12px;
+                padding: 18px;
                 border: 1px solid var(--border);
+                transition: all 0.3s ease;
+            }
+            
+            .stat-card:hover {
+                border-color: var(--primary);
+                transform: translateY(-2px);
+                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
             }
             
             .stat-label {
                 font-size: 10px;
                 color: var(--gray);
                 text-transform: uppercase;
-                letter-spacing: 0.5px;
-                margin-bottom: 4px;
+                letter-spacing: 0.8px;
+                margin-bottom: 8px;
+                font-weight: 600;
             }
             
             .stat-value {
-                font-size: 14px;
-                font-weight: 600;
+                font-size: 16px;
+                font-weight: 700;
                 color: var(--light);
                 font-family: 'JetBrains Mono', monospace;
+                margin-bottom: 4px;
+            }
+            
+            .stat-subvalue {
+                font-size: 11px;
+                color: var(--gray);
+                font-weight: 500;
             }
             
             .button-group {
                 display: flex;
-                gap: 12px;
-                margin-top: 24px;
+                gap: 16px;
+                margin-top: 28px;
             }
             
             .btn {
                 flex: 1;
-                padding: 14px;
+                padding: 18px;
                 border: none;
-                border-radius: 8px;
+                border-radius: 12px;
                 font-size: 13px;
-                font-weight: 600;
+                font-weight: 700;
                 cursor: pointer;
-                transition: all 0.2s ease;
+                transition: all 0.3s ease;
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                gap: 8px;
-                letter-spacing: 0.5px;
+                gap: 10px;
+                letter-spacing: 0.8px;
                 text-transform: uppercase;
+                position: relative;
+                overflow: hidden;
+            }
+            
+            .btn::before {
+                content: '';
+                position: absolute;
+                top: 0;
+                left: -100%;
+                width: 100%;
+                height: 100%;
+                background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+                transition: left 0.5s ease;
+            }
+            
+            .btn:hover::before {
+                left: 100%;
             }
             
             .btn-primary {
-                background: var(--primary);
+                background: linear-gradient(135deg, var(--primary), var(--primary-dark));
                 color: white;
+                box-shadow: 0 4px 16px rgba(59, 130, 246, 0.4);
             }
             
             .btn-primary:hover {
-                background: #2563eb;
-                transform: translateY(-1px);
-                box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
-            }
-            
-            .btn-danger {
-                background: var(--danger);
-                color: white;
-            }
-            
-            .btn-danger:hover {
-                background: #dc2626;
-                transform: translateY(-1px);
-                box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+                transform: translateY(-2px);
+                box-shadow: 0 8px 24px rgba(59, 130, 246, 0.5);
             }
             
             .btn-success {
-                background: var(--success);
+                background: linear-gradient(135deg, var(--success), var(--success-dark));
                 color: white;
+                box-shadow: 0 4px 16px rgba(16, 185, 129, 0.4);
             }
             
-            .mode-indicator {
-                display: inline-flex;
-                align-items: center;
-                gap: 6px;
-                padding: 4px 10px;
-                border-radius: 20px;
-                font-size: 10px;
-                font-weight: 600;
+            .btn-success:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 8px 24px rgba(16, 185, 129, 0.5);
+            }
+            
+            .btn-danger {
+                background: linear-gradient(135deg, var(--danger), var(--danger-dark));
+                color: white;
+                box-shadow: 0 4px 16px rgba(239, 68, 68, 0.4);
+            }
+            
+            .btn-danger:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 8px 24px rgba(239, 68, 68, 0.5);
+            }
+            
+            .btn-warning {
+                background: linear-gradient(135deg, var(--warning), var(--warning-dark));
+                color: white;
+                box-shadow: 0 4px 16px rgba(245, 158, 11, 0.4);
+                width: 100%;
+                margin-top: 16px;
+            }
+            
+            .btn-warning:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 8px 24px rgba(245, 158, 11, 0.5);
+            }
+            
+            .wager-settings-grid {
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 16px;
+                margin-bottom: 20px;
+            }
+            
+            .wager-setting-card {
+                background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.9));
+                border: 1px solid var(--border);
+                border-radius: 12px;
+                padding: 20px;
+                text-align: center;
+                transition: all 0.3s ease;
+            }
+            
+            .wager-setting-card:hover {
+                border-color: var(--primary);
+                transform: translateY(-2px);
+                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+            }
+            
+            .wager-setting-label {
+                font-size: 11px;
+                color: var(--gray);
                 text-transform: uppercase;
-                letter-spacing: 0.5px;
+                letter-spacing: 0.8px;
+                margin-bottom: 12px;
+                display: block;
+                line-height: 1.3;
+                font-weight: 600;
             }
             
-            .mode-dot {
-                width: 8px;
-                height: 8px;
-                border-radius: 50%;
-                animation: pulse 2s infinite;
+            .wager-setting-value {
+                font-size: 16px;
+                font-weight: 700;
+                color: var(--light);
+                font-family: 'JetBrains Mono', monospace;
+                width: 100%;
+                background: rgba(15, 23, 42, 0.8);
+                border: 2px solid var(--border);
+                padding: 14px;
+                border-radius: 10px;
+                text-align: center;
+                transition: all 0.3s ease;
             }
             
-            @keyframes pulse {
-                0%, 100% { opacity: 1; }
-                50% { opacity: 0.5; }
+            .wager-setting-value:focus {
+                outline: none;
+                border-color: var(--primary);
+                background: rgba(59, 130, 246, 0.1);
+                box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+                transform: translateY(-1px);
+            }
+            
+            .current-value {
+                font-size: 11px;
+                color: var(--primary);
+                margin-top: 8px;
+                display: block;
+                font-weight: 600;
+            }
+            
+            .xstopwin-grid {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 16px;
+                margin-bottom: 24px;
+            }
+            
+            .xstopwin-card {
+                background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.9));
+                border: 1px solid var(--border);
+                border-radius: 12px;
+                padding: 20px;
+                text-align: center;
+                transition: all 0.3s ease;
+            }
+            
+            .xstopwin-card:hover {
+                border-color: var(--primary);
+                transform: translateY(-2px);
+                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+            }
+            
+            .xstopwin-label {
+                font-size: 10px;
+                color: var(--gray);
+                text-transform: uppercase;
+                letter-spacing: 0.8px;
+                margin-bottom: 10px;
+                display: block;
+                line-height: 1.3;
+                font-weight: 600;
+            }
+            
+            .xstopwin-value {
+                font-size: 14px;
+                font-weight: 700;
+                color: var(--light);
+                font-family: 'JetBrains Mono', monospace;
+                width: 100%;
+                background: rgba(15, 23, 42, 0.8);
+                border: 2px solid var(--border);
+                padding: 12px;
+                border-radius: 10px;
+                text-align: center;
+                transition: all 0.3s ease;
+            }
+            
+            .xstopwin-value:focus {
+                outline: none;
+                border-color: var(--primary);
+                background: rgba(59, 130, 246, 0.1);
+            }
+            
+            .xstopwin-current {
+                font-size: 10px;
+                color: var(--primary);
+                margin-top: 8px;
+                display: block;
+                font-weight: 600;
+            }
+            
+            .wager-stats-grid {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 16px;
+                margin-bottom: 20px;
+            }
+            
+            .wager-stat-card {
+                background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.9));
+                border: 1px solid var(--border);
+                border-radius: 12px;
+                padding: 18px;
+            }
+            
+            .wager-stat-label {
+                font-size: 10px;
+                color: var(--gray);
+                text-transform: uppercase;
+                letter-spacing: 0.8px;
+                margin-bottom: 8px;
+                font-weight: 600;
+            }
+            
+            .wager-stat-value {
+                font-size: 14px;
+                font-weight: 700;
+                color: var(--light);
+                font-family: 'JetBrains Mono', monospace;
+                margin-bottom: 12px;
+            }
+            
+            .progress-container {
+                margin-top: 8px;
+            }
+            
+            .progress-label {
+                display: flex;
+                justify-content: space-between;
+                font-size: 10px;
+                color: var(--gray);
+                margin-bottom: 4px;
+                font-weight: 500;
             }
             
             .progress-bar {
-                height: 4px;
+                height: 6px;
                 background: rgba(255, 255, 255, 0.1);
-                border-radius: 2px;
-                margin-top: 4px;
+                border-radius: 3px;
                 overflow: hidden;
+                position: relative;
             }
             
             .progress-fill {
                 height: 100%;
-                border-radius: 2px;
-                transition: width 0.3s ease;
+                border-radius: 3px;
+                transition: width 0.3s ease, background-color 0.3s ease;
+                position: relative;
+                overflow: hidden;
+            }
+            
+            .progress-fill::after {
+                content: '';
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+                animation: shimmer 2s infinite;
+            }
+            
+            @keyframes shimmer {
+                0% { transform: translateX(-100%); }
+                100% { transform: translateX(100%); }
+            }
+            
+            .labouchere-input-group {
+                margin-bottom: 20px;
+            }
+            
+            .labouchere-input-label {
+                display: block;
+                font-size: 11px;
+                font-weight: 600;
+                color: var(--gray);
+                margin-bottom: 8px;
+                text-transform: uppercase;
+                letter-spacing: 0.8px;
+            }
+            
+            .labouchere-input-field {
+                width: 100%;
+                background: rgba(15, 23, 42, 0.7);
+                border: 2px solid var(--border);
+                padding: 14px 16px;
+                border-radius: 10px;
+                color: var(--light);
+                font-size: 13px;
+                font-family: 'JetBrains Mono', monospace;
+                transition: all 0.3s ease;
+            }
+            
+            .labouchere-input-field:focus {
+                outline: none;
+                border-color: var(--primary);
+                background: rgba(59, 130, 246, 0.1);
+                box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
             }
             
             .sequence-visual {
                 display: flex;
-                gap: 4px;
+                gap: 8px;
                 flex-wrap: wrap;
-                margin-top: 8px;
+                margin-top: 12px;
+                padding: 16px;
+                background: rgba(15, 23, 42, 0.5);
+                border-radius: 10px;
+                border: 1px solid var(--border);
+                min-height: 60px;
+                align-items: center;
+                justify-content: center;
             }
             
             .sequence-number {
                 background: rgba(59, 130, 246, 0.2);
-                border: 1px solid rgba(59, 130, 246, 0.3);
-                padding: 4px 8px;
-                border-radius: 4px;
-                font-size: 10px;
-                font-family: 'JetBrains Mono', monospace;
-                color: var(--primary);
-            }
-            
-            .divider {
-                height: 1px;
-                background: linear-gradient(90deg, transparent, var(--border), transparent);
-                margin: 20px 0;
-            }
-            
-            .info-text {
-                font-size: 11px;
-                color: var(--gray);
-                font-style: italic;
-                margin-top: 8px;
-            }
-            
-            .status-indicator {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                padding: 12px;
-                background: rgba(15, 23, 42, 0.6);
+                border: 2px solid rgba(59, 130, 246, 0.3);
+                padding: 8px 12px;
                 border-radius: 8px;
-                margin-bottom: 20px;
-                border: 1px solid var(--border);
-            }
-            
-            .status-text {
                 font-size: 12px;
-                font-weight: 600;
-                color: var(--light);
-            }
-            
-            .status-value {
-                font-size: 12px;
-                font-weight: 600;
-                color: var(--primary);
                 font-family: 'JetBrains Mono', monospace;
+                color: var(--primary);
+                font-weight: 600;
+                min-width: 40px;
+                text-align: center;
+                transition: all 0.3s ease;
+            }
+            
+            .sequence-number.active {
+                background: linear-gradient(135deg, #ff3366, #ff6b9d);
+                color: white;
+                border-color: #ff3366;
+                transform: scale(1.1);
+                box-shadow: 0 4px 12px rgba(255, 51, 102, 0.3);
             }
             
             .toggle-switch {
                 position: relative;
-                width: 44px;
-                height: 24px;
+                width: 52px;
+                height: 28px;
             }
             
             .toggle-switch input {
@@ -1174,8 +1658,8 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
             .toggle-slider:before {
                 position: absolute;
                 content: "";
-                height: 16px;
-                width: 16px;
+                height: 20px;
+                width: 20px;
                 left: 4px;
                 bottom: 4px;
                 background-color: white;
@@ -1184,17 +1668,30 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
             }
             
             input:checked + .toggle-slider {
-                background-color: var(--primary);
+                background: linear-gradient(135deg, var(--success), var(--success-dark));
             }
             
             input:checked + .toggle-slider:before {
-                transform: translateX(20px);
+                transform: translateX(24px);
+            }
+            
+            .toggle-group {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                margin-bottom: 16px;
+            }
+            
+            .toggle-label {
+                font-size: 12px;
+                font-weight: 600;
+                color: var(--light);
             }
             
             .radio-group {
                 display: flex;
                 gap: 12px;
-                margin-bottom: 16px;
+                margin-bottom: 20px;
             }
             
             .radio-item {
@@ -1207,316 +1704,330 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
             
             .radio-label {
                 display: block;
-                padding: 12px;
+                padding: 16px;
                 text-align: center;
                 background: rgba(15, 23, 42, 0.6);
-                border: 1px solid var(--border);
-                border-radius: 8px;
+                border: 2px solid var(--border);
+                border-radius: 10px;
                 cursor: pointer;
                 font-size: 12px;
                 font-weight: 600;
                 color: var(--gray);
-                transition: all 0.2s ease;
+                transition: all 0.3s ease;
             }
             
             .radio-item input[type="radio"]:checked + .radio-label {
-                background: var(--primary);
+                background: linear-gradient(135deg, var(--primary), var(--primary-dark));
                 color: white;
                 border-color: var(--primary);
+                box-shadow: 0 4px 16px rgba(59, 130, 246, 0.4);
+                transform: translateY(-1px);
             }
             
-            /* PERBAIKAN: Lebarkan wager settings */
-            .wager-settings-grid {
-                display: grid;
-                grid-template-columns: repeat(3, 1fr);
-                gap: 15px;
-                margin-bottom: 16px;
-            }
-            
-            .wager-setting-item {
+            .mode-selector {
                 background: rgba(15, 23, 42, 0.6);
                 border: 1px solid var(--border);
-                border-radius: 10px;
-                padding: 15px;
-                text-align: center;
-                display: flex;
-                flex-direction: column;
-                min-height: 110px;
-                justify-content: space-between;
-            }
-            
-            .wager-setting-label {
-                font-size: 11px;
-                color: var(--gray);
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-                margin-bottom: 12px;
-                display: block;
-                line-height: 1.3;
-            }
-            
-            .wager-setting-value {
-                font-size: 14px;
-                font-weight: 600;
-                color: var(--light);
-                font-family: 'JetBrains Mono', monospace;
-                width: 100%;
-                background: rgba(30, 41, 59, 0.8);
-                border: 2px solid var(--border);
-                padding: 10px;
-                border-radius: 8px;
-                text-align: center;
-                transition: all 0.2s ease;
-                margin-top: auto;
-            }
-            
-            .wager-setting-value:focus {
-                outline: none;
-                border-color: var(--primary);
-                background: rgba(59, 130, 246, 0.1);
-                box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-            }
-            
-            .xstopwin-grid {
-                display: grid;
-                grid-template-columns: repeat(2, 1fr);
-                gap: 15px;
+                border-radius: 12px;
+                padding: 20px;
                 margin-bottom: 20px;
             }
             
-            .xstopwin-item {
-                background: rgba(15, 23, 42, 0.6);
-                border: 1px solid var(--border);
-                border-radius: 10px;
-                padding: 15px;
-                text-align: center;
-            }
-            
-            .xstopwin-label {
-                font-size: 10px;
-                color: var(--gray);
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-                margin-bottom: 10px;
-                display: block;
-                line-height: 1.3;
-            }
-            
-            .xstopwin-value {
-                font-size: 13px;
-                font-weight: 600;
-                color: var(--light);
-                font-family: 'JetBrains Mono', monospace;
-                width: 100%;
-                background: rgba(30, 41, 59, 0.8);
-                border: 2px solid var(--border);
-                padding: 8px;
-                border-radius: 8px;
-                text-align: center;
-                transition: all 0.2s ease;
-            }
-            
-            .xstopwin-value:focus {
-                outline: none;
-                border-color: var(--primary);
-                background: rgba(59, 130, 246, 0.1);
-            }
-            
-            .xstopwin-current {
-                font-size: 9px;
-                color: var(--primary);
-                margin-top: 6px;
-                display: block;
-                font-weight: 500;
-            }
-            
-            .wager-stats-grid {
-                display: grid;
-                grid-template-columns: repeat(2, 1fr);
-                gap: 12px;
-                margin-bottom: 16px;
-            }
-            
-            .wager-stat-item {
-                background: rgba(15, 23, 42, 0.6);
-                border: 1px solid var(--border);
-                border-radius: 8px;
-                padding: 12px;
-            }
-            
-            .wager-stat-label {
-                font-size: 10px;
-                color: var(--gray);
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-                margin-bottom: 4px;
-            }
-            
-            .wager-stat-value {
+            .mode-selector-title {
                 font-size: 12px;
                 font-weight: 600;
-                color: var(--light);
-                font-family: 'JetBrains Mono', monospace;
-            }
-            
-            .progress-container {
-                margin-top: 8px;
-            }
-            
-            .progress-label {
-                display: flex;
-                justify-content: space-between;
-                font-size: 9px;
                 color: var(--gray);
-                margin-bottom: 2px;
-            }
-            
-            .step-limit-display {
+                margin-bottom: 16px;
+                text-transform: uppercase;
+                letter-spacing: 0.8px;
                 display: flex;
                 align-items: center;
-                justify-content: space-between;
-                background: rgba(15, 23, 42, 0.6);
-                padding: 8px 12px;
-                border-radius: 6px;
-                border: 1px solid var(--border);
-                margin-bottom: 12px;
+                gap: 8px;
             }
             
-            .step-limit-label {
-                font-size: 11px;
-                color: var(--gray);
+            .mode-selector-grid {
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 12px;
             }
             
-            .step-limit-value {
-                font-size: 12px;
-                font-weight: 600;
-                color: var(--primary);
-                font-family: 'JetBrains Mono', monospace;
+            .mode-selector-item {
+                text-align: center;
             }
             
-            .rotation-info {
-                background: rgba(59, 130, 246, 0.1);
-                border: 1px solid rgba(59, 130, 246, 0.3);
-                border-radius: 8px;
-                padding: 12px;
-                margin-top: 16px;
+            .mode-selector-checkbox {
+                display: none;
             }
             
-            .rotation-info-title {
-                font-size: 11px;
-                font-weight: 600;
-                color: var(--primary);
-                margin-bottom: 6px;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-            }
-            
-            .rotation-info-text {
-                font-size: 10px;
-                color: var(--gray);
-                line-height: 1.4;
-            }
-            
-            .wager-section {
-                margin-bottom: 20px;
-                padding-bottom: 20px;
-                border-bottom: 1px solid var(--border);
-            }
-            
-            .wager-section:last-child {
-                border-bottom: none;
-            }
-            
-            .telegram-section {
-                background: rgba(59, 130, 246, 0.05);
-                border: 1px solid rgba(59, 130, 246, 0.2);
-                border-radius: 8px;
-                padding: 15px;
-                margin-top: 20px;
-            }
-            
-            .btn-warning {
-                background: var(--warning);
-                color: white;
-            }
-            
-            .btn-warning:hover {
-                background: #d97706;
-                transform: translateY(-1px);
-                box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
-            }
-            
-            /* PERBAIKAN: Lebarkan input target profit di Labouchere */
-            .labouchere-input-group {
-                margin-bottom: 12px;
-            }
-            
-            .labouchere-input-label {
+            .mode-selector-label {
                 display: block;
+                padding: 14px;
+                background: rgba(30, 41, 59, 0.6);
+                border: 2px solid var(--border);
+                border-radius: 10px;
+                cursor: pointer;
+                transition: all 0.3s ease;
                 font-size: 11px;
                 font-weight: 600;
                 color: var(--gray);
-                margin-bottom: 6px;
                 text-transform: uppercase;
-                letter-spacing: 0.5px;
+                letter-spacing: 0.8px;
             }
             
-            .labouchere-input-field {
-                width: 100%;
-                background: rgba(15, 23, 42, 0.6);
-                border: 2px solid var(--border);
-                padding: 12px 14px;
-                border-radius: 8px;
-                color: var(--light);
-                font-size: 13px;
-                font-family: 'JetBrains Mono', monospace;
-                transition: all 0.2s ease;
+            .mode-selector-checkbox:checked + .mode-selector-label {
+                background: linear-gradient(135deg, var(--success), var(--success-dark));
+                color: white;
+                border-color: var(--success);
+                box-shadow: 0 4px 16px rgba(16, 185, 129, 0.4);
+                transform: translateY(-2px);
             }
             
-            .labouchere-input-field:focus {
-                outline: none;
-                border-color: var(--primary);
-                background: rgba(59, 130, 246, 0.1);
-                box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+            .mode-selector-label.orion {
+                border-color: rgba(0, 204, 255, 0.3);
             }
             
-            .telegram-info-box {
-                background: rgba(15, 23, 42, 0.6);
-                border: 1px solid var(--border);
-                border-radius: 8px;
-                padding: 15px;
-                margin-bottom: 15px;
-                font-size: 11px;
-                color: var(--gray);
-                line-height: 1.4;
+            .mode-selector-label.wager {
+                border-color: rgba(16, 185, 129, 0.3);
+            }
+            
+            .mode-selector-label.labouchere {
+                border-color: rgba(139, 92, 246, 0.3);
+            }
+            
+            .mode-selector-checkbox:checked + .mode-selector-label.orion {
+                background: linear-gradient(135deg, #00ccff, #0099cc);
+                border-color: #00ccff;
+            }
+            
+            .mode-selector-checkbox:checked + .mode-selector-label.wager {
+                background: linear-gradient(135deg, #10b981, #059669);
+                border-color: #10b981;
+            }
+            
+            .mode-selector-checkbox:checked + .mode-selector-label.labouchere {
+                background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+                border-color: #8b5cf6;
+            }
+            
+            .telegram-info-card {
+                background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.9));
+                border: 1px solid rgba(59, 130, 246, 0.3);
+                border-radius: 12px;
+                padding: 20px;
+                margin-bottom: 20px;
             }
             
             .telegram-info-item {
                 display: flex;
                 justify-content: space-between;
-                margin-bottom: 6px;
-                padding-bottom: 6px;
+                align-items: center;
+                margin-bottom: 12px;
+                padding-bottom: 12px;
                 border-bottom: 1px solid rgba(255, 255, 255, 0.05);
             }
             
             .telegram-info-item:last-child {
                 margin-bottom: 0;
                 border-bottom: none;
+                padding-bottom: 0;
             }
             
             .telegram-info-label {
+                font-size: 11px;
                 color: var(--gray);
-                font-weight: 500;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.8px;
             }
             
             .telegram-info-value {
+                font-size: 11px;
                 color: var(--light);
                 font-family: 'JetBrains Mono', monospace;
-                font-size: 10px;
                 background: rgba(59, 130, 246, 0.1);
-                padding: 2px 6px;
-                border-radius: 4px;
+                padding: 6px 12px;
+                border-radius: 6px;
                 border: 1px solid rgba(59, 130, 246, 0.2);
+                font-weight: 500;
+            }
+            
+            .telegram-actions {
+                display: flex;
+                gap: 12px;
+                margin-top: 20px;
+            }
+            
+            .telegram-btn {
+                flex: 1;
+                padding: 14px;
+                background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+                border: none;
+                border-radius: 10px;
+                color: white;
+                font-size: 11px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.3s ease;
+                text-transform: uppercase;
+                letter-spacing: 0.8px;
+            }
+            
+            .telegram-btn:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 8px 24px rgba(59, 130, 246, 0.4);
+            }
+            
+            .telegram-btn.test {
+                background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+            }
+            
+            .telegram-btn.send {
+                background: linear-gradient(135deg, var(--success), var(--success-dark));
+            }
+            
+            .rotation-info {
+                background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(16, 185, 129, 0.1));
+                border: 1px solid rgba(59, 130, 246, 0.3);
+                border-radius: 12px;
+                padding: 20px;
+                margin-top: 20px;
+            }
+            
+            .rotation-info-title {
+                font-size: 12px;
+                font-weight: 700;
+                color: var(--primary);
+                margin-bottom: 10px;
+                text-transform: uppercase;
+                letter-spacing: 0.8px;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            
+            .rotation-info-title::before {
+                content: '⏳';
+                font-size: 14px;
+            }
+            
+            .rotation-info-text {
+                font-size: 11px;
+                color: var(--gray);
+                line-height: 1.6;
+            }
+            
+            .rotation-info-text strong {
+                color: var(--light);
+                font-weight: 600;
+            }
+            
+            .divider {
+                height: 1px;
+                background: linear-gradient(90deg, transparent, var(--border), transparent);
+                margin: 24px 0;
+                width: 100%;
+            }
+            
+            .step-limit-display {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                background: rgba(15, 23, 42, 0.7);
+                padding: 16px;
+                border-radius: 12px;
+                border: 1px solid var(--border);
+                margin-bottom: 20px;
+            }
+            
+            .step-limit-label {
+                font-size: 12px;
+                color: var(--gray);
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.8px;
+            }
+            
+            .step-limit-value {
+                font-size: 16px;
+                font-weight: 700;
+                color: var(--primary);
+                font-family: 'JetBrains Mono', monospace;
+                background: rgba(59, 130, 246, 0.1);
+                padding: 8px 16px;
+                border-radius: 8px;
+                border: 1px solid rgba(59, 130, 246, 0.3);
+            }
+            
+            .wager-section {
+                margin-bottom: 24px;
+                padding-bottom: 24px;
+                border-bottom: 1px solid var(--border);
+            }
+            
+            .wager-section:last-child {
+                border-bottom: none;
+                padding-bottom: 0;
+                margin-bottom: 0;
+            }
+            
+            .account-info {
+                background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.9));
+                border: 1px solid var(--border);
+                border-radius: 12px;
+                padding: 20px;
+                margin-bottom: 20px;
+            }
+            
+            .account-info-item {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 12px;
+            }
+            
+            .account-info-item:last-child {
+                margin-bottom: 0;
+            }
+            
+            .account-info-label {
+                font-size: 11px;
+                color: var(--gray);
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.8px;
+            }
+            
+            .account-info-value {
+                font-size: 12px;
+                font-weight: 700;
+                color: var(--light);
+                font-family: 'JetBrains Mono', monospace;
+            }
+            
+            @media (max-width: 600px) {
+                #orion-wrap {
+                    width: 95%;
+                    right: 2.5%;
+                }
+                
+                .grid-2, .grid-3, .grid-4 {
+                    grid-template-columns: 1fr;
+                }
+                
+                .status-indicator {
+                    grid-template-columns: 1fr;
+                }
+                
+                .wager-settings-grid {
+                    grid-template-columns: 1fr;
+                }
+                
+                .xstopwin-grid {
+                    grid-template-columns: 1fr;
+                }
+                
+                .stats-grid {
+                    grid-template-columns: repeat(2, 1fr);
+                }
             }
         `;
         document.head.appendChild(s);
@@ -1525,17 +2036,21 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
         d.id = "orion-wrap";
         d.innerHTML = `
             <div class="header">
-                <div class="version-badge">v8.0 PRO</div>
-                <div class="app-title">ORION PROFESSIONAL</div>
-                <div class="app-subtitle">Multi-Strategy Betting System</div>
+                <div class="header-content">
+                    <div>
+                        <div class="app-title">ORION PROFESSIONAL</div>
+                        <div class="app-subtitle">Multi-Strategy Betting System</div>
+                    </div>
+                    <div class="version-badge">v8.0 PRO</div>
+                </div>
                 
                 <div class="user-info-bar">
                     <div class="user-info-left">
-                        <span style="color: var(--gray);">User:</span>
+                        <span style="color: var(--gray);">USER:</span>
                         <span class="user-badge" id="user-name">${bot.stakeUser}</span>
                     </div>
                     <div class="user-info-right">
-                        <span style="color: var(--gray);">Expires:</span>
+                        <span style="color: var(--gray);">EXPIRES:</span>
                         <span class="date-badge" id="expiration-date">Loading...</span>
                     </div>
                 </div>
@@ -1543,33 +2058,33 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
             
             <div class="content">
                 <div class="status-indicator">
-                    <div>
-                        <div class="status-text">Current Mode</div>
+                    <div class="status-card">
+                        <div class="status-label">Current Mode</div>
                         <div class="mode-indicator" id="mode-indicator">
                             <div class="mode-dot" style="background: ${getModeColor()}"></div>
-                            <span id="current-mode">ORION</span>
+                            <span id="current-mode">${bot.mode.toUpperCase()}</span>
                         </div>
                     </div>
-                    <div>
-                        <div class="status-text">Step Limit</div>
+                    <div class="status-card">
+                        <div class="status-label">Step Limit</div>
                         <div class="status-value" id="step-limit-display">${bot.rotationState.stepLimit}</div>
                     </div>
-                    <div>
-                        <div class="status-text">Rotation Status</div>
-                        <div class="status-value" id="rotation-status">Normal</div>
+                    <div class="status-card">
+                        <div class="status-label">Rotation Status</div>
+                        <div class="status-value" id="rotation-status" style="color: ${bot.rotationState.inRecovery ? '#f59e0b' : '#10b981'}">${bot.rotationState.inRecovery ? 'RECOVERY' : 'NORMAL'}</div>
                     </div>
                 </div>
                 
-                <div class="tabs">
-                    <div class="tab active" data-tab="orion">Orion</div>
-                    <div class="tab" data-tab="wager">Wager Mode</div>
-                    <div class="tab" data-tab="labouchere">Labouchere</div>
-                    <div class="tab" data-tab="settings">Settings</div>
+                <div class="tabs-container">
+                    <div class="tab active" data-tab="orion">⚡ Orion</div>
+                    <div class="tab" data-tab="wager">🎯 Wager</div>
+                    <div class="tab" data-tab="labouchere">🎲 Labouchere</div>
+                    <div class="tab" data-tab="settings">⚙️ Settings</div>
                 </div>
                 
                 <div class="tab-content active" id="tab-orion">
                     <div class="section">
-                        <div class="section-title">⚡ Orion Settings</div>
+                        <div class="section-title">Orion Configuration</div>
                         
                         <div class="step-limit-display">
                             <div class="step-limit-label">Current Step Limit</div>
@@ -1578,65 +2093,89 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
                         
                         <div class="grid-2">
                             <div class="input-group">
-                                <label class="input-label">Currency</label>
-                                <select id="p-currency" class="input-field">
+                                <label class="input-label">
+                                    <span class="input-label-text">Currency</span>
+                                </label>
+                                <select id="p-currency" class="select-field">
                                     <!-- Will be populated by sync -->
                                 </select>
                             </div>
                             <div class="input-group">
-                                <label class="input-label">Dirty Balance</label>
-                                <input id="p-dirty-bal" class="input-field" value="100.0">
+                                <label class="input-label">
+                                    <span class="input-label-text">Dirty Balance</span>
+                                </label>
+                                <input id="p-dirty-bal" class="input-field" value="100.0" type="number" step="0.00000001">
+                                <div class="info-text">Balance used in dirty mode</div>
                             </div>
                         </div>
                         
                         <div class="grid-2">
                             <div class="input-group">
-                                <label class="input-label">Base Bet</label>
-                                <input id="p-basebet" class="input-field" value="0.00000001">
+                                <label class="input-label">
+                                    <span class="input-label-text">Base Bet</span>
+                                </label>
+                                <input id="p-basebet" class="input-field" value="0.00000001" type="number" step="0.00000001" min="0">
                             </div>
                             <div class="input-group">
-                                <label class="input-label">Min Bet</label>
-                                <input id="p-minbet" class="input-field" value="0.00000000">
-                            </div>
-                        </div>
-                        
-                        <div class="grid-2">
-                            <div class="input-group">
-                                <label class="input-label">Chance Hunt Min</label>
-                                <input id="p-ch-min" class="input-field" value="5.0">
-                            </div>
-                            <div class="input-group">
-                                <label class="input-label">Chance Hunt Max</label>
-                                <input id="p-ch-max" class="input-field" value="12.0">
+                                <label class="input-label">
+                                    <span class="input-label-text">Min Bet</span>
+                                </label>
+                                <input id="p-minbet" class="input-field" value="0.00000000" type="number" step="0.00000001" min="0">
                             </div>
                         </div>
                         
                         <div class="grid-2">
                             <div class="input-group">
-                                <label class="input-label">Target %</label>
-                                <input id="p-target-pct" class="input-field" value="10.0">
+                                <label class="input-label">
+                                    <span class="input-label-text">Chance Hunt Min</span>
+                                </label>
+                                <input id="p-ch-min" class="input-field" value="5.0" type="number" step="0.1" min="1" max="99">
                             </div>
                             <div class="input-group">
-                                <label class="input-label">Stop Loss %</label>
-                                <input id="p-stop-pct" class="input-field" value="50.0">
+                                <label class="input-label">
+                                    <span class="input-label-text">Chance Hunt Max</span>
+                                </label>
+                                <input id="p-ch-max" class="input-field" value="12.0" type="number" step="0.1" min="1" max="99">
                             </div>
                         </div>
                         
                         <div class="grid-2">
                             <div class="input-group">
-                                <label class="input-label">Steps Limit</label>
-                                <input id="p-steps" class="input-field" value="10000">
+                                <label class="input-label">
+                                    <span class="input-label-text">Target %</span>
+                                </label>
+                                <input id="p-target-pct" class="input-field" value="10.0" type="number" step="0.1" min="0" max="1000">
+                                <div class="info-text">Percentage of balance to target</div>
                             </div>
                             <div class="input-group">
-                                <label class="input-label">Margin</label>
-                                <input id="p-margin" class="input-field" value="1.01">
+                                <label class="input-label">
+                                    <span class="input-label-text">Stop Loss %</span>
+                                </label>
+                                <input id="p-stop-pct" class="input-field" value="50.0" type="number" step="0.1" min="0" max="1000">
+                                <div class="info-text">Percentage of balance to stop at</div>
+                            </div>
+                        </div>
+                        
+                        <div class="grid-2">
+                            <div class="input-group">
+                                <label class="input-label">
+                                    <span class="input-label-text">Steps Limit</span>
+                                </label>
+                                <input id="p-steps" class="input-field" value="10000" type="number" step="100" min="100">
+                            </div>
+                            <div class="input-group">
+                                <label class="input-label">
+                                    <span class="input-label-text">Margin</span>
+                                </label>
+                                <input id="p-margin" class="input-field" value="1.01" type="number" step="0.01" min="1">
+                                <div class="info-text">Safety margin for bet calculations</div>
                             </div>
                         </div>
                         
                         <div class="rotation-info">
-                            <div class="rotation-info-title">Auto Rotation Info</div>
+                            <div class="rotation-info-title">Auto Rotation System</div>
                             <div class="rotation-info-text">
-                                When step limit is reached, it will increase by 10% and switch to Wager mode automatically.
+                                Orion uses a step-based system. When the step limit is reached, it will increase by 10% and automatically rotate to the next enabled mode in the rotation sequence.
                             </div>
                         </div>
                     </div>
@@ -1645,80 +2184,84 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
                 <div class="tab-content" id="tab-wager">
                     <div class="section">
                         <div class="wager-section">
-                            <div class="section-title">🎯 Wager Mode Settings</div>
+                            <div class="section-title">Wager Mode Settings</div>
                             
                             <div class="grid-2">
                                 <div class="input-group">
-                                    <label class="input-label">Min Bet</label>
-                                    <input type="number" id="w-minbet" class="input-field" value="0.00000001" step="0.00000001">
+                                    <label class="input-label">
+                                        <span class="input-label-text">Min Bet</span>
+                                    </label>
+                                    <input type="number" id="w-minbet" class="input-field" value="0.00000001" step="0.00000001" min="0">
                                 </div>
                                 <div class="input-group">
-                                    <label class="input-label">Base Bet %</label>
+                                    <label class="input-label">
+                                        <span class="input-label-text">Base Bet %</span>
+                                    </label>
                                     <input type="number" id="w-basebet-pct" class="input-field" value="1.0" step="0.1" min="0.1" max="10">
-                                    <div class="info-text">% of balance for base bet</div>
+                                    <div class="info-text">Percentage of balance used for base bet calculation</div>
                                 </div>
                             </div>
                         </div>
                         
                         <div class="wager-section">
-                            <div class="section-title">🎲 Chance Settings</div>
+                            <div class="section-title">Chance Settings</div>
                             <div class="wager-settings-grid">
-                                <div class="wager-setting-item">
+                                <div class="wager-setting-card">
                                     <label class="wager-setting-label">Normal Chance</label>
                                     <input type="number" id="w-chance-normal" class="wager-setting-value" value="97.0" step="0.1" min="1" max="99">
-                                    <span class="xstopwin-current" id="w-chance-normal-current">Current: 97.0</span>
+                                    <span class="current-value" id="w-chance-normal-current">Current: 97.0%</span>
                                 </div>
                                 
-                                <div class="wager-setting-item">
+                                <div class="wager-setting-card">
                                     <label class="wager-setting-label">Recovery Chance</label>
                                     <input type="number" id="w-chance-recovery" class="wager-setting-value" value="25.0" step="0.1" min="1" max="99">
-                                    <span class="xstopwin-current" id="w-chance-recovery-current">Current: 25.0</span>
+                                    <span class="current-value" id="w-chance-recovery-current">Current: 25.0%</span>
                                 </div>
                                 
-                                <div class="wager-setting-item">
+                                <div class="wager-setting-card">
                                     <label class="wager-setting-label">Max Chance</label>
                                     <input type="number" id="w-chance-max" class="wager-setting-value" value="99.0" step="0.1" min="1" max="99">
-                                    <span class="xstopwin-current" id="w-chance-max-current">Current: 99.0</span>
+                                    <span class="current-value" id="w-chance-max-current">Current: 99.0%</span>
                                 </div>
                             </div>
                         </div>
                         
                         <div class="wager-section">
-                            <div class="section-title">🛑 XStopWin Parameters</div>
-                            <div class="info-text">0 = Disabled | Values in % except streak (count)</div>
+                            <div class="section-title">XStopWin Parameters</div>
+                            <div class="info-text" style="margin-bottom: 20px;">Set to 0 to disable. All values are percentages except Max Lose Streak (count).</div>
                             
                             <div class="xstopwin-grid">
-                                <div class="xstopwin-item">
+                                <div class="xstopwin-card">
                                     <label class="xstopwin-label">Max Drop %</label>
                                     <input type="number" id="w-xstopwin-1" class="xstopwin-value" value="${bot.wagerStats.xstopwin[0]}" step="0.1" min="0">
                                     <span class="xstopwin-current" id="xstopwin-1-current">Current: ${bot.wagerStats.xstopwin[0]}%</span>
                                 </div>
                                 
-                                <div class="xstopwin-item">
+                                <div class="xstopwin-card">
                                     <label class="xstopwin-label">Max Bet %</label>
                                     <input type="number" id="w-xstopwin-2" class="xstopwin-value" value="${bot.wagerStats.xstopwin[1]}" step="0.1" min="0">
                                     <span class="xstopwin-current" id="xstopwin-2-current">Current: ${bot.wagerStats.xstopwin[1]}%</span>
                                 </div>
                                 
-                                <div class="xstopwin-item">
+                                <div class="xstopwin-card">
                                     <label class="xstopwin-label">Max Lose Streak</label>
                                     <input type="number" id="w-xstopwin-3" class="xstopwin-value" value="${bot.wagerStats.xstopwin[2]}" step="1" min="0">
                                     <span class="xstopwin-current" id="xstopwin-3-current">Current: ${bot.wagerStats.xstopwin[2]}</span>
                                 </div>
                                 
-                                <div class="xstopwin-item">
+                                <div class="xstopwin-card">
                                     <label class="xstopwin-label">Profit %</label>
                                     <input type="number" id="w-xstopwin-4" class="xstopwin-value" value="${bot.wagerStats.xstopwin[3]}" step="0.1" min="0">
                                     <span class="xstopwin-current" id="xstopwin-4-current">Current: ${bot.wagerStats.xstopwin[3]}%</span>
                                 </div>
                                 
-                                <div class="xstopwin-item">
+                                <div class="xstopwin-card">
                                     <label class="xstopwin-label">Max Bet Recovery %</label>
                                     <input type="number" id="w-xstopwin-5" class="xstopwin-value" value="${bot.wagerStats.xstopwin[4]}" step="0.1" min="0">
                                     <span class="xstopwin-current" id="xstopwin-5-current">Current: ${bot.wagerStats.xstopwin[4]}%</span>
                                 </div>
                                 
-                                <div class="xstopwin-item">
+                                <div class="xstopwin-card">
                                     <label class="xstopwin-label">Reset Basebet Drop %</label>
                                     <input type="number" id="w-xstopwin-6" class="xstopwin-value" value="${bot.wagerStats.xstopwin[5]}" step="0.1" min="0">
                                     <span class="xstopwin-current" id="xstopwin-6-current">Current: ${bot.wagerStats.xstopwin[5]}%</span>
@@ -1727,39 +2270,39 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
                         </div>
                         
                         <div class="wager-section">
-                            <div class="section-title">📊 Live Wager Stats</div>
+                            <div class="section-title">Live Wager Statistics</div>
                             
                             <div class="wager-stats-grid">
-                                <div class="wager-stat-item">
+                                <div class="wager-stat-card">
                                     <div class="wager-stat-label">Bet Lose</div>
                                     <div class="wager-stat-value" id="w-betlose">0.00000000</div>
                                 </div>
-                                <div class="wager-stat-item">
+                                <div class="wager-stat-card">
                                     <div class="wager-stat-label">Next Bet</div>
                                     <div class="wager-stat-value" id="w-nextbet">0.00000000</div>
                                 </div>
                                 
-                                <div class="wager-stat-item">
+                                <div class="wager-stat-card">
                                     <div class="wager-stat-label">Base Bet</div>
                                     <div class="wager-stat-value" id="w-basebet">0.00000000</div>
                                 </div>
-                                <div class="wager-stat-item">
+                                <div class="wager-stat-card">
                                     <div class="wager-stat-label">Bet Safe</div>
                                     <div class="wager-stat-value" id="w-betsafe">NO</div>
                                 </div>
                                 
-                                <div class="wager-stat-item">
+                                <div class="wager-stat-card">
                                     <div class="wager-stat-label">Current Chance</div>
                                     <div class="wager-stat-value" id="w-chance-current">97.0%</div>
                                 </div>
-                                <div class="wager-stat-item">
+                                <div class="wager-stat-card">
                                     <div class="wager-stat-label">Status</div>
                                     <div class="wager-stat-value" id="w-status">NORMAL STEADY</div>
                                 </div>
                             </div>
                             
                             <div class="wager-stats-grid">
-                                <div class="wager-stat-item">
+                                <div class="wager-stat-card">
                                     <div class="wager-stat-label">Profit Counter</div>
                                     <div class="wager-stat-value" id="w-profitc">0.00000000</div>
                                     <div class="progress-container">
@@ -1768,11 +2311,11 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
                                             <span id="w-profit-percent">0%</span>
                                         </div>
                                         <div class="progress-bar">
-                                            <div class="progress-fill" id="w-progress-profit"></div>
+                                            <div class="progress-fill" id="w-progress-profit" style="width: 0%; background: #10b981"></div>
                                         </div>
                                     </div>
                                 </div>
-                                <div class="wager-stat-item">
+                                <div class="wager-stat-card">
                                     <div class="wager-stat-label">Max Drop</div>
                                     <div class="wager-stat-value" id="w-maxdrop">0.00000000</div>
                                     <div class="progress-container">
@@ -1781,18 +2324,18 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
                                             <span id="w-drop-percent">0%</span>
                                         </div>
                                         <div class="progress-bar">
-                                            <div class="progress-fill" id="w-progress-drop"></div>
+                                            <div class="progress-fill" id="w-progress-drop" style="width: 0%; background: #10b981"></div>
                                         </div>
                                     </div>
                                 </div>
                             </div>
                             
                             <div class="wager-stats-grid">
-                                <div class="wager-stat-item">
+                                <div class="wager-stat-card">
                                     <div class="wager-stat-label">Current Drop</div>
                                     <div class="wager-stat-value" id="w-dropnow">0.00000000</div>
                                 </div>
-                                <div class="wager-stat-item">
+                                <div class="wager-stat-card">
                                     <div class="wager-stat-label">Most Bet</div>
                                     <div class="wager-stat-value" id="w-mostbet">0.00000000</div>
                                     <div class="progress-container">
@@ -1801,7 +2344,7 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
                                             <span id="w-mostbet-percent">0%</span>
                                         </div>
                                         <div class="progress-bar">
-                                            <div class="progress-fill" id="w-progress-mostbet"></div>
+                                            <div class="progress-fill" id="w-progress-mostbet" style="width: 0%; background: #10b981"></div>
                                         </div>
                                     </div>
                                 </div>
@@ -1809,12 +2352,12 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
                         </div>
                         
                         <div class="rotation-info">
-                            <div class="rotation-info-title">Chance Logic</div>
+                            <div class="rotation-info-title">Wager Mode Logic</div>
                             <div class="rotation-info-text">
-                                • Normal chance: ${bot.wagerStats.chanceNormal}%<br>
-                                • Recovery chance: ${bot.wagerStats.chanceRecovery}%<br>
-                                • Max chance: ${bot.wagerStats.chanceMax}% (resets to normal if exceeded)<br>
-                                • Chance increases by 0.5% each bet when in recovery
+                                • <strong>Normal Chance (${bot.wagerStats.chanceNormal}%):</strong> Default chance when winning<br>
+                                • <strong>Recovery Chance (${bot.wagerStats.chanceRecovery}%):</strong> Lower chance used during recovery<br>
+                                • <strong>Max Chance (${bot.wagerStats.chanceMax}%):</strong> Maximum allowed chance, resets to normal if exceeded<br>
+                                • Chance increases by 0.5% each bet when in recovery mode
                             </div>
                         </div>
                     </div>
@@ -1822,40 +2365,40 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
                 
                 <div class="tab-content" id="tab-labouchere">
                     <div class="section">
-                        <div class="section-title">🎲 Labouchere System</div>
+                        <div class="section-title">Labouchere System</div>
                         
                         <div class="grid-2">
                             <div class="labouchere-input-group">
                                 <label class="labouchere-input-label">Sequence (comma separated)</label>
-                                <input id="l-sequence" class="labouchere-input-field" value="1,2,3,4">
+                                <input id="l-sequence" class="labouchere-input-field" value="1,2,3,4" placeholder="e.g., 1,2,3,4">
                             </div>
                             <div class="labouchere-input-group">
                                 <label class="labouchere-input-label">Target Profit</label>
-                                <input id="l-target" class="labouchere-input-field" value="10">
+                                <input id="l-target" class="labouchere-input-field" value="10" type="number" step="0.00000001" min="0">
                             </div>
                         </div>
                         
                         <div class="divider"></div>
                         
-                        <div class="section-title">📈 Current Status</div>
+                        <div class="section-title">Current Status</div>
                         
                         <div class="grid-2">
-                            <div class="stat-item">
+                            <div class="stat-card">
                                 <div class="stat-label">Current Sequence</div>
                                 <div class="stat-value" id="l-sequence-current">1,2,3,4</div>
                             </div>
-                            <div class="stat-item">
+                            <div class="stat-card">
                                 <div class="stat-label">Next Bet Amount</div>
                                 <div class="stat-value" id="l-betamount">0.00000000</div>
                             </div>
                         </div>
                         
                         <div class="grid-2">
-                            <div class="stat-item">
+                            <div class="stat-card">
                                 <div class="stat-label">Bet On</div>
                                 <div class="stat-value" id="l-beton">BLACK</div>
                             </div>
-                            <div class="stat-item">
+                            <div class="stat-card">
                                 <div class="stat-label">Recovery Mode</div>
                                 <div class="stat-value" id="l-recovery">NO</div>
                             </div>
@@ -1872,11 +2415,15 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
                         </div>
                         
                         <div class="rotation-info">
-                            <div class="rotation-info-title">Auto Rotation Info</div>
+                            <div class="rotation-info-title">Labouchere System Info</div>
                             <div class="rotation-info-text">
+                                • <strong>Sequence:</strong> Numbers represent bet units<br>
+                                • <strong>Bet Calculation:</strong> First + Last numbers = Next Bet<br>
+                                • <strong>Win:</strong> Remove first and last numbers<br>
+                                • <strong>Lose:</strong> Add bet amount to end of sequence<br>
+                                • <strong>Complete:</strong> Sequence empty = Target achieved<br>
                                 • Activated automatically when loss exceeds ${bot.rotationState.wagerLossThreshold * 100}%<br>
-                                • Returns to Wager mode when balance recovers to initial level<br>
-                                • Switches to Orion mode if loss exceeds ${bot.rotationState.severeLossThreshold * 100}%
+                                • Returns to previous mode when balance recovers
                             </div>
                         </div>
                     </div>
@@ -1884,171 +2431,223 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
                 
                 <div class="tab-content" id="tab-settings">
                     <div class="section">
-                        <div class="section-title">⚙️ System Settings</div>
+                        <div class="section-title">System Configuration</div>
+                        
+                        <div class="mode-selector">
+                            <div class="mode-selector-title">🔄 Enabled Modes</div>
+                            <div class="mode-selector-grid">
+                                <div class="mode-selector-item">
+                                    <input type="checkbox" id="mode-orion" class="mode-selector-checkbox" checked>
+                                    <label for="mode-orion" class="mode-selector-label orion">⚡ Orion</label>
+                                </div>
+                                <div class="mode-selector-item">
+                                    <input type="checkbox" id="mode-wager" class="mode-selector-checkbox" checked>
+                                    <label for="mode-wager" class="mode-selector-label wager">🎯 Wager</label>
+                                </div>
+                                <div class="mode-selector-item">
+                                    <input type="checkbox" id="mode-labouchere" class="mode-selector-checkbox" checked>
+                                    <label for="mode-labouchere" class="mode-selector-label labouchere">🎲 Labouchere</label>
+                                </div>
+                            </div>
+                            <div class="info-text" style="margin-top: 12px;">Only enabled modes will be used in rotation. At least one mode must be enabled.</div>
+                        </div>
                         
                         <div class="radio-group">
                             <div class="radio-item">
                                 <input type="radio" id="mode-auto" name="mode" value="auto" checked>
-                                <label class="radio-label" for="mode-auto">Auto Rotation</label>
+                                <label class="radio-label" for="mode-auto">🔄 Auto Rotation</label>
                             </div>
                             <div class="radio-item">
                                 <input type="radio" id="mode-manual" name="mode" value="manual">
-                                <label class="radio-label" for="mode-manual">Manual Mode</label>
+                                <label class="radio-label" for="mode-manual">🎮 Manual Mode</label>
+                            </div>
+                        </div>
+                        
+                        <div id="manual-controls" style="display: none;">
+                            <div class="radio-group" style="margin-top: 12px;">
+                                <div class="radio-item">
+                                    <input type="radio" id="manual-orion" name="manual-mode" value="orion">
+                                    <label class="radio-label" for="manual-orion">⚡ Orion</label>
+                                </div>
+                                <div class="radio-item">
+                                    <input type="radio" id="manual-wager" name="manual-mode" value="wager">
+                                    <label class="radio-label" for="manual-wager">🎯 Wager</label>
+                                </div>
+                                <div class="radio-item">
+                                    <input type="radio" id="manual-lab" name="manual-mode" value="labouchere">
+                                    <label class="radio-label" for="manual-lab">🎲 Labouchere</label>
+                                </div>
                             </div>
                         </div>
                         
                         <div class="grid-2">
                             <div class="input-group">
-                                <label class="input-label">Wager Loss Threshold (%)</label>
+                                <label class="input-label">
+                                    <span class="input-label-text">Wager Loss Threshold (%)</span>
+                                </label>
                                 <input id="s-wager-threshold" class="input-field" value="0.1" type="number" step="0.1" min="0" max="100">
                                 <div class="info-text">Switch to Labouchere when loss exceeds this %</div>
                             </div>
                             <div class="input-group">
-                                <label class="input-label">Severe Loss Threshold (%)</label>
+                                <label class="input-label">
+                                    <span class="input-label-text">Severe Loss Threshold (%)</span>
+                                </label>
                                 <input id="s-severe-threshold" class="input-field" value="1.0" type="number" step="0.1" min="0" max="100">
                                 <div class="info-text">Switch to Orion when loss exceeds this %</div>
                             </div>
                         </div>
                         
-                        <div id="telegram-settings">
-                            <div class="divider"></div>
-                            <div class="section-title">📱 Telegram Reports</div>
-                            
-                            <div class="telegram-info-box">
-                                <div class="telegram-info-item">
-                                    <span class="telegram-info-label">Bot Token:</span>
-                                    <span class="telegram-info-value">${CONFIG.tgToken ? '********' + CONFIG.tgToken.slice(-8) : 'Not Set'}</span>
-                                </div>
-                                <div class="telegram-info-item">
-                                    <span class="telegram-info-label">Chat ID:</span>
-                                    <span class="telegram-info-value">${CONFIG.tgChatId}</span>
-                                </div>
-                                <div class="telegram-info-item">
-                                    <span class="telegram-info-label">Report Status:</span>
-                                    <span class="telegram-info-value" id="telegram-status">Ready</span>
-                                </div>
+                        <div class="divider"></div>
+                        
+                        <div class="section-title">Telegram Reports</div>
+                        
+                        <div class="telegram-info-card">
+                            <div class="telegram-info-item">
+                                <span class="telegram-info-label">Bot Token</span>
+                                <span class="telegram-info-value">${CONFIG.tgToken ? '••••••••' + CONFIG.tgToken.slice(-8) : 'Not Set'}</span>
                             </div>
-                            
-                            <div class="input-group">
-                                <label class="input-label">Report Interval (minutes)</label>
-                                <input id="telegram-interval" class="input-field" value="5" type="number" min="1" max="60">
-                                <div class="info-text">How often to send automatic reports (1-60 minutes)</div>
+                            <div class="telegram-info-item">
+                                <span class="telegram-info-label">Chat ID</span>
+                                <span class="telegram-info-value">${CONFIG.tgChatId}</span>
                             </div>
-                            
-                            <div style="display: flex; gap: 10px; margin-top: 15px;">
-                                <button id="test-telegram" class="btn" style="flex: 1; background: #3b82f6; color: white; padding: 10px;">
-                                    Test Connection
-                                </button>
-                                <button id="send-now-telegram" class="btn" style="flex: 1; background: #10b981; color: white; padding: 10px;">
-                                    Send Now
-                                </button>
-                            </div>
-                            
-                            <div class="rotation-info" style="margin-top: 15px;">
-                                <div class="rotation-info-title">Report Features</div>
-                                <div class="rotation-info-text">
-                                    • Automatic reports every X minutes<br>
-                                    • Detailed statistics and mode info<br>
-                                    • Performance analysis<br>
-                                    • Rotation system status<br>
-                                    • Customizable intervals
-                                </div>
+                            <div class="telegram-info-item">
+                                <span class="telegram-info-label">Report Status</span>
+                                <span class="telegram-info-value" id="telegram-status">Ready</span>
                             </div>
                         </div>
                         
                         <div class="input-group">
-                            <label class="input-label">Dirty Mode Delay (ms)</label>
-                            <input id="p-dirty-delay" class="input-field" value="50">
-                        </div>
-                        
-                        <div class="input-group">
-                            <label class="input-label" style="display: flex; align-items: center; justify-content: space-between;">
-                                <span>Dirty Mode</span>
-                                <label class="toggle-switch">
-                                    <input type="checkbox" id="p-demo-toggle">
-                                    <span class="toggle-slider"></span>
-                                </label>
+                            <label class="input-label">
+                                <span class="input-label-text">Report Interval (minutes)</span>
                             </label>
-                            <div class="info-text">Simulate bets without real money</div>
+                            <input id="telegram-interval" class="input-field" value="5" type="number" min="1" max="60">
+                            <div class="info-text">Automatic report frequency (1-60 minutes)</div>
+                        </div>
+                        
+                        <div class="telegram-actions">
+                            <button id="test-telegram" class="telegram-btn test">
+                                Test Connection
+                            </button>
+                            <button id="send-now-telegram" class="telegram-btn send">
+                                Send Now
+                            </button>
                         </div>
                         
                         <div class="divider"></div>
                         
-                        <div class="section-title">👤 Account Info</div>
+                        <div class="section-title">Simulation Settings</div>
                         
-                        <div style="font-size: 12px; padding: 12px; background: rgba(15, 23, 42, 0.6); border-radius: 8px; border: 1px solid var(--border);">
-                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-                                <span style="color: var(--gray);">Username:</span>
-                                <span style="color: var(--light); font-weight: 600;" id="st-user-name">${bot.stakeUser}</span>
+                        <div class="toggle-group">
+                            <span class="toggle-label">Dirty Mode (Simulation)</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="p-demo-toggle">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        
+                        <div class="input-group">
+                            <label class="input-label">
+                                <span class="input-label-text">Dirty Mode Delay (ms)</span>
+                            </label>
+                            <input id="p-dirty-delay" class="input-field" value="50" type="number" min="0" max="10000">
+                            <div class="info-text">Delay between simulated bets (0-10000ms)</div>
+                        </div>
+                        
+                        <div class="divider"></div>
+                        
+                        <div class="section-title">Account Information</div>
+                        
+                        <div class="account-info">
+                            <div class="account-info-item">
+                                <span class="account-info-label">Username</span>
+                                <span class="account-info-value" id="st-user-name">${bot.stakeUser}</span>
                             </div>
-                            <div style="display: flex; justify-content: space-between;">
-                                <span style="color: var(--gray);">Session Expires:</span>
-                                <span style="color: var(--light); font-weight: 600;" id="st-expiration">Loading...</span>
+                            <div class="account-info-item">
+                                <span class="account-info-label">Session Expires</span>
+                                <span class="account-info-value" id="st-expiration">Loading...</span>
                             </div>
                         </div>
                         
                         <div class="rotation-info">
-                            <div class="rotation-info-title">Rotation Flow</div>
+                            <div class="rotation-info-title">Rotation System Flow</div>
                             <div class="rotation-info-text">
-                                1. Start with <strong>Wager Mode</strong><br>
-                                2. If loss > ${bot.rotationState.wagerLossThreshold * 100}% → <strong>Labouchere</strong><br>
-                                3. If loss > ${bot.rotationState.severeLossThreshold * 100}% → <strong>Orion</strong><br>
-                                4. When balance recovers → Back to <strong>Wager Mode</strong><br>
-                                5. Orion step limit reached → +10% limit, switch to <strong>Wager</strong>
+                                1. <strong>Start with Wager Mode</strong> (if enabled)<br>
+                                2. <strong>If loss > ${bot.rotationState.wagerLossThreshold * 100}%</strong> → Switch to Labouchere (if enabled)<br>
+                                3. <strong>If loss > ${bot.rotationState.severeLossThreshold * 100}%</strong> → Switch to Orion (if enabled)<br>
+                                4. <strong>When balance recovers</strong> → Return to previous mode<br>
+                                5. <strong>Orion step limit reached</strong> → +10% limit, switch to next enabled mode<br>
+                                6. <strong>Only enabled modes</strong> participate in rotation
                             </div>
                         </div>
                     </div>
                 </div>
                 
                 <div class="section">
-                    <div class="section-title">📋 Live Logs</div>
+                    <div class="section-title">Live Activity Logs</div>
                     <div class="logs-container" id="p-logs">
-                        <div style="color: var(--gray); text-align: center; padding: 40px 0;">Waiting for action...</div>
+                        <div style="color: var(--gray); text-align: center; padding: 60px 0; font-size: 12px; font-style: italic;">
+                            ⏳ Waiting for engine start...
+                        </div>
                     </div>
                 </div>
                 
                 <div class="section">
-                    <div class="section-title">📊 Statistics</div>
+                    <div class="section-title">Live Statistics</div>
                     
                     <div class="stats-grid">
-                        <div class="stat-item">
+                        <div class="stat-card">
                             <div class="stat-label">Profit</div>
                             <div class="stat-value" id="st-p">0.00000000</div>
+                            <div class="stat-subvalue" id="st-p-pct">0.00%</div>
                         </div>
-                        <div class="stat-item">
+                        <div class="stat-card">
                             <div class="stat-label">Wagered</div>
                             <div class="stat-value" id="st-w">0.00000000</div>
+                            <div class="stat-subvalue" id="st-w-bets">0 bets</div>
                         </div>
-                        <div class="stat-item">
+                        <div class="stat-card">
                             <div class="stat-label">Rolls (W/L)</div>
                             <div class="stat-value" id="st-r">0 (0/0)</div>
+                            <div class="stat-subvalue" id="st-wr">0.00% WR</div>
                         </div>
-                        <div class="stat-item">
+                        <div class="stat-card">
                             <div class="stat-label">Win Rate</div>
-                            <div class="stat-value" id="st-wr">0%</div>
+                            <div class="stat-value" id="st-wr-value">0.00%</div>
+                            <div class="stat-subvalue" id="st-streak">Streak: 0</div>
                         </div>
-                        <div class="stat-item">
+                        <div class="stat-card">
                             <div class="stat-label">Max Drawdown</div>
                             <div class="stat-value" id="st-dd">0.00000000</div>
+                            <div class="stat-subvalue" id="st-dd-pct">0.00%</div>
                         </div>
-                        <div class="stat-item">
+                        <div class="stat-card">
                             <div class="stat-label">Current Balance</div>
                             <div class="stat-value" id="st-bal">0.00000000</div>
+                            <div class="stat-subvalue" id="st-currency">${bot.selectedCurrency.toUpperCase()}</div>
                         </div>
                     </div>
                 </div>
                 
                 <div class="button-group">
                     <button id="p-start" class="btn btn-primary">
-                        ▶ START ENGINE
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                        </svg>
+                        START ENGINE
                     </button>
                     <button id="p-stop" class="btn btn-danger">
-                        ⏹ EMERGENCY STOP
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="6" y="6" width="12" height="12" rx="1"></rect>
+                        </svg>
+                        EMERGENCY STOP
                     </button>
                 </div>
                 
-                <button id="telegram-report-btn" class="btn btn-warning" style="margin-top: 10px; width: 100%;">
-                    📊 SEND TELEGRAM REPORT
+                <button id="telegram-report-btn" class="btn btn-warning">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
+                    </svg>
+                    SEND TELEGRAM REPORT
                 </button>
             </div>
         `;
@@ -2072,47 +2671,58 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
             });
         });
         
+        document.getElementById("mode-orion").checked = bot.enabledModes.orion;
+        document.getElementById("mode-wager").checked = bot.enabledModes.wager;
+        document.getElementById("mode-labouchere").checked = bot.enabledModes.labouchere;
+        
+        document.getElementById("mode-orion").addEventListener('change', (e) => {
+            bot.enabledModes.orion = e.target.checked;
+            updateLogs(0, 0, 0, `Orion mode ${e.target.checked ? 'ENABLED' : 'DISABLED'}`, true);
+        });
+        
+        document.getElementById("mode-wager").addEventListener('change', (e) => {
+            bot.enabledModes.wager = e.target.checked;
+            updateLogs(0, 0, 0, `Wager mode ${e.target.checked ? 'ENABLED' : 'DISABLED'}`, true);
+        });
+        
+        document.getElementById("mode-labouchere").addEventListener('change', (e) => {
+            bot.enabledModes.labouchere = e.target.checked;
+            updateLogs(0, 0, 0, `Labouchere mode ${e.target.checked ? 'ENABLED' : 'DISABLED'}`, true);
+        });
+        
         document.querySelectorAll('input[name="mode"]').forEach(radio => {
             radio.addEventListener('change', (e) => {
                 if (e.target.value === 'manual') {
-                    const manualControls = document.createElement('div');
-                    manualControls.id = 'manual-controls';
-                    manualControls.innerHTML = `
-                        <div class="radio-group" style="margin-top: 12px;">
-                            <div class="radio-item">
-                                <input type="radio" id="manual-orion" name="manual-mode" value="orion" checked>
-                                <label class="radio-label" for="manual-orion">Orion</label>
-                            </div>
-                            <div class="radio-item">
-                                <input type="radio" id="manual-wager" name="manual-mode" value="wager">
-                                <label class="radio-label" for="manual-wager">Wager</label>
-                            </div>
-                            <div class="radio-item">
-                                <input type="radio" id="manual-lab" name="manual-mode" value="labouchere">
-                                <label class="radio-label" for="manual-lab">Labouchere</label>
-                            </div>
-                        </div>
-                    `;
-                    const settingsTab = document.getElementById('tab-settings');
-                    const existing = document.getElementById('manual-controls');
-                    if (existing) existing.remove();
-                    settingsTab.querySelector('.section').appendChild(manualControls);
+                    document.getElementById("manual-controls").style.display = 'block';
                     
                     document.querySelectorAll('input[name="manual-mode"]').forEach(mRadio => {
                         mRadio.addEventListener('change', (me) => {
-                            bot.mode = me.target.value;
-                            updateModeIndicator();
+                            if (bot.enabledModes[me.target.value]) {
+                                bot.mode = me.target.value;
+                                updateModeIndicator();
+                                updateLogs(0, 0, 0, `Switched to ${me.target.value.toUpperCase()} mode (Manual)`, true);
+                            } else {
+                                me.target.checked = false;
+                                alert(`Mode ${me.target.value.toUpperCase()} is disabled! Enable it first.`);
+                            }
                         });
                     });
+                    
+                    const enabledManualMode = Object.keys(bot.enabledModes).find(mode => bot.enabledModes[mode]);
+                    if (enabledManualMode) {
+                        document.getElementById(`manual-${enabledManualMode}`).checked = true;
+                        bot.mode = enabledManualMode;
+                        updateModeIndicator();
+                    }
                 } else {
-                    const manualControls = document.getElementById('manual-controls');
-                    if (manualControls) manualControls.remove();
+                    document.getElementById("manual-controls").style.display = 'none';
                 }
             });
         });
         
         document.getElementById("p-currency").onchange = (e) => { 
             bot.selectedCurrency = e.target.value; 
+            document.getElementById("st-currency").textContent = e.target.value.toUpperCase();
         };
         
         document.getElementById("p-steps").addEventListener('change', (e) => {
@@ -2142,21 +2752,21 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
             const val = parseFloat(e.target.value) || 97;
             bot.wagerStats.chanceNormal = val;
             const currentEl = document.getElementById("w-chance-normal-current");
-            if (currentEl) currentEl.textContent = `Current: ${val}`;
+            if (currentEl) currentEl.textContent = `Current: ${val}%`;
         });
         
         document.getElementById("w-chance-recovery")?.addEventListener('change', (e) => {
             const val = parseFloat(e.target.value) || 25;
             bot.wagerStats.chanceRecovery = val;
             const currentEl = document.getElementById("w-chance-recovery-current");
-            if (currentEl) currentEl.textContent = `Current: ${val}`;
+            if (currentEl) currentEl.textContent = `Current: ${val}%`;
         });
         
         document.getElementById("w-chance-max")?.addEventListener('change', (e) => {
             const val = parseFloat(e.target.value) || 99;
             bot.wagerStats.chanceMax = val;
             const currentEl = document.getElementById("w-chance-max-current");
-            if (currentEl) currentEl.textContent = `Current: ${val}`;
+            if (currentEl) currentEl.textContent = `Current: ${val}%`;
         });
         
         document.getElementById("telegram-interval").addEventListener('change', (e) => {
@@ -2183,7 +2793,7 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
                     statusEl.textContent = "Connected ✓";
                     statusEl.style.color = "#10b981";
                 } else {
-                    alert('❌ Telegram connection failed. Check token and chat ID.');
+                    alert('❌ Telegram connection failed.');
                     updateLogs(0, 0, 0, '❌ Telegram connection test failed', true);
                     statusEl.textContent = "Failed ✗";
                     statusEl.style.color = "#ef4444";
@@ -2236,13 +2846,13 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
                     alert('Telegram report sent successfully!');
                 } else {
                     updateLogs(0, 0, 0, '⚠️  Failed to send manual Telegram report', true);
-                    alert('Failed to send report. Check console for details.');
+                    alert('Failed to send report.');
                 }
             } catch (error) {
                 console.error('Manual report error:', error);
                 alert('Error sending report: ' + error.message);
             } finally {
-                reportBtn.innerHTML = '📊 SEND TELEGRAM REPORT';
+                reportBtn.innerHTML = 'SEND TELEGRAM REPORT';
                 reportBtn.disabled = false;
             }
         };
@@ -2290,22 +2900,45 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
             
             const modeSelect = document.querySelector('input[name="mode"]:checked').value;
             if (modeSelect === 'auto') {
-                bot.mode = 'wager';
-                initWagerMode();
+                const enabledMode = Object.keys(bot.enabledModes).find(mode => bot.enabledModes[mode]);
+                if (enabledMode) {
+                    bot.mode = enabledMode;
+                    if (bot.mode === 'wager') initWagerMode();
+                    if (bot.mode === 'labouchere') initLabouchere();
+                    if (bot.mode === 'orion') setNewBaseChance();
+                } else {
+                    alert('⚠️ Please enable at least one mode!');
+                    bot.isRunning = false;
+                    startBtn.innerHTML = '▶ START ENGINE';
+                    startBtn.classList.remove('btn-success');
+                    startBtn.classList.add('btn-primary');
+                    return;
+                }
             } else {
                 const manualMode = document.querySelector('input[name="manual-mode"]:checked');
-                if (manualMode) {
+                if (manualMode && bot.enabledModes[manualMode.value]) {
                     bot.mode = manualMode.value;
                     if (bot.mode === 'wager') initWagerMode();
                     if (bot.mode === 'labouchere') initLabouchere();
                     if (bot.mode === 'orion') setNewBaseChance();
+                } else {
+                    alert('⚠️ Please select an enabled mode!');
+                    bot.isRunning = false;
+                    startBtn.innerHTML = '▶ START ENGINE';
+                    startBtn.classList.remove('btn-success');
+                    startBtn.classList.add('btn-primary');
+                    return;
                 }
             }
             
             bot.telegramReport.lastReportTime = Date.now();
             
             updateModeIndicator();
-            updateLogs(0, 0, 0, `Engine started with ${bot.mode.toUpperCase()} mode. Step Limit: ${bot.rotationState.stepLimit}`, true);
+            const enabledModes = Object.entries(bot.enabledModes)
+                .filter(([_, enabled]) => enabled)
+                .map(([mode]) => mode.toUpperCase())
+                .join(', ');
+            updateLogs(0, 0, 0, `Engine started with ${bot.mode.toUpperCase()} mode. Enabled modes: ${enabledModes}`, true);
             
             runLoop();
         };
@@ -2348,7 +2981,7 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
             indicator.querySelector('.mode-dot').style.background = colors[bot.mode] || colors.orion;
         }
         if (rotationStatus) {
-            rotationStatus.textContent = bot.rotationState.inRecovery ? 'Recovery' : 'Normal';
+            rotationStatus.textContent = bot.rotationState.inRecovery ? 'RECOVERY' : 'NORMAL';
             rotationStatus.style.color = bot.rotationState.inRecovery ? '#f59e0b' : '#10b981';
         }
         
@@ -2358,37 +2991,29 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
         if (currentStepLimit) {
             currentStepLimit.textContent = bot.rotationState.stepLimit;
         }
-        
-        const ws = bot.wagerStats;
-        const ss = ws.simplestats;
-        
-        if (ss.balhi > 0) {
-            const profitPercent = bot.stats.profit/(bot.stats.currentBal-bot.stats.profit)*100;
-            const dropPercent = ss.drop/ss.balhi*100;
-            const mostbetPercent = ss.mostbet/ss.balst*100;
-            
-            if (document.getElementById("w-profit-percent")) {
-                document.getElementById("w-profit-percent").textContent = profitPercent.toFixed(1) + "%";
-            }
-            if (document.getElementById("w-drop-percent")) {
-                document.getElementById("w-drop-percent").textContent = dropPercent.toFixed(1) + "%";
-            }
-            if (document.getElementById("w-mostbet-percent")) {
-                document.getElementById("w-mostbet-percent").textContent = mostbetPercent.toFixed(1) + "%";
-            }
-        }
     }
 
     setInterval(() => {
         if (document.getElementById("st-p")) {
             const curLabel = bot.selectedCurrency ? bot.selectedCurrency.toUpperCase() : '';
-            document.getElementById("st-p").innerText = `${bot.stats.profit.toFixed(8)}`;
-            document.getElementById("st-w").innerText = `${bot.stats.wagered.toFixed(8)}`;
+            const profitPercent = bot.stats.startBal > 0 ? (bot.stats.profit / bot.stats.startBal * 100) : 0;
+            const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100) : 0;
+            const ddPercent = bot.stats.startBal > 0 ? (bot.stats.maxDD / bot.stats.startBal * 100) : 0;
+            const streak = bot.stats.wins > 0 && bot.stats.loss === 0 ? bot.stats.wins : 
+                          bot.stats.loss > 0 && bot.stats.wins === 0 ? -bot.stats.loss : 0;
+            
+            document.getElementById("st-p").innerText = bot.stats.profit.toFixed(8);
+            document.getElementById("st-p-pct").innerText = profitPercent.toFixed(2) + '%';
+            document.getElementById("st-w").innerText = bot.stats.wagered.toFixed(8);
+            document.getElementById("st-w-bets").innerText = `${bot.stats.bets} bets`;
             document.getElementById("st-r").innerText = `${bot.stats.bets} (${bot.stats.wins}/${bot.stats.loss})`;
-            document.getElementById("st-dd").innerText = `${bot.stats.maxDD.toFixed(8)}`;
-            document.getElementById("st-wr").innerText = bot.stats.bets > 0 ? `${((bot.stats.wins / bot.stats.bets) * 100).toFixed(1)}%` : "0%";
-            document.getElementById("st-bal").innerText = `${bot.stats.currentBal.toFixed(8)} ${curLabel}`;
-            document.getElementById("st-bal").style.color = bot.stats.currentBal >= bot.stats.startBal ? "#10b981" : "#ef4444";
+            document.getElementById("st-wr").innerText = winRate.toFixed(2) + '% WR';
+            document.getElementById("st-wr-value").innerText = winRate.toFixed(2) + '%';
+            document.getElementById("st-streak").innerText = `Streak: ${streak}`;
+            document.getElementById("st-dd").innerText = bot.stats.maxDD.toFixed(8);
+            document.getElementById("st-dd-pct").innerText = ddPercent.toFixed(2) + '%';
+            document.getElementById("st-bal").innerText = bot.stats.currentBal.toFixed(8);
+            document.getElementById("st-currency").innerText = curLabel;
             
             const userNameEl = document.getElementById("st-user-name");
             if (userNameEl && bot.stakeUser !== "Loading...") {
