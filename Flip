@@ -120,7 +120,8 @@
         sessionLow: 0,
         partialProfit: 0,
         lastReportTime: 0,
-        lastWsUpdate: 0
+        lastWsUpdate: 0,
+        consecutiveLosses: 0
     };
 
     // ==================== API FUNCTIONS ====================
@@ -195,6 +196,8 @@
                 identifier: Math.random().toString(36).slice(2) 
             };
             
+            console.log("Dice Bet:", payload);
+            
             try {
                 const r = await fetch(`${CONFIG.apiUrl}/casino/dice/roll`, { 
                     method: "POST", 
@@ -217,6 +220,8 @@
                 multiplierTarget: parseFloat(targetMultiplier.toFixed(2)),
                 identifier: Math.random().toString(36).slice(2) 
             };
+            
+            console.log("Limbo Bet:", payload);
             
             try {
                 const r = await fetch(`${CONFIG.apiUrl}/casino/limbo/bet`, { 
@@ -247,6 +252,7 @@
                                 `Bets: ${bot.stats.bets} (${bot.stats.wins}W/${bot.stats.loss}L)\n` +
                                 `Win Rate: ${winRate}%\n` +
                                 `Current Streak: ${bot.stats.currentStreak}\n` +
+                                `Consecutive Losses: ${bot.consecutiveLosses}\n` +
                                 `Max Drawdown: ${bot.stats.maxDD.toFixed(8)}\n` +
                                 `Mode: ${bot.mode}\n` +
                                 `Game: ${bot.gameMode}\n` +
@@ -277,6 +283,7 @@
         for (let i = 0; i < sequenceLength; i++) {
             bot.labouchereList.push(baseBet * (i + 1));
         }
+        console.log("Labouchere initialized:", bot.labouchereList);
     }
 
     function getNextLabouchereBet() {
@@ -301,6 +308,8 @@
             const newBet = getNextLabouchereBet();
             bot.labouchereList.push(newBet);
         }
+        
+        console.log("Labouchere updated:", bot.labouchereList);
         
         if (bot.labouchereList.length === 0) {
             initLabouchere(getVal("p-lab-basebet"), getVal("p-lab-chance"));
@@ -327,13 +336,14 @@
     }
 
     function updateStatistics(win, amount, payout) {
-        bot.stats.currentStreak = win ? 
-            Math.max(0, bot.stats.currentStreak) + 1 : 
-            Math.min(0, bot.stats.currentStreak) - 1;
-        
+        // Update consecutive losses
         if (win) {
+            bot.consecutiveLosses = 0;
+            bot.stats.currentStreak = Math.max(0, bot.stats.currentStreak) + 1;
             bot.stats.maxWinStreak = Math.max(bot.stats.maxWinStreak, bot.stats.currentStreak);
         } else {
+            bot.consecutiveLosses++;
+            bot.stats.currentStreak = Math.min(0, bot.stats.currentStreak) - 1;
             bot.stats.maxLossStreak = Math.max(Math.abs(bot.stats.maxLossStreak), Math.abs(bot.stats.currentStreak));
         }
 
@@ -416,15 +426,13 @@
             
             if (!betData) throw new Error("Invalid bet response");
             
-            // Process result - FIXED AMOUNT EXTRACTION
+            // Process result
             let win, payout, profit, amount;
             
             if (bot.gameMode === "DICE") {
-                // Try multiple possible fields for amount
                 amount = betData.amount || betData.betAmount || betData.wager || bot.nextBet;
                 win = betData.payoutMultiplier > 0 || betData.win === true || (betData.payout && betData.payout > 0);
                 
-                // Calculate payout correctly
                 if (betData.payout !== undefined && betData.payout > 0) {
                     payout = betData.payout;
                 } else if (betData.payoutMultiplier && betData.payoutMultiplier > 0) {
@@ -435,7 +443,6 @@
                     payout = 0;
                 }
             } else {
-                // For Limbo
                 amount = betData.amount || betData.betAmount || betData.wager || bot.nextBet;
                 const result = betData.state?.result || betData.result || 0;
                 const target = betData.state?.multiplierTarget || betData.multiplierTarget || bot.currentPayout;
@@ -467,7 +474,7 @@
             // Update stats display immediately
             updateStatsDisplay();
             
-            // Log bet - FIXED AMOUNT DISPLAY
+            // Log bet
             updateLogs(amount, bot.gameMode === "DICE" ? bot.currentChance : bot.currentPayout, bot.mode, profit, bot.gameMode);
             
             // Mode switching logic
@@ -477,8 +484,17 @@
                 bot.partialProfit = 0;
             }
             
-            // Bet calculation
+            // Bet calculation - FIXED MARTINGALE LOGIC
+            console.log("Before calculation:", {
+                win,
+                mode: bot.mode,
+                partialProfit: bot.partialProfit,
+                nextBet: bot.nextBet,
+                amount
+            });
+            
             if (win) {
+                console.log("WIN - Resetting");
                 if (bot.mode === "WAGER") {
                     bot.nextBet = bot.stats.currentBal / getVal("p-wgr-div");
                     if (bot.gameMode === "DICE") {
@@ -499,26 +515,45 @@
                     }
                 }
                 bot.partialProfit = 0;
+                bot.consecutiveLosses = 0;
             } else {
+                console.log("LOSS - Calculating recovery bet");
                 if (bot.mode === "WAGER") {
                     bot.nextBet = amount * 1.12;
+                    console.log("Wager mode loss bet:", bot.nextBet);
                 } else {
+                    // FIXED: Pakai Math.abs() untuk partialProfit yang negatif
+                    const lossAmount = Math.abs(bot.partialProfit);
+                    console.log("Loss amount:", lossAmount);
+                    
                     if (bot.gameMode === "DICE") {
                         bot.currentChance = Math.random() * (getVal("p-hch-max") - getVal("p-hch-min")) + getVal("p-hch-min");
-                        bot.nextBet = (Math.abs(bot.partialProfit) / ((99/bot.currentChance) - 1)) * 1.5;
+                        // FIXED: Martingale formula untuk dice
+                        const multiplier = (100 / bot.currentChance) - 1;
+                        console.log("Dice multiplier:", multiplier);
+                        bot.nextBet = (lossAmount / multiplier) * 1.5;
+                        console.log("Dice recovery bet:", bot.nextBet);
                     } else {
+                        // FIXED: Martingale untuk limbo
                         bot.currentPayout = Math.max(1.1, bot.currentPayout * 0.95);
-                        bot.nextBet = (Math.abs(bot.partialProfit) / (bot.currentPayout - 1)) * 1.5;
+                        const multiplier = bot.currentPayout - 1;
+                        console.log("Limbo multiplier:", multiplier);
+                        bot.nextBet = (lossAmount / multiplier) * 1.5;
+                        console.log("Limbo recovery bet:", bot.nextBet);
                     }
+                    
                     if (bot.labouchereList.length > 0) {
                         updateLabouchere(false);
                         bot.nextBet = getNextLabouchereBet();
+                        console.log("Labouchere bet:", bot.nextBet);
                     }
                 }
             }
             
             // Apply min bet
             bot.nextBet = Math.max(bot.nextBet, getVal("p-minbet"));
+            
+            console.log("Final next bet:", bot.nextBet);
             
             // Auto switch game mode
             switchGameMode();
@@ -558,7 +593,6 @@
         const modeColors = { 'WAGER': '#60a5fa', 'BASE': '#fbbf24' };
         const gameText = game === "DICE" ? "DICE" : "LIMBO";
         
-        // FIXED: Display amount with proper decimal places
         const displayAmount = amt.toFixed(8);
         
         row.innerHTML = `
@@ -1255,6 +1289,7 @@
             bot.stats.maxWinStreak = 0;
             bot.stats.maxLossStreak = 0;
             bot.stats.totalPayout = 0;
+            bot.consecutiveLosses = 0;
             
             bot.isRunning = true;
             bot.isPaused = false;
@@ -1305,7 +1340,7 @@
             { label: "TIME", value: getElapsedTime() },
             { label: "MODE", value: bot.mode },
             { label: "GAME", value: bot.gameMode },
-            { label: "STREAK", value: bot.stats.currentStreak > 0 ? `+${bot.stats.currentStreak}` : bot.stats.currentStreak },
+            { label: "LOSS STREAK", value: bot.consecutiveLosses },
             { label: "DRAWDOWN", value: `${currentDD.toFixed(8)} (${currentDDPct}%)` }
         ];
         
