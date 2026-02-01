@@ -33,7 +33,11 @@
             betAmount: 0,
             nextBetIndex: 0,
             betOn: 'black',
-            recoveryMode: false
+            recoveryMode: false,
+            maxBet: 0, // Tambah max bet
+            maxCycles: 3, // Tambah max cycles
+            currentCycle: 1,
+            totalCyclesCompleted: 0
         },
         rotationState: {
             initialBalance: 0,
@@ -96,7 +100,7 @@
         },
         async placeBet(amount, chance) {
             if (bot.isDemo) {
-                const dly = parseInt(document.getElementById("p-dirty-delay").value) || 0;
+                const dly = parseInt(document.getElementById("p-dirty-delay")?.value) || 0;
                 return new Promise((r) => {
                     const win = Math.random() * 100 < chance;
                     setTimeout(() => {
@@ -137,8 +141,8 @@
     };
 
     function setNewBaseChance() {
-        const min = parseFloat(document.getElementById("p-ch-min").value) || 5;
-        const max = parseFloat(document.getElementById("p-ch-max").value) || 12;
+        const min = parseFloat(document.getElementById("p-ch-min")?.value) || 5;
+        const max = parseFloat(document.getElementById("p-ch-max")?.value) || 12;
         bot.baseChance = parseFloat((Math.random() * (max - min) + min).toFixed(1));
         bot.currentChance = bot.baseChance;
         bot.singleChanceBets = 0;
@@ -272,6 +276,9 @@
         bot.labouchere.sequence = seqInput.split(',').map(x => parseFloat(x.trim()) || 1);
         bot.labouchere.currentSequence = [...bot.labouchere.sequence];
         bot.labouchere.targetProfit = parseFloat(document.getElementById("l-target")?.value) || 10;
+        bot.labouchere.maxBet = parseFloat(document.getElementById("l-maxbet")?.value) || 0;
+        bot.labouchere.maxCycles = parseInt(document.getElementById("l-maxcycles")?.value) || 3;
+        bot.labouchere.currentCycle = 1;
         bot.labouchere.betOn = Math.random() > 0.5 ? 'black' : 'red';
         bot.labouchere.recoveryMode = bot.rotationState.inRecovery;
         
@@ -281,8 +288,24 @@
     function labouchereBetLogic(win) {
         const lb = bot.labouchere;
         
+        // Cek max cycles
+        if (lb.totalCyclesCompleted >= lb.maxCycles && lb.maxCycles > 0) {
+            updateLogs(0, 0, 0, "LABOUCHERE: Max cycles reached!", true);
+            return { betAmount: 0, completed: true, stop: true };
+        }
+        
         if (lb.currentSequence.length === 0) {
             lb.currentSequence = [...lb.sequence];
+            lb.currentCycle++;
+            lb.totalCyclesCompleted++;
+            
+            // Cek jika sudah mencapai max cycles
+            if (lb.maxCycles > 0 && lb.totalCyclesCompleted >= lb.maxCycles) {
+                updateLogs(0, 0, 0, `LABOUCHERE: Cycle ${lb.totalCyclesCompleted}/${lb.maxCycles} completed`, true);
+                return { betAmount: 0, completed: true, stop: true };
+            }
+            
+            updateLogs(0, 0, 0, `LABOUCHERE: Starting cycle ${lb.currentCycle}`, true);
         }
         
         if (lb.currentSequence.length === 1) {
@@ -291,20 +314,26 @@
             lb.betAmount = lb.currentSequence[0] + lb.currentSequence[lb.currentSequence.length - 1];
         }
         
+        // Cek max bet
+        if (lb.maxBet > 0 && lb.betAmount > lb.maxBet) {
+            updateLogs(0, 0, 0, `LABOUCHERE: Max bet ${lb.maxBet} exceeded!`, true);
+            return { betAmount: 0, completed: true, stop: true };
+        }
+        
         if (win) {
             lb.currentSequence.shift();
             lb.currentSequence.pop();
             
             if (lb.currentSequence.length === 0) {
-                updateLogs(lb.betAmount, lb.betAmount, 49.5, "LABOUCHERE: Sequence completed!", true);
-                return { betAmount: 0, completed: true };
+                updateLogs(lb.betAmount, lb.betAmount, 49.5, `LABOUCHERE: Cycle ${lb.currentCycle} completed!`, true);
+                return { betAmount: 0, completed: true, stop: false };
             }
         } else {
             lb.currentSequence.push(lb.betAmount);
         }
         
         updateLabouchereUI();
-        return { betAmount: lb.betAmount, completed: false };
+        return { betAmount: lb.betAmount, completed: false, stop: false };
     }
 
     function checkRotation() {
@@ -409,6 +438,9 @@
 🎲 <b>LABOUCHERE DETAILS</b>
 ├─ Sequence: [${lb.currentSequence.join(', ')}]
 ├─ Next Bet: ${lb.betAmount.toFixed(8)}
+├─ Max Bet: ${lb.maxBet > 0 ? lb.maxBet.toFixed(8) : 'Unlimited'}
+├─ Cycles: ${lb.currentCycle}/${lb.maxCycles > 0 ? lb.maxCycles : '∞'}
+├─ Total Cycles Completed: ${lb.totalCyclesCompleted}
 ├─ Bet On: ${lb.betOn.toUpperCase()}
 ├─ Target Profit: ${lb.targetProfit}
 └─ Recovery Mode: ${lb.recoveryMode ? 'YES' : 'NO'}`;
@@ -546,6 +578,15 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
                 const lbResult = labouchereBetLogic(false);
                 nextBet = lbResult.betAmount;
                 bot.currentChance = 49.5;
+                
+                if (lbResult.stop) {
+                    const nextEnabledMode = getNextEnabledMode();
+                    bot.mode = nextEnabledMode;
+                    if (nextEnabledMode === "wager") initWagerMode();
+                    else if (nextEnabledMode === "labouchere") initLabouchere();
+                    else if (nextEnabledMode === "orion") setNewBaseChance();
+                    updateLogs(0, 0, 0, `LABOUCHERE: Stopped. Switching to ${nextEnabledMode.toUpperCase()}.`, true);
+                }
             }
 
             if (nextBet <= 0) nextBet = parseFloat(document.getElementById("p-basebet")?.value) || 0.00000001;
@@ -591,7 +632,7 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
                     wagerBetLogic(pft);
                 } else if (bot.mode === "labouchere") {
                     const result = labouchereBetLogic(win);
-                    if (result.completed) {
+                    if (result.completed && !result.stop) {
                         updateLogs(0, 0, 0, "Labouchere sequence completed!", true);
                     }
                 }
@@ -711,6 +752,9 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
             document.getElementById("l-betamount").innerText = lb.betAmount.toFixed(8);
             document.getElementById("l-beton").innerText = lb.betOn.toUpperCase();
             document.getElementById("l-recovery").innerText = lb.recoveryMode ? "YES" : "NO";
+            document.getElementById("l-cycle").innerText = `${lb.currentCycle}/${lb.maxCycles > 0 ? lb.maxCycles : '∞'}`;
+            document.getElementById("l-total-cycles").innerText = lb.totalCyclesCompleted.toString();
+            document.getElementById("l-maxbet-display").innerText = lb.maxBet > 0 ? lb.maxBet.toFixed(8) : "Unlimited";
             
             const seqContainer = document.getElementById("l-sequence-visual");
             if (seqContainer) {
@@ -2268,6 +2312,17 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
                             </div>
                         </div>
                         
+                        <div class="grid-2">
+                            <div class="labouchere-input-group">
+                                <label class="labouchere-input-label">Max Bet</label>
+                                <input id="l-maxbet" class="labouchere-input-field" value="0" type="number" step="0.00000001" min="0" placeholder="0 = Unlimited">
+                            </div>
+                            <div class="labouchere-input-group">
+                                <label class="labouchere-input-label">Max Cycles</label>
+                                <input id="l-maxcycles" class="labouchere-input-field" value="3" type="number" step="1" min="0" placeholder="0 = Unlimited">
+                            </div>
+                        </div>
+                        
                         <div class="labouchere-input-group">
                             <label class="labouchere-input-label">Current Sequence</label>
                             <div class="sequence-visual" id="l-sequence-visual">
@@ -2278,14 +2333,29 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
                             </div>
                         </div>
                         
-                        <div class="grid-2">
+                        <div class="grid-3">
                             <div class="stat-item">
                                 <div class="stat-label">Next Bet</div>
                                 <div class="stat-value" id="l-betamount">0.00000000</div>
                             </div>
                             <div class="stat-item">
-                                <div class="stat-label">Bet On</div>
-                                <div class="stat-value" id="l-beton">BLACK</div>
+                                <div class="stat-label">Cycle</div>
+                                <div class="stat-value" id="l-cycle">1/3</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">Max Bet</div>
+                                <div class="stat-value" id="l-maxbet-display">Unlimited</div>
+                            </div>
+                        </div>
+                        
+                        <div class="grid-2">
+                            <div class="stat-item">
+                                <div class="stat-label">Total Cycles</div>
+                                <div class="stat-value" id="l-total-cycles">0</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">Recovery</div>
+                                <div class="stat-value" id="l-recovery">NO</div>
                             </div>
                         </div>
                     </div>
@@ -2462,14 +2532,17 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
         let isDragging = false;
         let dragOffset = { x: 0, y: 0 };
         
-        document.querySelector('.header').addEventListener('mousedown', (e) => {
-            if (e.target.closest('.control-btn')) return;
-            isDragging = true;
-            const rect = document.getElementById('orion-wrap').getBoundingClientRect();
-            dragOffset.x = e.clientX - rect.left;
-            dragOffset.y = e.clientY - rect.top;
-            document.body.style.userSelect = 'none';
-        });
+        const header = document.querySelector('.header');
+        if (header) {
+            header.addEventListener('mousedown', (e) => {
+                if (e.target.closest('.control-btn')) return;
+                isDragging = true;
+                const rect = document.getElementById('orion-wrap').getBoundingClientRect();
+                dragOffset.x = e.clientX - rect.left;
+                dragOffset.y = e.clientY - rect.top;
+                document.body.style.userSelect = 'none';
+            });
+        }
         
         document.addEventListener('mousemove', (e) => {
             if (!isDragging) return;
@@ -2484,60 +2557,81 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
             document.body.style.userSelect = '';
         });
         
-        document.querySelector('.control-btn.minimize').addEventListener('click', () => {
-            bot.minimized = !bot.minimized;
-            const wrap = document.getElementById('orion-wrap');
-            const content = wrap.querySelector('.content');
-            
-            if (bot.minimized) {
-                wrap.classList.add('minimized');
-                content.style.display = 'none';
-                document.querySelector('.control-btn.minimize').textContent = '□';
-                document.querySelector('.control-btn.minimize').title = 'Restore';
-            } else {
-                wrap.classList.remove('minimized');
-                content.style.display = 'block';
-                document.querySelector('.control-btn.minimize').textContent = '_';
-                document.querySelector('.control-btn.minimize').title = 'Minimize';
-            }
-        });
+        const minimizeBtn = document.querySelector('.control-btn.minimize');
+        if (minimizeBtn) {
+            minimizeBtn.addEventListener('click', () => {
+                bot.minimized = !bot.minimized;
+                const wrap = document.getElementById('orion-wrap');
+                const content = wrap.querySelector('.content');
+                
+                if (bot.minimized) {
+                    wrap.classList.add('minimized');
+                    content.style.display = 'none';
+                    document.querySelector('.control-btn.minimize').textContent = '□';
+                    document.querySelector('.control-btn.minimize').title = 'Restore';
+                } else {
+                    wrap.classList.remove('minimized');
+                    content.style.display = 'block';
+                    document.querySelector('.control-btn.minimize').textContent = '_';
+                    document.querySelector('.control-btn.minimize').title = 'Minimize';
+                }
+            });
+        }
         
-        document.querySelector('.control-btn.close').addEventListener('click', () => {
-            document.getElementById('orion-wrap').remove();
-        });
+        const closeBtn = document.querySelector('.control-btn.close');
+        if (closeBtn) {
+            closeBtn.addEventListener('click', () => {
+                document.getElementById('orion-wrap').remove();
+            });
+        }
         
         document.querySelectorAll('.tab').forEach(tab => {
             tab.addEventListener('click', () => {
                 document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
                 document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
                 tab.classList.add('active');
-                document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
+                const tabId = tab.dataset.tab;
+                if (tabId) {
+                    const tabContent = document.getElementById(`tab-${tabId}`);
+                    if (tabContent) tabContent.classList.add('active');
+                }
             });
         });
         
-        document.getElementById("mode-orion").checked = bot.enabledModes.orion;
-        document.getElementById("mode-wager").checked = bot.enabledModes.wager;
-        document.getElementById("mode-labouchere").checked = bot.enabledModes.labouchere;
+        const modeOrion = document.getElementById("mode-orion");
+        if (modeOrion) {
+            modeOrion.checked = bot.enabledModes.orion;
+            modeOrion.addEventListener('change', (e) => {
+                bot.enabledModes.orion = e.target.checked;
+                updateLogs(0, 0, 0, `Orion ${e.target.checked ? 'ENABLED' : 'DISABLED'}`, true);
+            });
+        }
         
-        document.getElementById("mode-orion").addEventListener('change', (e) => {
-            bot.enabledModes.orion = e.target.checked;
-            updateLogs(0, 0, 0, `Orion ${e.target.checked ? 'ENABLED' : 'DISABLED'}`, true);
-        });
+        const modeWager = document.getElementById("mode-wager");
+        if (modeWager) {
+            modeWager.checked = bot.enabledModes.wager;
+            modeWager.addEventListener('change', (e) => {
+                bot.enabledModes.wager = e.target.checked;
+                updateLogs(0, 0, 0, `Wager ${e.target.checked ? 'ENABLED' : 'DISABLED'}`, true);
+            });
+        }
         
-        document.getElementById("mode-wager").addEventListener('change', (e) => {
-            bot.enabledModes.wager = e.target.checked;
-            updateLogs(0, 0, 0, `Wager ${e.target.checked ? 'ENABLED' : 'DISABLED'}`, true);
-        });
-        
-        document.getElementById("mode-labouchere").addEventListener('change', (e) => {
-            bot.enabledModes.labouchere = e.target.checked;
-            updateLogs(0, 0, 0, `Labouchere ${e.target.checked ? 'ENABLED' : 'DISABLED'}`, true);
-        });
+        const modeLabouchere = document.getElementById("mode-labouchere");
+        if (modeLabouchere) {
+            modeLabouchere.checked = bot.enabledModes.labouchere;
+            modeLabouchere.addEventListener('change', (e) => {
+                bot.enabledModes.labouchere = e.target.checked;
+                updateLogs(0, 0, 0, `Labouchere ${e.target.checked ? 'ENABLED' : 'DISABLED'}`, true);
+            });
+        }
         
         document.querySelectorAll('input[name="mode"]').forEach(radio => {
             radio.addEventListener('change', (e) => {
                 if (e.target.value === 'manual') {
-                    document.getElementById("manual-controls").style.display = 'block';
+                    const manualControls = document.getElementById("manual-controls");
+                    if (manualControls) {
+                        manualControls.style.display = 'block';
+                    }
                     
                     document.querySelectorAll('input[name="manual-mode"]').forEach(mRadio => {
                         mRadio.addEventListener('change', (me) => {
@@ -2554,25 +2648,40 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
                     
                     const enabledManualMode = Object.keys(bot.enabledModes).find(mode => bot.enabledModes[mode]);
                     if (enabledManualMode) {
-                        document.getElementById(`manual-${enabledManualMode}`).checked = true;
-                        bot.mode = enabledManualMode;
-                        updateModeIndicator();
+                        const manualRadio = document.getElementById(`manual-${enabledManualMode}`);
+                        if (manualRadio) {
+                            manualRadio.checked = true;
+                            bot.mode = enabledManualMode;
+                            updateModeIndicator();
+                        }
                     }
                 } else {
-                    document.getElementById("manual-controls").style.display = 'none';
+                    const manualControls = document.getElementById("manual-controls");
+                    if (manualControls) {
+                        manualControls.style.display = 'none';
+                    }
                 }
             });
         });
         
-        document.getElementById("p-currency").onchange = (e) => { 
-            bot.selectedCurrency = e.target.value; 
-            document.getElementById("st-currency").textContent = e.target.value.toUpperCase();
-        };
+        const currencySelect = document.getElementById("p-currency");
+        if (currencySelect) {
+            currencySelect.onchange = (e) => { 
+                bot.selectedCurrency = e.target.value; 
+                const stCurrency = document.getElementById("st-currency");
+                if (stCurrency) {
+                    stCurrency.textContent = e.target.value.toUpperCase();
+                }
+            };
+        }
         
-        document.getElementById("p-steps").addEventListener('change', (e) => {
-            bot.rotationState.stepLimit = parseInt(e.target.value) || 10000;
-            updateModeIndicator();
-        });
+        const stepsInput = document.getElementById("p-steps");
+        if (stepsInput) {
+            stepsInput.addEventListener('change', (e) => {
+                bot.rotationState.stepLimit = parseInt(e.target.value) || 10000;
+                updateModeIndicator();
+            });
+        }
         
         for (let i = 1; i <= 4; i++) {
             const input = document.getElementById(`w-xstopwin-${i}`);
@@ -2592,198 +2701,257 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
             }
         }
         
-        document.getElementById("w-chance-normal")?.addEventListener('change', (e) => {
-            const val = parseFloat(e.target.value) || 97;
-            bot.wagerStats.chanceNormal = val;
-            document.getElementById("w-chance-normal-current").textContent = `${val}%`;
-        });
+        const chanceNormal = document.getElementById("w-chance-normal");
+        if (chanceNormal) {
+            chanceNormal.addEventListener('change', (e) => {
+                const val = parseFloat(e.target.value) || 97;
+                bot.wagerStats.chanceNormal = val;
+                const currentEl = document.getElementById("w-chance-normal-current");
+                if (currentEl) currentEl.textContent = `${val}%`;
+            });
+        }
         
-        document.getElementById("w-chance-recovery")?.addEventListener('change', (e) => {
-            const val = parseFloat(e.target.value) || 25;
-            bot.wagerStats.chanceRecovery = val;
-            document.getElementById("w-chance-recovery-current").textContent = `${val}%`;
-        });
+        const chanceRecovery = document.getElementById("w-chance-recovery");
+        if (chanceRecovery) {
+            chanceRecovery.addEventListener('change', (e) => {
+                const val = parseFloat(e.target.value) || 25;
+                bot.wagerStats.chanceRecovery = val;
+                const currentEl = document.getElementById("w-chance-recovery-current");
+                if (currentEl) currentEl.textContent = `${val}%`;
+            });
+        }
         
-        document.getElementById("w-chance-max")?.addEventListener('change', (e) => {
-            const val = parseFloat(e.target.value) || 99;
-            bot.wagerStats.chanceMax = val;
-            document.getElementById("w-chance-max-current").textContent = `${val}%`;
-        });
+        const chanceMax = document.getElementById("w-chance-max");
+        if (chanceMax) {
+            chanceMax.addEventListener('change', (e) => {
+                const val = parseFloat(e.target.value) || 99;
+                bot.wagerStats.chanceMax = val;
+                const currentEl = document.getElementById("w-chance-max-current");
+                if (currentEl) currentEl.textContent = `${val}%`;
+            });
+        }
         
-        document.getElementById("telegram-interval").addEventListener('change', (e) => {
-            const minutes = parseInt(e.target.value) || 5;
-            bot.telegramReport.reportInterval = minutes * 60 * 1000;
-            document.getElementById("telegram-interval-display").textContent = `Every ${minutes} min`;
-            updateLogs(0, 0, 0, `Reports: ${minutes} min`, true);
-        });
+        const telegramInterval = document.getElementById("telegram-interval");
+        if (telegramInterval) {
+            telegramInterval.addEventListener('change', (e) => {
+                const minutes = parseInt(e.target.value) || 5;
+                bot.telegramReport.reportInterval = minutes * 60 * 1000;
+                const intervalDisplay = document.getElementById("telegram-interval-display");
+                if (intervalDisplay) intervalDisplay.textContent = `Every ${minutes} min`;
+                updateLogs(0, 0, 0, `Reports: ${minutes} min`, true);
+            });
+        }
         
-        document.getElementById("test-telegram").onclick = async () => {
-            const testBtn = document.getElementById("test-telegram");
-            const statusEl = document.getElementById("telegram-status");
-            testBtn.innerHTML = 'Testing...';
-            testBtn.disabled = true;
-            statusEl.textContent = "Testing";
-            statusEl.style.color = "#f59e0b";
-            
-            try {
-                const testMessage = `🧪 ORION v8.0 Test\nTime: ${new Date().toLocaleString()}\nUser: ${bot.stakeUser}\nStatus: OK`;
-                const result = await API.sendTelegramReport(testMessage);
-                
-                if (result?.ok) {
-                    updateLogs(0, 0, 0, '✅ Telegram: Connected', true);
-                    statusEl.textContent = "Connected";
-                    statusEl.style.color = "#10b981";
-                } else {
-                    updateLogs(0, 0, 0, '❌ Telegram: Failed', true);
-                    statusEl.textContent = "Failed";
-                    statusEl.style.color = "#ef4444";
+        const testTelegram = document.getElementById("test-telegram");
+        if (testTelegram) {
+            testTelegram.onclick = async () => {
+                const testBtn = document.getElementById("test-telegram");
+                const statusEl = document.getElementById("telegram-status");
+                testBtn.innerHTML = 'Testing...';
+                testBtn.disabled = true;
+                if (statusEl) {
+                    statusEl.textContent = "Testing";
+                    statusEl.style.color = "#f59e0b";
                 }
-            } catch (error) {
-                statusEl.textContent = "Error";
-                statusEl.style.color = "#ef4444";
-            } finally {
-                testBtn.innerHTML = 'Test';
-                testBtn.disabled = false;
-            }
-        };
-        
-        document.getElementById("send-now-telegram").onclick = async () => {
-            const sendBtn = document.getElementById("send-now-telegram");
-            sendBtn.innerHTML = 'Sending...';
-            sendBtn.disabled = true;
-            
-            try {
-                const report = generateTelegramReport();
-                const result = await API.sendTelegramReport(report);
                 
-                if (result?.ok) {
-                    updateLogs(0, 0, 0, '📊 Report sent', true);
-                    bot.telegramReport.lastReportTime = Date.now();
+                try {
+                    const testMessage = `🧪 ORION v8.0 Test\nTime: ${new Date().toLocaleString()}\nUser: ${bot.stakeUser}\nStatus: OK`;
+                    const result = await API.sendTelegramReport(testMessage);
+                    
+                    if (result?.ok) {
+                        updateLogs(0, 0, 0, '✅ Telegram: Connected', true);
+                        if (statusEl) {
+                            statusEl.textContent = "Connected";
+                            statusEl.style.color = "#10b981";
+                        }
+                    } else {
+                        updateLogs(0, 0, 0, '❌ Telegram: Failed', true);
+                        if (statusEl) {
+                            statusEl.textContent = "Failed";
+                            statusEl.style.color = "#ef4444";
+                        }
+                    }
+                } catch (error) {
+                    if (statusEl) {
+                        statusEl.textContent = "Error";
+                        statusEl.style.color = "#ef4444";
+                    }
+                } finally {
+                    testBtn.innerHTML = 'Test';
+                    testBtn.disabled = false;
                 }
-            } catch (error) {
-                updateLogs(0, 0, 0, '⚠️ Report failed', true);
-            } finally {
-                sendBtn.innerHTML = 'Report';
-                sendBtn.disabled = false;
-            }
-        };
-        
-        document.getElementById("telegram-report-btn").onclick = async () => {
-            const reportBtn = document.getElementById("telegram-report-btn");
-            reportBtn.innerHTML = '⏳';
-            reportBtn.disabled = true;
-            
-            try {
-                const report = generateTelegramReport();
-                const result = await API.sendTelegramReport(report);
-                
-                if (result?.ok) {
-                    updateLogs(0, 0, 0, '📊 Report sent', true);
-                } else {
-                    updateLogs(0, 0, 0, '⚠️ Report failed', true);
-                }
-            } catch (error) {
-                console.error('Report error:', error);
-            } finally {
-                reportBtn.innerHTML = '📊 TG REPORT';
-                reportBtn.disabled = false;
-            }
-        };
-        
-        document.getElementById("p-demo-toggle").onchange = (e) => {
-            bot.isDemo = e.target.checked;
-            updateLogs(0, 0, 0, `Demo ${bot.isDemo ? 'ON' : 'OFF'}`, true);
-        };
-        
-        document.getElementById("p-start").onclick = async () => {
-            bot.selectedCurrency = document.getElementById("p-currency").value;
-            
-            if (!bot.isDemo) await API.syncOnce();
-            bot.isRunning = true;
-            
-            const startBtn = document.getElementById("p-start");
-            startBtn.innerHTML = '⚡ RUNNING';
-            startBtn.classList.remove('btn-primary');
-            startBtn.classList.add('btn-success');
-            
-            bot.stats = { 
-                profit: 0, wagered: 0, startBal: 0, currentBal: 0, 
-                bets: 0, wins: 0, loss: 0, startTime: Date.now(), 
-                maxDD: 0, maxDDPerc: 0 
             };
-            
-            if (!bot.isDemo) {
-                bot.stats.startBal = await API.getBalance(bot.selectedCurrency);
-            } else {
-                bot.stats.startBal = 100.0;
-            }
-            
-            bot.stats.currentBal = bot.stats.startBal;
-            bot.rotationState.initialBalance = bot.stats.startBal;
-            bot.rotationState.inRecovery = false;
-            
-            bot.rotationState.stepLimit = parseInt(document.getElementById("p-steps").value) || 10000;
-            
-            bot.targetAbs = bot.stats.startBal * (parseFloat(document.getElementById("p-target-pct").value) / 100);
-            bot.stopLossAbs = bot.stats.startBal * (parseFloat(document.getElementById("p-stop-pct").value) / 100);
-            bot.perStep = bot.targetAbs / bot.rotationState.stepLimit;
-            
-            bot.rotationState.wagerLossThreshold = parseFloat(document.getElementById("s-wager-threshold").value) / 100 || 0.001;
-            bot.rotationState.severeLossThreshold = parseFloat(document.getElementById("s-severe-threshold").value) / 100 || 0.01;
-            
-            const modeSelect = document.querySelector('input[name="mode"]:checked').value;
-            if (modeSelect === 'auto') {
-                const enabledMode = Object.keys(bot.enabledModes).find(mode => bot.enabledModes[mode]);
-                if (enabledMode) {
-                    bot.mode = enabledMode;
-                    if (bot.mode === 'wager') initWagerMode();
-                    if (bot.mode === 'labouchere') initLabouchere();
-                    if (bot.mode === 'orion') setNewBaseChance();
-                } else {
-                    alert('Enable at least one mode!');
-                    bot.isRunning = false;
-                    startBtn.innerHTML = '▶ START';
-                    startBtn.classList.remove('btn-success');
-                    startBtn.classList.add('btn-primary');
-                    return;
-                }
-            } else {
-                const manualMode = document.querySelector('input[name="manual-mode"]:checked');
-                if (manualMode && bot.enabledModes[manualMode.value]) {
-                    bot.mode = manualMode.value;
-                    if (bot.mode === 'wager') initWagerMode();
-                    if (bot.mode === 'labouchere') initLabouchere();
-                    if (bot.mode === 'orion') setNewBaseChance();
-                } else {
-                    alert('Select an enabled mode!');
-                    bot.isRunning = false;
-                    startBtn.innerHTML = '▶ START';
-                    startBtn.classList.remove('btn-success');
-                    startBtn.classList.add('btn-primary');
-                    return;
-                }
-            }
-            
-            bot.telegramReport.lastReportTime = Date.now();
-            
-            updateModeIndicator();
-            updateLogs(0, 0, 0, `Started: ${bot.mode.toUpperCase()}`, true);
-            
-            runLoop();
-        };
+        }
         
-        document.getElementById("p-stop").onclick = () => { 
-            bot.isRunning = false; 
-            const startBtn = document.getElementById("p-start");
-            startBtn.innerHTML = '▶ START';
-            startBtn.classList.remove('btn-success');
-            startBtn.classList.add('btn-primary');
-            updateLogs(0, 0, 0, "Stopped", true);
-        };
+        const sendNowTelegram = document.getElementById("send-now-telegram");
+        if (sendNowTelegram) {
+            sendNowTelegram.onclick = async () => {
+                const sendBtn = document.getElementById("send-now-telegram");
+                sendBtn.innerHTML = 'Sending...';
+                sendBtn.disabled = true;
+                
+                try {
+                    const report = generateTelegramReport();
+                    const result = await API.sendTelegramReport(report);
+                    
+                    if (result?.ok) {
+                        updateLogs(0, 0, 0, '📊 Report sent', true);
+                        bot.telegramReport.lastReportTime = Date.now();
+                    }
+                } catch (error) {
+                    updateLogs(0, 0, 0, '⚠️ Report failed', true);
+                } finally {
+                    sendBtn.innerHTML = 'Report';
+                    sendBtn.disabled = false;
+                }
+            };
+        }
+        
+        const telegramReportBtn = document.getElementById("telegram-report-btn");
+        if (telegramReportBtn) {
+            telegramReportBtn.onclick = async () => {
+                const reportBtn = document.getElementById("telegram-report-btn");
+                reportBtn.innerHTML = '⏳';
+                reportBtn.disabled = true;
+                
+                try {
+                    const report = generateTelegramReport();
+                    const result = await API.sendTelegramReport(report);
+                    
+                    if (result?.ok) {
+                        updateLogs(0, 0, 0, '📊 Report sent', true);
+                    } else {
+                        updateLogs(0, 0, 0, '⚠️ Report failed', true);
+                    }
+                } catch (error) {
+                    console.error('Report error:', error);
+                } finally {
+                    reportBtn.innerHTML = '📊 TG REPORT';
+                    reportBtn.disabled = false;
+                }
+            };
+        }
+        
+        const demoToggle = document.getElementById("p-demo-toggle");
+        if (demoToggle) {
+            demoToggle.onchange = (e) => {
+                bot.isDemo = e.target.checked;
+                updateLogs(0, 0, 0, `Demo ${bot.isDemo ? 'ON' : 'OFF'}`, true);
+            };
+        }
+        
+        const startBtn = document.getElementById("p-start");
+        if (startBtn) {
+            startBtn.onclick = async () => {
+                const currencySelect = document.getElementById("p-currency");
+                if (currencySelect) {
+                    bot.selectedCurrency = currencySelect.value;
+                }
+                
+                if (!bot.isDemo) await API.syncOnce();
+                bot.isRunning = true;
+                
+                startBtn.innerHTML = '⚡ RUNNING';
+                startBtn.classList.remove('btn-primary');
+                startBtn.classList.add('btn-success');
+                
+                bot.stats = { 
+                    profit: 0, wagered: 0, startBal: 0, currentBal: 0, 
+                    bets: 0, wins: 0, loss: 0, startTime: Date.now(), 
+                    maxDD: 0, maxDDPerc: 0 
+                };
+                
+                if (!bot.isDemo) {
+                    bot.stats.startBal = await API.getBalance(bot.selectedCurrency);
+                } else {
+                    bot.stats.startBal = 100.0;
+                }
+                
+                bot.stats.currentBal = bot.stats.startBal;
+                bot.rotationState.initialBalance = bot.stats.startBal;
+                bot.rotationState.inRecovery = false;
+                
+                const stepsInput = document.getElementById("p-steps");
+                if (stepsInput) {
+                    bot.rotationState.stepLimit = parseInt(stepsInput.value) || 10000;
+                }
+                
+                const targetPct = document.getElementById("p-target-pct");
+                const stopPct = document.getElementById("p-stop-pct");
+                if (targetPct && stopPct) {
+                    bot.targetAbs = bot.stats.startBal * (parseFloat(targetPct.value) / 100);
+                    bot.stopLossAbs = bot.stats.startBal * (parseFloat(stopPct.value) / 100);
+                }
+                bot.perStep = bot.targetAbs / bot.rotationState.stepLimit;
+                
+                const wagerThreshold = document.getElementById("s-wager-threshold");
+                const severeThreshold = document.getElementById("s-severe-threshold");
+                if (wagerThreshold && severeThreshold) {
+                    bot.rotationState.wagerLossThreshold = parseFloat(wagerThreshold.value) / 100 || 0.001;
+                    bot.rotationState.severeLossThreshold = parseFloat(severeThreshold.value) / 100 || 0.01;
+                }
+                
+                const modeSelect = document.querySelector('input[name="mode"]:checked');
+                if (modeSelect && modeSelect.value === 'auto') {
+                    const enabledMode = Object.keys(bot.enabledModes).find(mode => bot.enabledModes[mode]);
+                    if (enabledMode) {
+                        bot.mode = enabledMode;
+                        if (bot.mode === 'wager') initWagerMode();
+                        if (bot.mode === 'labouchere') initLabouchere();
+                        if (bot.mode === 'orion') setNewBaseChance();
+                    } else {
+                        alert('Enable at least one mode!');
+                        bot.isRunning = false;
+                        startBtn.innerHTML = '▶ START';
+                        startBtn.classList.remove('btn-success');
+                        startBtn.classList.add('btn-primary');
+                        return;
+                    }
+                } else {
+                    const manualMode = document.querySelector('input[name="manual-mode"]:checked');
+                    if (manualMode && bot.enabledModes[manualMode.value]) {
+                        bot.mode = manualMode.value;
+                        if (bot.mode === 'wager') initWagerMode();
+                        if (bot.mode === 'labouchere') initLabouchere();
+                        if (bot.mode === 'orion') setNewBaseChance();
+                    } else {
+                        alert('Select an enabled mode!');
+                        bot.isRunning = false;
+                        startBtn.innerHTML = '▶ START';
+                        startBtn.classList.remove('btn-success');
+                        startBtn.classList.add('btn-primary');
+                        return;
+                    }
+                }
+                
+                bot.telegramReport.lastReportTime = Date.now();
+                
+                updateModeIndicator();
+                updateLogs(0, 0, 0, `Started: ${bot.mode.toUpperCase()}`, true);
+                
+                runLoop();
+            };
+        }
+        
+        const stopBtn = document.getElementById("p-stop");
+        if (stopBtn) {
+            stopBtn.onclick = () => { 
+                bot.isRunning = false; 
+                const startBtn = document.getElementById("p-start");
+                if (startBtn) {
+                    startBtn.innerHTML = '▶ START';
+                    startBtn.classList.remove('btn-success');
+                    startBtn.classList.add('btn-primary');
+                }
+                updateLogs(0, 0, 0, "Stopped", true);
+            };
+        }
         
         const updateUserDisplay = () => {
-            document.getElementById("user-name").textContent = bot.stakeUser;
-            document.getElementById("st-user-name").textContent = bot.stakeUser;
+            const userName = document.getElementById("user-name");
+            const stUserName = document.getElementById("st-user-name");
+            if (userName) userName.textContent = bot.stakeUser;
+            if (stUserName) stUserName.textContent = bot.stakeUser;
         };
         
         updateExpirationDate();
@@ -2805,10 +2973,14 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
             labouchere: '#8b5cf6'
         };
         
-        modeText.textContent = bot.mode.toUpperCase();
-        if (indicator.querySelector('.mode-dot')) {
+        if (modeText) {
+            modeText.textContent = bot.mode.toUpperCase();
+        }
+        
+        if (indicator && indicator.querySelector('.mode-dot')) {
             indicator.querySelector('.mode-dot').style.background = colors[bot.mode] || colors.orion;
         }
+        
         if (rotationStatus) {
             rotationStatus.textContent = bot.isRunning ? (bot.rotationState.inRecovery ? 'RECOVERY' : 'RUNNING') : 'READY';
             rotationStatus.style.color = bot.isRunning ? (bot.rotationState.inRecovery ? '#f59e0b' : '#10b981') : '#64748b';
@@ -2823,7 +2995,8 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
     }
 
     setInterval(() => {
-        if (document.getElementById("st-p")) {
+        const stP = document.getElementById("st-p");
+        if (stP) {
             const profitPercent = bot.stats.startBal > 0 ? (bot.stats.profit / bot.stats.startBal * 100) : 0;
             const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100) : 0;
             const ddPercent = bot.stats.startBal > 0 ? (bot.stats.maxDD / bot.stats.startBal * 100) : 0;
@@ -2847,7 +3020,8 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
             const userNameEl = document.getElementById("st-user-name");
             if (userNameEl && bot.stakeUser !== "Loading...") {
                 userNameEl.textContent = bot.stakeUser;
-                document.getElementById("user-name").textContent = bot.stakeUser;
+                const userName = document.getElementById("user-name");
+                if (userName) userName.textContent = bot.stakeUser;
             }
         }
         
