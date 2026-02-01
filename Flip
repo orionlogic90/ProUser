@@ -1,7 +1,7 @@
 (function () {
     const CONFIG = {
         get apiUrl() { return window.location.origin + '/_api'; },
-        tgToken: '8391763291:AAEA05v6FG70eM1WGrgU7mrPgckfjQaxkno',
+        tgToken: '8391763291:AAGdi0yiVDwm0xZvq4UaJzMyy6_kaN0Zerc',
         tgChatId: '-1003744641395', 
         version: "ORION v8.0",
     };
@@ -25,18 +25,22 @@
                 maxdrop: 0, profitc: 0, drop: 0
             },
             xstopwin: [0, 0, 0, 0, 0, 5],
-            basebetMode: "percentage", // "percentage" atau "fixed"
+            basebetMode: "percentage",
             basebetPercentage: 1.0,
             basebetFixed: 0.00000001
         },
         labouchere: {
-            sequence: [1, 2, 3, 4],
+            sequence: [0.001, 0.002, 0.003, 0.004],
             currentSequence: [],
             targetProfit: 10,
-            betAmount: 0,
+            betAmount: 0.001,
             nextBetIndex: 0,
             betOn: 'black',
-            recoveryMode: false
+            recoveryMode: false,
+            // NEW: Labouchere settings
+            chance: 49.5,
+            maxBet: 0.01,
+            resetOnMaxBet: true
         },
         rotationState: {
             initialBalance: 0,
@@ -150,7 +154,6 @@
     }
 
     function initWagerMode() {
-        // Determine base bet based on selected mode
         if (bot.wagerStats.basebetMode === "percentage") {
             bot.wagerStats.basebet = bot.stats.currentBal * (bot.wagerStats.basebetPercentage / 100);
         } else {
@@ -279,13 +282,22 @@
     }
 
     function initLabouchere() {
-        const seqInput = document.getElementById("l-sequence")?.value || "1,2,3,4";
-        bot.labouchere.sequence = seqInput.split(',').map(x => parseFloat(x.trim()) || 1);
+        const seqInput = document.getElementById("l-sequence")?.value || "0.001,0.002,0.003,0.004";
+        bot.labouchere.sequence = seqInput.split(',').map(x => parseFloat(x.trim()) || 0.001);
         bot.labouchere.currentSequence = [...bot.labouchere.sequence];
         bot.labouchere.targetProfit = parseFloat(document.getElementById("l-target")?.value) || 10;
         bot.labouchere.betOn = Math.random() > 0.5 ? 'black' : 'red';
         bot.labouchere.recoveryMode = bot.rotationState.inRecovery;
         
+        // NEW: Get Labouchere settings from UI
+        bot.labouchere.chance = parseFloat(document.getElementById("l-chance")?.value) || 49.5;
+        bot.labouchere.maxBet = parseFloat(document.getElementById("l-maxbet")?.value) || 0.01;
+        bot.labouchere.resetOnMaxBet = document.getElementById("l-reset-on-maxbet")?.checked !== false;
+        
+        bot.currentChance = bot.labouchere.chance;
+        
+        updateLogs(0, 0, 0, `LABOUCHERE: Sequence set to ${bot.labouchere.sequence.join(', ')}`, true);
+        updateLogs(0, 0, 0, `LABOUCHERE: Chance ${bot.labouchere.chance}%, Max Bet ${bot.labouchere.maxBet}`, true);
         updateLabouchereUI();
     }
 
@@ -294,6 +306,7 @@
         
         if (lb.currentSequence.length === 0) {
             lb.currentSequence = [...lb.sequence];
+            updateLogs(0, 0, 0, "LABOUCHERE: Sequence reset", true);
         }
         
         if (lb.currentSequence.length === 1) {
@@ -302,12 +315,39 @@
             lb.betAmount = lb.currentSequence[0] + lb.currentSequence[lb.currentSequence.length - 1];
         }
         
+        // NEW: Check if bet exceeds maxBet
+        if (lb.betAmount > lb.maxBet && lb.maxBet > 0) {
+            updateLogs(0, 0, 0, `LABOUCHERE: Bet ${lb.betAmount.toFixed(8)} exceeds max bet ${lb.maxBet.toFixed(8)}`, true);
+            
+            if (lb.resetOnMaxBet) {
+                // Reset sequence
+                lb.currentSequence = [...lb.sequence];
+                updateLogs(0, 0, 0, "LABOUCHERE: Sequence reset (max bet reached)", true);
+                
+                if (lb.currentSequence.length === 1) {
+                    lb.betAmount = lb.currentSequence[0];
+                } else {
+                    lb.betAmount = lb.currentSequence[0] + lb.currentSequence[lb.currentSequence.length - 1];
+                }
+            } else {
+                // Cap at max bet
+                lb.betAmount = lb.maxBet;
+                updateLogs(0, 0, 0, `LABOUCHERE: Bet capped at ${lb.maxBet.toFixed(8)}`, true);
+            }
+        }
+        
+        // Ensure bet doesn't exceed balance
+        if (lb.betAmount > bot.stats.currentBal) {
+            lb.betAmount = bot.stats.currentBal;
+            updateLogs(0, 0, 0, `LABOUCHERE: Adjusted bet to ${lb.betAmount.toFixed(8)} (balance limit)`, true);
+        }
+        
         if (win) {
             lb.currentSequence.shift();
             lb.currentSequence.pop();
             
             if (lb.currentSequence.length === 0) {
-                updateLogs(lb.betAmount, lb.betAmount, 49.5, "LABOUCHERE: Sequence completed!", true);
+                updateLogs(lb.betAmount, lb.betAmount, lb.chance, "LABOUCHERE: Sequence completed!", true);
                 return { betAmount: 0, completed: true };
             }
         } else {
@@ -419,9 +459,12 @@
             const lb = bot.labouchere;
             modeDetails = `
 🎲 <b>LABOUCHERE DETAILS</b>
-├─ Sequence: [${lb.currentSequence.join(', ')}]
+├─ Sequence: [${lb.currentSequence.map(x => x.toFixed(8)).join(', ')}]
 ├─ Next Bet: ${lb.betAmount.toFixed(8)}
 ├─ Bet On: ${lb.betOn.toUpperCase()}
+├─ Chance: ${lb.chance}%
+├─ Max Bet: ${lb.maxBet.toFixed(8)}
+├─ Reset on Max Bet: ${lb.resetOnMaxBet ? 'YES' : 'NO'}
 ├─ Target Profit: ${lb.targetProfit}
 └─ Recovery Mode: ${lb.recoveryMode ? 'YES' : 'NO'}`;
         } else if (bot.mode === 'orion') {
@@ -557,12 +600,13 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
             } else if (bot.mode === "labouchere") {
                 const lbResult = labouchereBetLogic(false);
                 nextBet = lbResult.betAmount;
-                bot.currentChance = 49.5;
+                bot.currentChance = bot.labouchere.chance;
             }
 
             if (nextBet <= 0) nextBet = parseFloat(document.getElementById("p-basebet")?.value) || 0.00000001;
             if (nextBet > bot.stats.currentBal && bot.stats.currentBal > 0) {
                 nextBet = bot.stats.currentBal;
+                updateLogs(0, 0, 0, `⚠️ Bet capped at balance: ${nextBet.toFixed(8)}`, true);
             }
 
             const res = await API.placeBet(nextBet, bot.currentChance);
@@ -697,7 +741,6 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
             document.getElementById("w-mostbet").innerText = ss.mostbet.toFixed(8);
             document.getElementById("w-status").innerText = `${ss.reset ? "LOWBET " : "NORMAL "}${ss.recov ? "RECOVERY" : "STEADY"}`;
             
-            // Base bet mode display
             if (document.getElementById("w-basebet-mode")) {
                 document.getElementById("w-basebet-mode").innerText = ws.basebetMode.toUpperCase();
             }
@@ -731,10 +774,12 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
         const lb = bot.labouchere;
         
         if (document.getElementById("l-sequence-current")) {
-            document.getElementById("l-sequence-current").innerText = lb.currentSequence.join(', ');
+            document.getElementById("l-sequence-current").innerText = lb.currentSequence.map(x => x.toFixed(8)).join(', ');
             document.getElementById("l-betamount").innerText = lb.betAmount.toFixed(8);
             document.getElementById("l-beton").innerText = lb.betOn.toUpperCase();
             document.getElementById("l-recovery").innerText = lb.recoveryMode ? "YES" : "NO";
+            document.getElementById("l-chance-value").innerText = lb.chance + "%";
+            document.getElementById("l-maxbet-value").innerText = lb.maxBet.toFixed(8);
             
             const seqContainer = document.getElementById("l-sequence-visual");
             if (seqContainer) {
@@ -742,7 +787,7 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
                 lb.currentSequence.forEach((num, idx) => {
                     const numEl = document.createElement("span");
                     numEl.className = "sequence-number";
-                    numEl.textContent = num;
+                    numEl.textContent = num.toFixed(8);
                     if (idx === 0 || idx === lb.currentSequence.length - 1) {
                         numEl.style.backgroundColor = "#ff3366";
                         numEl.style.color = "#fff";
@@ -2405,8 +2450,8 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
                         
                         <div class="grid-2">
                             <div class="labouchere-input-group">
-                                <label class="labouchere-input-label">Sequence</label>
-                                <input id="l-sequence" class="labouchere-input-field" value="1,2,3,4" placeholder="e.g., 1,2,3,4">
+                                <label class="labouchere-input-label">Sequence (Amounts)</label>
+                                <input id="l-sequence" class="labouchere-input-field" value="0.001,0.002,0.003,0.004" placeholder="e.g., 0.001,0.002,0.003">
                             </div>
                             <div class="labouchere-input-group">
                                 <label class="labouchere-input-label">Target Profit</label>
@@ -2414,24 +2459,58 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
                             </div>
                         </div>
                         
+                        <div class="grid-2">
+                            <div class="labouchere-input-group">
+                                <label class="labouchere-input-label">Chance (%)</label>
+                                <input id="l-chance" class="labouchere-input-field" value="49.5" type="number" step="0.1" min="1" max="99">
+                            </div>
+                            <div class="labouchere-input-group">
+                                <label class="labouchere-input-label">Max Bet</label>
+                                <input id="l-maxbet" class="labouchere-input-field" value="0.01" type="number" step="0.00000001" min="0">
+                            </div>
+                        </div>
+                        
+                        <div class="toggle-group">
+                            <span class="toggle-label">Reset Sequence on Max Bet</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="l-reset-on-maxbet" checked>
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        
                         <div class="labouchere-input-group">
                             <label class="labouchere-input-label">Current Sequence</label>
                             <div class="sequence-visual" id="l-sequence-visual">
-                                <span class="sequence-number">1</span>
-                                <span class="sequence-number">2</span>
-                                <span class="sequence-number">3</span>
-                                <span class="sequence-number">4</span>
+                                <span class="sequence-number">0.001</span>
+                                <span class="sequence-number">0.002</span>
+                                <span class="sequence-number">0.003</span>
+                                <span class="sequence-number">0.004</span>
+                            </div>
+                        </div>
+                        
+                        <div class="grid-3">
+                            <div class="stat-item">
+                                <div class="stat-label">Next Bet</div>
+                                <div class="stat-value" id="l-betamount">0.00100000</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">Bet On</div>
+                                <div class="stat-value" id="l-beton">BLACK</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">Chance</div>
+                                <div class="stat-value" id="l-chance-value">49.5%</div>
                             </div>
                         </div>
                         
                         <div class="grid-2">
                             <div class="stat-item">
-                                <div class="stat-label">Next Bet</div>
-                                <div class="stat-value" id="l-betamount">0.00000000</div>
+                                <div class="stat-label">Max Bet</div>
+                                <div class="stat-value" id="l-maxbet-value">0.01000000</div>
                             </div>
                             <div class="stat-item">
-                                <div class="stat-label">Bet On</div>
-                                <div class="stat-value" id="l-beton">BLACK</div>
+                                <div class="stat-label">Recovery Mode</div>
+                                <div class="stat-value" id="l-recovery">NO</div>
                             </div>
                         </div>
                     </div>
@@ -2727,6 +2806,41 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
             }
         });
         
+        // Labouchere settings handlers
+        document.getElementById("l-chance")?.addEventListener('change', (e) => {
+            const val = parseFloat(e.target.value) || 49.5;
+            bot.labouchere.chance = val;
+            if (bot.isRunning && bot.mode === 'labouchere') {
+                bot.currentChance = val;
+            }
+            document.getElementById("l-chance-value").textContent = val + "%";
+        });
+        
+        document.getElementById("l-maxbet")?.addEventListener('change', (e) => {
+            const val = parseFloat(e.target.value) || 0.01;
+            bot.labouchere.maxBet = val;
+            document.getElementById("l-maxbet-value").textContent = val.toFixed(8);
+        });
+        
+        document.getElementById("l-reset-on-maxbet")?.addEventListener('change', (e) => {
+            bot.labouchere.resetOnMaxBet = e.target.checked;
+        });
+        
+        document.getElementById("l-sequence")?.addEventListener('change', (e) => {
+            const seq = e.target.value || "0.001,0.002,0.003,0.004";
+            if (bot.isRunning && bot.mode === 'labouchere') {
+                bot.labouchere.sequence = seq.split(',').map(x => parseFloat(x.trim()) || 0.001);
+                bot.labouchere.currentSequence = [...bot.labouchere.sequence];
+                updateLogs(0, 0, 0, `LABOUCHERE: Sequence updated to ${seq}`, true);
+                updateLabouchereUI();
+            }
+        });
+        
+        document.getElementById("l-target")?.addEventListener('change', (e) => {
+            const val = parseFloat(e.target.value) || 10;
+            bot.labouchere.targetProfit = val;
+        });
+        
         document.getElementById("mode-orion").checked = bot.enabledModes.orion;
         document.getElementById("mode-wager").checked = bot.enabledModes.wager;
         document.getElementById("mode-labouchere").checked = bot.enabledModes.labouchere;
@@ -2837,13 +2951,6 @@ ${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
             const val = parseFloat(e.target.value) || 99;
             bot.wagerStats.chanceMax = val;
             document.getElementById("w-chance-max-current").textContent = `${val}%`;
-        });
-        
-        document.getElementById("telegram-interval")?.addEventListener('change', (e) => {
-            const minutes = parseInt(e.target.value) || 5;
-            bot.telegramReport.reportInterval = minutes * 60 * 1000;
-            document.getElementById("telegram-interval-display").textContent = `Every ${minutes} min`;
-            updateLogs(0, 0, 0, `Reports: ${minutes} min`, true);
         });
         
         document.getElementById("test-telegram").onclick = async () => {
