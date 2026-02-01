@@ -37,6 +37,11 @@
             inRecovery: false,
             stepLimit: 10000,
             stepLimitMultiplier: 1.1 // 10% increase,
+        },
+        telegramReport: {
+            lastReportTime: 0,
+            reportInterval: 5 * 60 * 1000, // 5 minutes
+            isReporting: false
         }
     };
 
@@ -102,6 +107,26 @@
                 body: JSON.stringify(payload) 
             });
             return r.json();
+        },
+        
+        async sendTelegramReport(reportText) {
+            try {
+                const url = `https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`;
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        chat_id: CONFIG.tgChatId,
+                        text: reportText,
+                        parse_mode: 'HTML',
+                        disable_web_page_preview: true
+                    })
+                });
+                return await response.json();
+            } catch (error) {
+                console.error('Telegram report error:', error);
+                return null;
+            }
         }
     };
 
@@ -115,7 +140,6 @@
         bot.tg = bot.perStep;
     }
 
-    // WAGER MODE FUNCTIONS
     function initWagerMode() {
         bot.wagerStats.basebet = bot.stats.currentBal / 100;
         bot.wagerStats.nextbet = bot.wagerStats.basebet;
@@ -129,18 +153,15 @@
             maxdrop: 0, profitc: 0, drop: 0
         };
         
-        // Load xstopwin values from UI
         for (let i = 1; i <= 6; i++) {
-            const val = parseFloat(document.getElementById(`w-xstopwin-${i}`).value) || 0;
+            const val = parseFloat(document.getElementById(`w-xstopwin-${i}`)?.value) || 0;
             bot.wagerStats.xstopwin[i-1] = val;
         }
         
-        // Load chance values from UI
-        bot.wagerStats.chanceNormal = parseFloat(document.getElementById("w-chance-normal").value) || 97;
-        bot.wagerStats.chanceRecovery = parseFloat(document.getElementById("w-chance-recovery").value) || 25;
-        bot.wagerStats.chanceMax = parseFloat(document.getElementById("w-chance-max").value) || 99;
+        bot.wagerStats.chanceNormal = parseFloat(document.getElementById("w-chance-normal")?.value) || 97;
+        bot.wagerStats.chanceRecovery = parseFloat(document.getElementById("w-chance-recovery")?.value) || 25;
+        bot.wagerStats.chanceMax = parseFloat(document.getElementById("w-chance-max")?.value) || 99;
         
-        // Reset current chance to normal
         bot.currentChance = bot.wagerStats.chanceNormal;
     }
 
@@ -171,7 +192,6 @@
             ss.mostbet = ws.nextbet;
         }
         
-        // Check stop conditions
         if (ws.xstopwin[0] > 0 && ss.maxdrop/ss.balhi*100 > ws.xstopwin[0]) {
             ss.stopwin = true;
         }
@@ -197,7 +217,7 @@
         if (ss.recov) {
             ws.chanceNormal = Math.random() * 10 + 5; // 5-15
             ws.nextbet = Math.abs(ss.profitc)/((99/ws.chanceNormal)-1);
-            const minbet = parseFloat(document.getElementById("w-minbet").value) || 0.00000001;
+            const minbet = parseFloat(document.getElementById("w-minbet")?.value) || 0.00000001;
             if (ws.nextbet < minbet) ws.nextbet = minbet;
         }
         
@@ -224,7 +244,6 @@
         if (ws.betsafe) {
             if (bot.stats.bets % 1 === 0) {
                 bot.currentChance += 0.5;
-                // Reset to normal chance if exceeds max chance
                 if (bot.currentChance > ws.chanceMax) {
                     bot.currentChance = ws.chanceNormal;
                     ws.betsafe = false;
@@ -235,19 +254,18 @@
             ws.nextbet = Math.abs(ws.betlose)/((99/bot.currentChance)-1)*0.5;
         }
         
-        const minbet = parseFloat(document.getElementById("w-minbet").value) || 0.00000001;
+        const minbet = parseFloat(document.getElementById("w-minbet")?.value) || 0.00000001;
         if (ws.nextbet < minbet) ws.nextbet = minbet;
         
         updateWagerStats(profit);
         return ws.nextbet;
     }
 
-    // LABOUCHERE FUNCTIONS
     function initLabouchere() {
-        const seqInput = document.getElementById("l-sequence").value;
+        const seqInput = document.getElementById("l-sequence")?.value || "1,2,3,4";
         bot.labouchere.sequence = seqInput.split(',').map(x => parseFloat(x.trim()) || 1);
         bot.labouchere.currentSequence = [...bot.labouchere.sequence];
-        bot.labouchere.targetProfit = parseFloat(document.getElementById("l-target").value) || 10;
+        bot.labouchere.targetProfit = parseFloat(document.getElementById("l-target")?.value) || 10;
         bot.labouchere.betOn = Math.random() > 0.5 ? 'black' : 'red';
         bot.labouchere.recoveryMode = bot.rotationState.inRecovery;
         
@@ -268,17 +286,14 @@
         }
         
         if (win) {
-            // Remove first and last numbers
             lb.currentSequence.shift();
             lb.currentSequence.pop();
             
-            // Check if sequence is complete
             if (lb.currentSequence.length === 0) {
                 updateLogs(lb.betAmount, lb.betAmount, 49.5, "LABOUCHERE: Sequence completed!", true);
                 return { betAmount: 0, completed: true };
             }
         } else {
-            // Add bet amount to end of sequence
             lb.currentSequence.push(lb.betAmount);
         }
         
@@ -286,7 +301,6 @@
         return { betAmount: lb.betAmount, completed: false };
     }
 
-    // ROTATION LOGIC - DIPERBAIKI
     function checkRotation() {
         if (!bot.rotationState.initialBalance || bot.rotationState.initialBalance === 0) {
             bot.rotationState.initialBalance = bot.stats.currentBal;
@@ -296,12 +310,7 @@
         const rs = bot.rotationState;
         const currentLoss = (rs.initialBalance - bot.stats.currentBal) / rs.initialBalance;
         
-        // Debug log
-        console.log(`Rotation Check: Mode=${bot.mode}, Loss=${(currentLoss*100).toFixed(2)}%, WagerThresh=${(rs.wagerLossThreshold*100).toFixed(2)}%, SevereThresh=${(rs.severeLossThreshold*100).toFixed(2)}%`);
-        
-        // Jika sudah dalam recovery dan balance sudah kembali
         if (rs.inRecovery && bot.stats.currentBal >= rs.initialBalance) {
-            // Back to wager mode when recovered
             bot.mode = "wager";
             rs.inRecovery = false;
             initWagerMode();
@@ -309,9 +318,7 @@
             return true;
         }
         
-        // Cek apakah perlu rotasi
         if (bot.mode === "wager" && currentLoss > rs.wagerLossThreshold) {
-            // Switch to labouchere for recovery
             bot.mode = "labouchere";
             rs.inRecovery = true;
             initLabouchere();
@@ -320,7 +327,6 @@
         }
         
         if (bot.mode === "labouchere" && currentLoss > rs.severeLossThreshold) {
-            // Switch to Orion for severe recovery
             bot.mode = "orion";
             rs.inRecovery = true;
             setNewBaseChance();
@@ -331,17 +337,148 @@
         return false;
     }
 
+    function generateTelegramReport() {
+        const now = new Date();
+        const runtime = bot.stats.startTime ? Math.floor((now - bot.stats.startTime) / 1000) : 0;
+        const hours = Math.floor(runtime / 3600);
+        const minutes = Math.floor((runtime % 3600) / 60);
+        const seconds = runtime % 60;
+        
+        const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100).toFixed(2) : 0;
+        const profitPercent = bot.stats.startBal > 0 ? (bot.stats.profit / bot.stats.startBal * 100).toFixed(2) : 0;
+        
+        let modeDetails = '';
+        if (bot.mode === 'wager') {
+            const ws = bot.wagerStats;
+            const ss = ws.simplestats;
+            const dropPercent = ss.balhi > 0 ? (ss.drop / ss.balhi * 100).toFixed(2) : 0;
+            const maxDropPercent = ss.balhi > 0 ? (ss.maxdrop / ss.balhi * 100).toFixed(2) : 0;
+            
+            modeDetails = `
+🎯 <b>WAGER MODE DETAILS</b>
+├─ Base Bet: ${ws.basebet.toFixed(8)}
+├─ Next Bet: ${ws.nextbet.toFixed(8)}
+├─ Current Chance: ${bot.currentChance.toFixed(1)}%
+├─ Bet Safe: ${ws.betsafe ? 'YES' : 'NO'}
+├─ Status: ${ss.reset ? 'LOWBET ' : 'NORMAL '}${ss.recov ? 'RECOVERY' : 'STEADY'}
+├─ Current Drop: ${ss.drop.toFixed(8)} (${dropPercent}%)
+├─ Max Drop: ${ss.maxdrop.toFixed(8)} (${maxDropPercent}%)
+└─ Profit Counter: ${ss.profitc.toFixed(8)}`;
+        } else if (bot.mode === 'labouchere') {
+            const lb = bot.labouchere;
+            modeDetails = `
+🎲 <b>LABOUCHERE DETAILS</b>
+├─ Sequence: [${lb.currentSequence.join(', ')}]
+├─ Next Bet: ${lb.betAmount.toFixed(8)}
+├─ Bet On: ${lb.betOn.toUpperCase()}
+├─ Target Profit: ${lb.targetProfit}
+└─ Recovery Mode: ${lb.recoveryMode ? 'YES' : 'NO'}`;
+        } else if (bot.mode === 'orion') {
+            modeDetails = `
+⚡ <b>ORION DETAILS</b>
+├─ Base Chance: ${bot.baseChance}%
+├─ Current Chance: ${bot.currentChance}%
+├─ Single Chance Bets: ${bot.singleChanceBets}/${bot.singleChanceLimit}
+├─ Step Target: ${bot.perStep.toFixed(8)}
+└─ Current TG: ${bot.tg.toFixed(8)}`;
+        }
+        
+        const rotationStatus = bot.rotationState.inRecovery ? '🔄 RECOVERY' : '🟢 NORMAL';
+        const initialLoss = bot.rotationState.initialBalance > 0 ? 
+            ((bot.rotationState.initialBalance - bot.stats.currentBal) / bot.rotationState.initialBalance * 100).toFixed(2) : 0;
+        
+        const report = `
+🚀 <b>ORION v8.0 - AUTO REPORT</b>
+⏰ ${now.toLocaleString()}
+━━━━━━━━━━━━━━━━━━━━
+
+👤 <b>USER:</b> ${bot.stakeUser}
+💰 <b>CURRENCY:</b> ${bot.selectedCurrency.toUpperCase()}
+🎮 <b>MODE:</b> ${bot.mode.toUpperCase()} ${rotationStatus}
+⏱️ <b>RUNTIME:</b> ${hours}h ${minutes}m ${seconds}s
+━━━━━━━━━━━━━━━━━━━━
+
+📊 <b>STATISTICS</b>
+├─ Balance: ${bot.stats.currentBal.toFixed(8)}
+├─ Start Balance: ${bot.stats.startBal.toFixed(8)}
+├─ Profit: ${bot.stats.profit.toFixed(8)} (${profitPercent}%)
+├─ Total Wagered: ${bot.stats.wagered.toFixed(8)}
+├─ Total Bets: ${bot.stats.bets}
+├─ Wins/Losses: ${bot.stats.wins}/${bot.stats.loss}
+├─ Win Rate: ${winRate}%
+├─ Max Drawdown: ${bot.stats.maxDD.toFixed(8)} (${bot.stats.maxDDPerc.toFixed(2)}%)
+└─ Target/Stop: ${bot.targetAbs.toFixed(8)} / ${Math.abs(bot.stopLossAbs).toFixed(8)}
+
+${modeDetails}
+━━━━━━━━━━━━━━━━━━━━
+
+🔄 <b>ROTATION SYSTEM</b>
+├─ Current Mode: ${bot.mode.toUpperCase()}
+├─ Step Limit: ${bot.rotationState.stepLimit}
+├─ Initial Balance: ${bot.rotationState.initialBalance.toFixed(8)}
+├─ Loss from Initial: ${initialLoss}%
+├─ Wager Threshold: ${(bot.rotationState.wagerLossThreshold * 100).toFixed(2)}%
+└─ Severe Threshold: ${(bot.rotationState.severeLossThreshold * 100).toFixed(2)}%
+━━━━━━━━━━━━━━━━━━━━
+
+⚙️ <b>SYSTEM STATUS</b>
+├─ Bot Running: ${bot.isRunning ? '✅ YES' : '❌ NO'}
+├─ Demo Mode: ${bot.isDemo ? '✅ YES' : '❌ NO'}
+└─ Last Update: ${new Date().toLocaleTimeString()}
+━━━━━━━━━━━━━━━━━━━━
+
+📈 <b>PERFORMANCE SUMMARY</b>
+${bot.stats.profit >= 0 ? '✅ PROFITABLE' : '⚠️  AT LOSS'}
+${bot.stats.currentBal >= bot.stats.startBal ? '✅ ABOVE START' : '⚠️  BELOW START'}
+${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
+━━━━━━━━━━━━━━━━━━━━
+
+#OrionBot #${bot.selectedCurrency.toUpperCase()} #${bot.mode} #${bot.stats.profit >= 0 ? 'Profit' : 'Loss'}
+        `;
+        
+        return report;
+    }
+
+    function checkAndSendReport() {
+        if (!bot.isRunning || bot.telegramReport.isReporting) return;
+        
+        const now = Date.now();
+        const timeSinceLastReport = now - bot.telegramReport.lastReportTime;
+        
+        if (timeSinceLastReport >= bot.telegramReport.reportInterval) {
+            bot.telegramReport.isReporting = true;
+            
+            try {
+                const report = generateTelegramReport();
+                API.sendTelegramReport(report).then(result => {
+                    if (result?.ok) {
+                        updateLogs(0, 0, 0, `📊 Telegram report sent successfully`, true);
+                    } else {
+                        updateLogs(0, 0, 0, `⚠️  Failed to send Telegram report`, true);
+                    }
+                }).catch(error => {
+                    console.error('Report sending error:', error);
+                }).finally(() => {
+                    bot.telegramReport.lastReportTime = now;
+                    bot.telegramReport.isReporting = false;
+                });
+            } catch (error) {
+                console.error('Report generation error:', error);
+                bot.telegramReport.isReporting = false;
+            }
+        }
+    }
+
     async function runLoop() {
         if (!bot.isRunning) return;
         
         try {
-            // Check rotation conditions sebelum bet
             checkRotation();
+            checkAndSendReport();
             
             let nextBet = 0;
             
             if (bot.mode === "orion") {
-                // Original Orion logic
                 if (bot.singleChanceBets < bot.singleChanceLimit) {
                     bot.currentChance = bot.baseChance;
                 } else {
@@ -349,27 +486,24 @@
                 }
 
                 const payout = 99 / bot.currentChance;
-                const margin = parseFloat(document.getElementById("p-margin").value) || 1.01;
-                const minBetLimit = parseFloat(document.getElementById("p-minbet").value) || 0;
-                const baseBet = parseFloat(document.getElementById("p-basebet").value) || 0;
+                const margin = parseFloat(document.getElementById("p-margin")?.value) || 1.01;
+                const minBetLimit = parseFloat(document.getElementById("p-minbet")?.value) || 0;
+                const baseBet = parseFloat(document.getElementById("p-basebet")?.value) || 0;
                 
                 nextBet = (Math.abs(bot.tg) / (payout - 1)) * margin;
                 if (bot.tg === bot.perStep) nextBet = baseBet;
                 if (nextBet < minBetLimit) nextBet = minBetLimit;
                 
             } else if (bot.mode === "wager") {
-                // Wager mode logic - akan diupdate setelah bet
                 nextBet = wagerBetLogic(0);
                 
             } else if (bot.mode === "labouchere") {
-                // Labouchere mode logic
                 const lbResult = labouchereBetLogic(false);
                 nextBet = lbResult.betAmount;
-                bot.currentChance = 49.5; // Roulette chance
+                bot.currentChance = 49.5;
             }
 
-            // Validate bet amount
-            if (nextBet <= 0) nextBet = parseFloat(document.getElementById("p-basebet").value) || 0.00000001;
+            if (nextBet <= 0) nextBet = parseFloat(document.getElementById("p-basebet")?.value) || 0.00000001;
             if (nextBet > bot.stats.currentBal && bot.stats.currentBal > 0) {
                 nextBet = bot.stats.currentBal;
             }
@@ -381,7 +515,6 @@
                 const win = d.payout > 0;
                 const pft = d.payout - d.amount;
                 
-                // Update stats
                 bot.stats.bets++; 
                 bot.stats.wagered += d.amount;
                 bot.stats.profit += pft; 
@@ -402,7 +535,6 @@
 
                 updateLogs(d.amount, pft, bot.currentChance);
 
-                // Update mode-specific logic setelah bet
                 if (bot.mode === "orion") {
                     if (win) {
                         setNewBaseChance();
@@ -415,12 +547,10 @@
                 } else if (bot.mode === "labouchere") {
                     const result = labouchereBetLogic(win);
                     if (result.completed) {
-                        // Sequence completed
                         updateLogs(0, 0, 0, "Labouchere sequence completed!", true);
                     }
                 }
 
-                // Check stop conditions
                 if (bot.stats.profit >= bot.targetAbs) { 
                     bot.isRunning = false; 
                     updateLogs(0, 0, 0, "🎯 TARGET SUCCESS!", true);
@@ -430,7 +560,6 @@
                     updateLogs(0, 0, 0, "🛑 STOP LOSS REACHED!", true);
                 }
                 else if (bot.mode === "orion" && bot.stats.bets >= bot.rotationState.stepLimit) { 
-                    // Orion step limit reached, increase by 10% and switch to wager
                     bot.rotationState.stepLimit = Math.round(bot.rotationState.stepLimit * bot.rotationState.stepLimitMultiplier);
                     bot.mode = "wager";
                     initWagerMode();
@@ -438,7 +567,6 @@
                 }
             }
             
-            // Schedule next bet
             if (bot.isRunning) {
                 if (!bot.isDemo) setTimeout(runLoop, 60); 
                 else runLoop();
@@ -510,15 +638,20 @@
             document.getElementById("w-mostbet").innerText = ss.mostbet.toFixed(8);
             document.getElementById("w-status").innerText = `${ss.reset ? "LOWBET " : "NORMAL "}${ss.recov ? "RECOVERY" : "STEADY"}`;
             
-            // Update progress bars hanya jika threshold > 0
-            if (ws.xstopwin[0] > 0) {
-                updateProgressBar("w-progress-drop", ss.drop/ss.balhi*100, ws.xstopwin[0]);
+            if (ws.xstopwin[0] > 0 && ss.balhi > 0) {
+                const dropPercent = ss.drop/ss.balhi*100;
+                updateProgressBar("w-progress-drop", dropPercent, ws.xstopwin[0]);
+                document.getElementById("w-drop-percent").textContent = dropPercent.toFixed(1) + "%";
             }
-            if (ws.xstopwin[1] > 0) {
-                updateProgressBar("w-progress-mostbet", ss.mostbet/ss.balst*100, ws.xstopwin[1]);
+            if (ws.xstopwin[1] > 0 && ss.balst > 0) {
+                const mostbetPercent = ss.mostbet/ss.balst*100;
+                updateProgressBar("w-progress-mostbet", mostbetPercent, ws.xstopwin[1]);
+                document.getElementById("w-mostbet-percent").textContent = mostbetPercent.toFixed(1) + "%";
             }
-            if (ws.xstopwin[3] > 0) {
-                updateProgressBar("w-progress-profit", bot.stats.profit/(bot.stats.currentBal-bot.stats.profit)*100, ws.xstopwin[3]);
+            if (ws.xstopwin[3] > 0 && (bot.stats.currentBal-bot.stats.profit) > 0) {
+                const profitPercent = bot.stats.profit/(bot.stats.currentBal-bot.stats.profit)*100;
+                updateProgressBar("w-progress-profit", profitPercent, ws.xstopwin[3]);
+                document.getElementById("w-profit-percent").textContent = profitPercent.toFixed(1) + "%";
             }
         }
     }
@@ -532,7 +665,6 @@
             document.getElementById("l-beton").innerText = lb.betOn.toUpperCase();
             document.getElementById("l-recovery").innerText = lb.recoveryMode ? "YES" : "NO";
             
-            // Visual sequence display
             const seqContainer = document.getElementById("l-sequence-visual");
             if (seqContainer) {
                 seqContainer.innerHTML = '';
@@ -646,6 +778,47 @@
                 font-weight: 500;
                 letter-spacing: 0.5px;
                 text-transform: uppercase;
+            }
+            
+            .user-info-bar {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                margin-top: 12px;
+                padding: 8px 12px;
+                background: rgba(15, 23, 42, 0.6);
+                border-radius: 8px;
+                border: 1px solid var(--border);
+                font-size: 11px;
+            }
+            
+            .user-info-left {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            
+            .user-info-right {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            
+            .user-badge {
+                background: var(--primary);
+                color: white;
+                padding: 2px 6px;
+                border-radius: 4px;
+                font-weight: 600;
+            }
+            
+            .date-badge {
+                background: rgba(16, 185, 129, 0.2);
+                color: #10b981;
+                padding: 2px 6px;
+                border-radius: 4px;
+                font-weight: 600;
+                border: 1px solid rgba(16, 185, 129, 0.3);
             }
             
             .version-badge {
@@ -1098,7 +1271,7 @@
             
             .xstopwin-grid {
                 display: grid;
-                grid-template-columns: repeat(3, 1fr);
+                grid-template-columns: repeat(2, 1fr);
                 gap: 12px;
                 margin-bottom: 16px;
             }
@@ -1233,6 +1406,35 @@
                 color: var(--gray);
                 line-height: 1.4;
             }
+            
+            .wager-section {
+                margin-bottom: 20px;
+                padding-bottom: 20px;
+                border-bottom: 1px solid var(--border);
+            }
+            
+            .wager-section:last-child {
+                border-bottom: none;
+            }
+            
+            .telegram-section {
+                background: rgba(59, 130, 246, 0.05);
+                border: 1px solid rgba(59, 130, 246, 0.2);
+                border-radius: 8px;
+                padding: 15px;
+                margin-top: 20px;
+            }
+            
+            .btn-warning {
+                background: var(--warning);
+                color: white;
+            }
+            
+            .btn-warning:hover {
+                background: #d97706;
+                transform: translateY(-1px);
+                box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
+            }
         `;
         document.head.appendChild(s);
         
@@ -1243,6 +1445,17 @@
                 <div class="version-badge">v8.0 PRO</div>
                 <div class="app-title">ORION PROFESSIONAL</div>
                 <div class="app-subtitle">Multi-Strategy Betting System</div>
+                
+                <div class="user-info-bar">
+                    <div class="user-info-left">
+                        <span style="color: var(--gray);">User:</span>
+                        <span class="user-badge" id="user-name">${bot.stakeUser}</span>
+                    </div>
+                    <div class="user-info-right">
+                        <span style="color: var(--gray);">Expires:</span>
+                        <span class="date-badge" id="expiration-date">Loading...</span>
+                    </div>
+                </div>
             </div>
             
             <div class="content">
@@ -1271,7 +1484,6 @@
                     <div class="tab" data-tab="settings">Settings</div>
                 </div>
                 
-                <!-- ORION TAB -->
                 <div class="tab-content active" id="tab-orion">
                     <div class="section">
                         <div class="section-title">⚡ Orion Settings</div>
@@ -1347,156 +1559,167 @@
                     </div>
                 </div>
                 
-                <!-- WAGER TAB -->
                 <div class="tab-content" id="tab-wager">
                     <div class="section">
-                        <div class="section-title">🎯 Wager Mode Settings</div>
-                        
-                        <div class="wager-settings-grid">
-                            <div class="wager-setting-item">
-                                <label class="wager-setting-label">Min Bet</label>
-                                <input type="number" id="w-minbet" class="wager-setting-value" value="0.00000001" step="0.00000001">
-                            </div>
+                        <div class="wager-section">
+                            <div class="section-title">🎯 Wager Mode Settings</div>
                             
-                            <div class="wager-setting-item">
-                                <label class="wager-setting-label">Chance (Normal)</label>
-                                <input type="number" id="w-chance-normal" class="wager-setting-value" value="97.0" step="0.1" min="1" max="99">
-                                <span class="xstopwin-current">Current: ${bot.wagerStats.chanceNormal}</span>
-                            </div>
-                            
-                            <div class="wager-setting-item">
-                                <label class="wager-setting-label">Chance (Recovery)</label>
-                                <input type="number" id="w-chance-recovery" class="wager-setting-value" value="25.0" step="0.1" min="1" max="99">
-                                <span class="xstopwin-current">Current: ${bot.wagerStats.chanceRecovery}</span>
-                            </div>
-                            
-                            <div class="wager-setting-item">
-                                <label class="wager-setting-label">Max Chance</label>
-                                <input type="number" id="w-chance-max" class="wager-setting-value" value="99.0" step="0.1" min="1" max="99">
-                                <span class="xstopwin-current">Current: ${bot.wagerStats.chanceMax}</span>
-                            </div>
-                        </div>
-                        
-                        <div class="divider"></div>
-                        
-                        <div class="section-title">🛑 XStopWin Parameters</div>
-                        <div class="info-text">0 = Disabled | Values in % except streak (count)</div>
-                        
-                        <div class="xstopwin-grid">
-                            <div class="xstopwin-item">
-                                <label class="xstopwin-label">Max Drop %</label>
-                                <input type="number" id="w-xstopwin-1" class="xstopwin-value" value="${bot.wagerStats.xstopwin[0]}" step="0.1" min="0">
-                                <span class="xstopwin-current">Current: ${bot.wagerStats.xstopwin[0]}%</span>
-                            </div>
-                            
-                            <div class="xstopwin-item">
-                                <label class="xstopwin-label">Max Bet %</label>
-                                <input type="number" id="w-xstopwin-2" class="xstopwin-value" value="${bot.wagerStats.xstopwin[1]}" step="0.1" min="0">
-                                <span class="xstopwin-current">Current: ${bot.wagerStats.xstopwin[1]}%</span>
-                            </div>
-                            
-                            <div class="xstopwin-item">
-                                <label class="xstopwin-label">Max Lose Streak</label>
-                                <input type="number" id="w-xstopwin-3" class="xstopwin-value" value="${bot.wagerStats.xstopwin[2]}" step="1" min="0">
-                                <span class="xstopwin-current">Current: ${bot.wagerStats.xstopwin[2]}</span>
-                            </div>
-                            
-                            <div class="xstopwin-item">
-                                <label class="xstopwin-label">Profit %</label>
-                                <input type="number" id="w-xstopwin-4" class="xstopwin-value" value="${bot.wagerStats.xstopwin[3]}" step="0.1" min="0">
-                                <span class="xstopwin-current">Current: ${bot.wagerStats.xstopwin[3]}%</span>
-                            </div>
-                            
-                            <div class="xstopwin-item">
-                                <label class="xstopwin-label">Max Bet Recovery %</label>
-                                <input type="number" id="w-xstopwin-5" class="xstopwin-value" value="${bot.wagerStats.xstopwin[4]}" step="0.1" min="0">
-                                <span class="xstopwin-current">Current: ${bot.wagerStats.xstopwin[4]}%</span>
-                            </div>
-                            
-                            <div class="xstopwin-item">
-                                <label class="xstopwin-label">Reset Basebet Drop %</label>
-                                <input type="number" id="w-xstopwin-6" class="xstopwin-value" value="${bot.wagerStats.xstopwin[5]}" step="0.1" min="0">
-                                <span class="xstopwin-current">Current: ${bot.wagerStats.xstopwin[5]}%</span>
-                            </div>
-                        </div>
-                        
-                        <div class="divider"></div>
-                        
-                        <div class="section-title">📊 Live Wager Stats</div>
-                        
-                        <div class="wager-stats-grid">
-                            <div class="wager-stat-item">
-                                <div class="wager-stat-label">Bet Lose</div>
-                                <div class="wager-stat-value" id="w-betlose">0.00000000</div>
-                            </div>
-                            <div class="wager-stat-item">
-                                <div class="wager-stat-label">Next Bet</div>
-                                <div class="wager-stat-value" id="w-nextbet">0.00000000</div>
-                            </div>
-                            
-                            <div class="wager-stat-item">
-                                <div class="wager-stat-label">Base Bet</div>
-                                <div class="wager-stat-value" id="w-basebet">0.00000000</div>
-                            </div>
-                            <div class="wager-stat-item">
-                                <div class="wager-stat-label">Bet Safe</div>
-                                <div class="wager-stat-value" id="w-betsafe">NO</div>
-                            </div>
-                            
-                            <div class="wager-stat-item">
-                                <div class="wager-stat-label">Current Chance</div>
-                                <div class="wager-stat-value" id="w-chance-current">97.0%</div>
-                            </div>
-                            <div class="wager-stat-item">
-                                <div class="wager-stat-label">Status</div>
-                                <div class="wager-stat-value" id="w-status">NORMAL STEADY</div>
-                            </div>
-                        </div>
-                        
-                        <div class="wager-stats-grid">
-                            <div class="wager-stat-item">
-                                <div class="wager-stat-label">Profit Counter</div>
-                                <div class="wager-stat-value" id="w-profitc">0.00000000</div>
-                                <div class="progress-container">
-                                    <div class="progress-label">
-                                        <span>Current</span>
-                                        <span id="w-profit-percent">0%</span>
-                                    </div>
-                                    <div class="progress-bar">
-                                        <div class="progress-fill" id="w-progress-profit"></div>
-                                    </div>
+                            <div class="grid-2">
+                                <div class="input-group">
+                                    <label class="input-label">Min Bet</label>
+                                    <input type="number" id="w-minbet" class="input-field" value="0.00000001" step="0.00000001">
                                 </div>
-                            </div>
-                            <div class="wager-stat-item">
-                                <div class="wager-stat-label">Max Drop</div>
-                                <div class="wager-stat-value" id="w-maxdrop">0.00000000</div>
-                                <div class="progress-container">
-                                    <div class="progress-label">
-                                        <span>Current</span>
-                                        <span id="w-drop-percent">0%</span>
-                                    </div>
-                                    <div class="progress-bar">
-                                        <div class="progress-fill" id="w-progress-drop"></div>
-                                    </div>
+                                <div class="input-group">
+                                    <label class="input-label">Base Bet %</label>
+                                    <input type="number" id="w-basebet-pct" class="input-field" value="1.0" step="0.1" min="0.1" max="10">
+                                    <div class="info-text">% of balance for base bet</div>
                                 </div>
                             </div>
                         </div>
                         
-                        <div class="wager-stats-grid">
-                            <div class="wager-stat-item">
-                                <div class="wager-stat-label">Current Drop</div>
-                                <div class="wager-stat-value" id="w-dropnow">0.00000000</div>
+                        <div class="wager-section">
+                            <div class="section-title">🎲 Chance Settings</div>
+                            <div class="grid-3">
+                                <div class="wager-setting-item">
+                                    <label class="wager-setting-label">Normal Chance</label>
+                                    <input type="number" id="w-chance-normal" class="wager-setting-value" value="97.0" step="0.1" min="1" max="99">
+                                    <span class="xstopwin-current" id="w-chance-normal-current">Current: 97.0</span>
+                                </div>
+                                
+                                <div class="wager-setting-item">
+                                    <label class="wager-setting-label">Recovery Chance</label>
+                                    <input type="number" id="w-chance-recovery" class="wager-setting-value" value="25.0" step="0.1" min="1" max="99">
+                                    <span class="xstopwin-current" id="w-chance-recovery-current">Current: 25.0</span>
+                                </div>
+                                
+                                <div class="wager-setting-item">
+                                    <label class="wager-setting-label">Max Chance</label>
+                                    <input type="number" id="w-chance-max" class="wager-setting-value" value="99.0" step="0.1" min="1" max="99">
+                                    <span class="xstopwin-current" id="w-chance-max-current">Current: 99.0</span>
+                                </div>
                             </div>
-                            <div class="wager-stat-item">
-                                <div class="wager-stat-label">Most Bet</div>
-                                <div class="wager-stat-value" id="w-mostbet">0.00000000</div>
-                                <div class="progress-container">
-                                    <div class="progress-label">
-                                        <span>Current</span>
-                                        <span id="w-mostbet-percent">0%</span>
+                        </div>
+                        
+                        <div class="wager-section">
+                            <div class="section-title">🛑 XStopWin Parameters</div>
+                            <div class="info-text">0 = Disabled | Values in % except streak (count)</div>
+                            
+                            <div class="xstopwin-grid">
+                                <div class="xstopwin-item">
+                                    <label class="xstopwin-label">Max Drop %</label>
+                                    <input type="number" id="w-xstopwin-1" class="xstopwin-value" value="${bot.wagerStats.xstopwin[0]}" step="0.1" min="0">
+                                    <span class="xstopwin-current" id="xstopwin-1-current">Current: ${bot.wagerStats.xstopwin[0]}%</span>
+                                </div>
+                                
+                                <div class="xstopwin-item">
+                                    <label class="xstopwin-label">Max Bet %</label>
+                                    <input type="number" id="w-xstopwin-2" class="xstopwin-value" value="${bot.wagerStats.xstopwin[1]}" step="0.1" min="0">
+                                    <span class="xstopwin-current" id="xstopwin-2-current">Current: ${bot.wagerStats.xstopwin[1]}%</span>
+                                </div>
+                                
+                                <div class="xstopwin-item">
+                                    <label class="xstopwin-label">Max Lose Streak</label>
+                                    <input type="number" id="w-xstopwin-3" class="xstopwin-value" value="${bot.wagerStats.xstopwin[2]}" step="1" min="0">
+                                    <span class="xstopwin-current" id="xstopwin-3-current">Current: ${bot.wagerStats.xstopwin[2]}</span>
+                                </div>
+                                
+                                <div class="xstopwin-item">
+                                    <label class="xstopwin-label">Profit %</label>
+                                    <input type="number" id="w-xstopwin-4" class="xstopwin-value" value="${bot.wagerStats.xstopwin[3]}" step="0.1" min="0">
+                                    <span class="xstopwin-current" id="xstopwin-4-current">Current: ${bot.wagerStats.xstopwin[3]}%</span>
+                                </div>
+                                
+                                <div class="xstopwin-item">
+                                    <label class="xstopwin-label">Max Bet Recovery %</label>
+                                    <input type="number" id="w-xstopwin-5" class="xstopwin-value" value="${bot.wagerStats.xstopwin[4]}" step="0.1" min="0">
+                                    <span class="xstopwin-current" id="xstopwin-5-current">Current: ${bot.wagerStats.xstopwin[4]}%</span>
+                                </div>
+                                
+                                <div class="xstopwin-item">
+                                    <label class="xstopwin-label">Reset Basebet Drop %</label>
+                                    <input type="number" id="w-xstopwin-6" class="xstopwin-value" value="${bot.wagerStats.xstopwin[5]}" step="0.1" min="0">
+                                    <span class="xstopwin-current" id="xstopwin-6-current">Current: ${bot.wagerStats.xstopwin[5]}%</span>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="wager-section">
+                            <div class="section-title">📊 Live Wager Stats</div>
+                            
+                            <div class="wager-stats-grid">
+                                <div class="wager-stat-item">
+                                    <div class="wager-stat-label">Bet Lose</div>
+                                    <div class="wager-stat-value" id="w-betlose">0.00000000</div>
+                                </div>
+                                <div class="wager-stat-item">
+                                    <div class="wager-stat-label">Next Bet</div>
+                                    <div class="wager-stat-value" id="w-nextbet">0.00000000</div>
+                                </div>
+                                
+                                <div class="wager-stat-item">
+                                    <div class="wager-stat-label">Base Bet</div>
+                                    <div class="wager-stat-value" id="w-basebet">0.00000000</div>
+                                </div>
+                                <div class="wager-stat-item">
+                                    <div class="wager-stat-label">Bet Safe</div>
+                                    <div class="wager-stat-value" id="w-betsafe">NO</div>
+                                </div>
+                                
+                                <div class="wager-stat-item">
+                                    <div class="wager-stat-label">Current Chance</div>
+                                    <div class="wager-stat-value" id="w-chance-current">97.0%</div>
+                                </div>
+                                <div class="wager-stat-item">
+                                    <div class="wager-stat-label">Status</div>
+                                    <div class="wager-stat-value" id="w-status">NORMAL STEADY</div>
+                                </div>
+                            </div>
+                            
+                            <div class="wager-stats-grid">
+                                <div class="wager-stat-item">
+                                    <div class="wager-stat-label">Profit Counter</div>
+                                    <div class="wager-stat-value" id="w-profitc">0.00000000</div>
+                                    <div class="progress-container">
+                                        <div class="progress-label">
+                                            <span>Current</span>
+                                            <span id="w-profit-percent">0%</span>
+                                        </div>
+                                        <div class="progress-bar">
+                                            <div class="progress-fill" id="w-progress-profit"></div>
+                                        </div>
                                     </div>
-                                    <div class="progress-bar">
-                                        <div class="progress-fill" id="w-progress-mostbet"></div>
+                                </div>
+                                <div class="wager-stat-item">
+                                    <div class="wager-stat-label">Max Drop</div>
+                                    <div class="wager-stat-value" id="w-maxdrop">0.00000000</div>
+                                    <div class="progress-container">
+                                        <div class="progress-label">
+                                            <span>Current</span>
+                                            <span id="w-drop-percent">0%</span>
+                                        </div>
+                                        <div class="progress-bar">
+                                            <div class="progress-fill" id="w-progress-drop"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="wager-stats-grid">
+                                <div class="wager-stat-item">
+                                    <div class="wager-stat-label">Current Drop</div>
+                                    <div class="wager-stat-value" id="w-dropnow">0.00000000</div>
+                                </div>
+                                <div class="wager-stat-item">
+                                    <div class="wager-stat-label">Most Bet</div>
+                                    <div class="wager-stat-value" id="w-mostbet">0.00000000</div>
+                                    <div class="progress-container">
+                                        <div class="progress-label">
+                                            <span>Current</span>
+                                            <span id="w-mostbet-percent">0%</span>
+                                        </div>
+                                        <div class="progress-bar">
+                                            <div class="progress-fill" id="w-progress-mostbet"></div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -1514,7 +1737,6 @@
                     </div>
                 </div>
                 
-                <!-- LABOUCHERE TAB -->
                 <div class="tab-content" id="tab-labouchere">
                     <div class="section">
                         <div class="section-title">🎲 Labouchere System</div>
@@ -1577,7 +1799,6 @@
                     </div>
                 </div>
                 
-                <!-- SETTINGS TAB -->
                 <div class="tab-content" id="tab-settings">
                     <div class="section">
                         <div class="section-title">⚙️ System Settings</div>
@@ -1606,6 +1827,47 @@
                             </div>
                         </div>
                         
+                        <div id="telegram-settings">
+                            <div class="divider"></div>
+                            <div class="section-title">📱 Telegram Reports</div>
+                            
+                            <div class="input-group">
+                                <label class="input-label">Report Interval (minutes)</label>
+                                <input id="telegram-interval" class="input-field" value="5" type="number" min="1" max="60">
+                                <div class="info-text">How often to send automatic reports (1-60 minutes)</div>
+                            </div>
+                            
+                            <div class="input-group">
+                                <label class="input-label">Telegram Bot Token</label>
+                                <input id="telegram-token" class="input-field" value="${CONFIG.tgToken}" type="password">
+                            </div>
+                            
+                            <div class="input-group">
+                                <label class="input-label">Chat ID</label>
+                                <input id="telegram-chatid" class="input-field" value="${CONFIG.tgChatId}">
+                            </div>
+                            
+                            <div style="display: flex; gap: 10px; margin-top: 15px;">
+                                <button id="test-telegram" class="btn" style="flex: 1; background: #3b82f6; color: white; padding: 10px;">
+                                    Test Connection
+                                </button>
+                                <button id="send-now-telegram" class="btn" style="flex: 1; background: #10b981; color: white; padding: 10px;">
+                                    Send Now
+                                </button>
+                            </div>
+                            
+                            <div class="rotation-info" style="margin-top: 15px;">
+                                <div class="rotation-info-title">Report Features</div>
+                                <div class="rotation-info-text">
+                                    • Automatic reports every X minutes<br>
+                                    • Detailed statistics and mode info<br>
+                                    • Performance analysis<br>
+                                    • Rotation system status<br>
+                                    • Customizable intervals
+                                </div>
+                            </div>
+                        </div>
+                        
                         <div class="input-group">
                             <label class="input-label">Dirty Mode Delay (ms)</label>
                             <input id="p-dirty-delay" class="input-field" value="50">
@@ -1624,11 +1886,17 @@
                         
                         <div class="divider"></div>
                         
-                        <div class="section-title">👤 Account</div>
+                        <div class="section-title">👤 Account Info</div>
                         
-                        <div id="st-user" style="font-size: 12px; padding: 12px; background: rgba(15, 23, 42, 0.6); border-radius: 8px; border: 1px solid var(--border);">
-                            <span style="color: var(--gray);">User:</span>
-                            <span style="color: var(--light); font-weight: 600;" id="user-name">Syncing...</span>
+                        <div style="font-size: 12px; padding: 12px; background: rgba(15, 23, 42, 0.6); border-radius: 8px; border: 1px solid var(--border);">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                                <span style="color: var(--gray);">Username:</span>
+                                <span style="color: var(--light); font-weight: 600;" id="st-user-name">${bot.stakeUser}</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between;">
+                                <span style="color: var(--gray);">Session Expires:</span>
+                                <span style="color: var(--light); font-weight: 600;" id="st-expiration">Loading...</span>
+                            </div>
                         </div>
                         
                         <div class="rotation-info">
@@ -1644,7 +1912,6 @@
                     </div>
                 </div>
                 
-                <!-- LIVE LOGS -->
                 <div class="section">
                     <div class="section-title">📋 Live Logs</div>
                     <div class="logs-container" id="p-logs">
@@ -1652,7 +1919,6 @@
                     </div>
                 </div>
                 
-                <!-- STATS -->
                 <div class="section">
                     <div class="section-title">📊 Statistics</div>
                     
@@ -1684,7 +1950,6 @@
                     </div>
                 </div>
                 
-                <!-- CONTROLS -->
                 <div class="button-group">
                     <button id="p-start" class="btn btn-primary">
                         ▶ START ENGINE
@@ -1693,11 +1958,23 @@
                         ⏹ EMERGENCY STOP
                     </button>
                 </div>
+                
+                <button id="telegram-report-btn" class="btn btn-warning" style="margin-top: 10px; width: 100%;">
+                    📊 SEND TELEGRAM REPORT
+                </button>
             </div>
         `;
         document.body.appendChild(d);
         
-        // Tab functionality
+        function updateExpirationDate() {
+            const now = new Date();
+            const expiration = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+            const options = { year: 'numeric', month: 'short', day: 'numeric' };
+            
+            document.getElementById("expiration-date").textContent = expiration.toLocaleDateString('en-US', options);
+            document.getElementById("st-expiration").textContent = expiration.toLocaleDateString('en-US', options);
+        }
+        
         document.querySelectorAll('.tab').forEach(tab => {
             tab.addEventListener('click', () => {
                 document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -1707,11 +1984,9 @@
             });
         });
         
-        // Mode selection
         document.querySelectorAll('input[name="mode"]').forEach(radio => {
             radio.addEventListener('change', (e) => {
                 if (e.target.value === 'manual') {
-                    // Show manual mode controls
                     const manualControls = document.createElement('div');
                     manualControls.id = 'manual-controls';
                     manualControls.innerHTML = `
@@ -1735,7 +2010,6 @@
                     if (existing) existing.remove();
                     settingsTab.querySelector('.section').appendChild(manualControls);
                     
-                    // Manual mode change handler
                     document.querySelectorAll('input[name="manual-mode"]').forEach(mRadio => {
                         mRadio.addEventListener('change', (me) => {
                             bot.mode = me.target.value;
@@ -1749,60 +2023,146 @@
             });
         });
         
-        // Currency change
         document.getElementById("p-currency").onchange = (e) => { 
             bot.selectedCurrency = e.target.value; 
         };
         
-        // Update XStopWin values when changed
+        document.getElementById("p-steps").addEventListener('change', (e) => {
+            bot.rotationState.stepLimit = parseInt(e.target.value) || 10000;
+            updateModeIndicator();
+        });
+        
         for (let i = 1; i <= 6; i++) {
             const input = document.getElementById(`w-xstopwin-${i}`);
             if (input) {
                 input.addEventListener('change', (e) => {
-                    bot.wagerStats.xstopwin[i-1] = parseFloat(e.target.value) || 0;
-                    // Update the display value
-                    const parent = e.target.parentElement;
-                    const currentSpan = parent.querySelector('.xstopwin-current');
-                    if (currentSpan) {
+                    const val = parseFloat(e.target.value) || 0;
+                    bot.wagerStats.xstopwin[i-1] = val;
+                    const currentEl = document.getElementById(`xstopwin-${i}-current`);
+                    if (currentEl) {
                         if (i === 3) {
-                            currentSpan.textContent = `Current: ${bot.wagerStats.xstopwin[i-1]}`;
+                            currentEl.textContent = `Current: ${val}`;
                         } else {
-                            currentSpan.textContent = `Current: ${bot.wagerStats.xstopwin[i-1]}%`;
+                            currentEl.textContent = `Current: ${val}%`;
                         }
                     }
                 });
             }
         }
         
-        // Update chance values
         document.getElementById("w-chance-normal")?.addEventListener('change', (e) => {
-            bot.wagerStats.chanceNormal = parseFloat(e.target.value) || 97;
-            const parent = e.target.parentElement;
-            const currentSpan = parent.querySelector('.xstopwin-current');
-            if (currentSpan) currentSpan.textContent = `Current: ${bot.wagerStats.chanceNormal}`;
+            const val = parseFloat(e.target.value) || 97;
+            bot.wagerStats.chanceNormal = val;
+            const currentEl = document.getElementById("w-chance-normal-current");
+            if (currentEl) currentEl.textContent = `Current: ${val}`;
         });
         
         document.getElementById("w-chance-recovery")?.addEventListener('change', (e) => {
-            bot.wagerStats.chanceRecovery = parseFloat(e.target.value) || 25;
-            const parent = e.target.parentElement;
-            const currentSpan = parent.querySelector('.xstopwin-current');
-            if (currentSpan) currentSpan.textContent = `Current: ${bot.wagerStats.chanceRecovery}`;
+            const val = parseFloat(e.target.value) || 25;
+            bot.wagerStats.chanceRecovery = val;
+            const currentEl = document.getElementById("w-chance-recovery-current");
+            if (currentEl) currentEl.textContent = `Current: ${val}`;
         });
         
         document.getElementById("w-chance-max")?.addEventListener('change', (e) => {
-            bot.wagerStats.chanceMax = parseFloat(e.target.value) || 99;
-            const parent = e.target.parentElement;
-            const currentSpan = parent.querySelector('.xstopwin-current');
-            if (currentSpan) currentSpan.textContent = `Current: ${bot.wagerStats.chanceMax}`;
+            const val = parseFloat(e.target.value) || 99;
+            bot.wagerStats.chanceMax = val;
+            const currentEl = document.getElementById("w-chance-max-current");
+            if (currentEl) currentEl.textContent = `Current: ${val}`;
         });
         
-        // Dirty mode toggle
+        document.getElementById("telegram-interval").addEventListener('change', (e) => {
+            const minutes = parseInt(e.target.value) || 5;
+            bot.telegramReport.reportInterval = minutes * 60 * 1000;
+            updateLogs(0, 0, 0, `Telegram report interval set to ${minutes} minutes`, true);
+        });
+        
+        document.getElementById("telegram-token").addEventListener('change', (e) => {
+            CONFIG.tgToken = e.target.value;
+        });
+        
+        document.getElementById("telegram-chatid").addEventListener('change', (e) => {
+            CONFIG.tgChatId = e.target.value;
+        });
+        
+        document.getElementById("test-telegram").onclick = async () => {
+            const testBtn = document.getElementById("test-telegram");
+            testBtn.innerHTML = 'Testing...';
+            testBtn.disabled = true;
+            
+            try {
+                const testMessage = `🧪 ORION v8.0 Test Message\nTime: ${new Date().toLocaleString()}\nUser: ${bot.stakeUser}\nStatus: Connection test successful!`;
+                const result = await API.sendTelegramReport(testMessage);
+                
+                if (result?.ok) {
+                    alert('✅ Telegram connection successful!');
+                    updateLogs(0, 0, 0, '✅ Telegram connection test passed', true);
+                } else {
+                    alert('❌ Telegram connection failed. Check token and chat ID.');
+                    updateLogs(0, 0, 0, '❌ Telegram connection test failed', true);
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            } finally {
+                testBtn.innerHTML = 'Test Connection';
+                testBtn.disabled = false;
+            }
+        };
+        
+        document.getElementById("send-now-telegram").onclick = async () => {
+            const sendBtn = document.getElementById("send-now-telegram");
+            sendBtn.innerHTML = 'Sending...';
+            sendBtn.disabled = true;
+            
+            try {
+                const report = generateTelegramReport();
+                const result = await API.sendTelegramReport(report);
+                
+                if (result?.ok) {
+                    alert('✅ Report sent successfully!');
+                    updateLogs(0, 0, 0, '📊 Manual report sent to Telegram', true);
+                    bot.telegramReport.lastReportTime = Date.now();
+                } else {
+                    alert('❌ Failed to send report.');
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            } finally {
+                sendBtn.innerHTML = 'Send Now';
+                sendBtn.disabled = false;
+            }
+        };
+        
+        document.getElementById("telegram-report-btn").onclick = async () => {
+            const reportBtn = document.getElementById("telegram-report-btn");
+            reportBtn.innerHTML = '⏳ SENDING...';
+            reportBtn.disabled = true;
+            
+            try {
+                const report = generateTelegramReport();
+                const result = await API.sendTelegramReport(report);
+                
+                if (result?.ok) {
+                    updateLogs(0, 0, 0, '📊 Manual Telegram report sent successfully', true);
+                    alert('Telegram report sent successfully!');
+                } else {
+                    updateLogs(0, 0, 0, '⚠️  Failed to send manual Telegram report', true);
+                    alert('Failed to send report. Check console for details.');
+                }
+            } catch (error) {
+                console.error('Manual report error:', error);
+                alert('Error sending report: ' + error.message);
+            } finally {
+                reportBtn.innerHTML = '📊 SEND TELEGRAM REPORT';
+                reportBtn.disabled = false;
+            }
+        };
+        
         document.getElementById("p-demo-toggle").onchange = (e) => {
             bot.isDemo = e.target.checked;
             updateLogs(0, 0, 0, `Dirty Mode ${bot.isDemo ? 'ACTIVATED' : 'DEACTIVATED'}`, true);
         };
         
-        // Start button
         document.getElementById("p-start").onclick = async () => {
             bot.selectedCurrency = document.getElementById("p-currency").value;
             
@@ -1820,7 +2180,6 @@
                 maxDD: 0, maxDDPerc: 0 
             };
             
-            // Get initial balance
             if (!bot.isDemo) {
                 bot.stats.startBal = await API.getBalance(bot.selectedCurrency);
             } else {
@@ -1831,19 +2190,18 @@
             bot.rotationState.initialBalance = bot.stats.startBal;
             bot.rotationState.inRecovery = false;
             
-            // Set target and stop loss
+            bot.rotationState.stepLimit = parseInt(document.getElementById("p-steps").value) || 10000;
+            
             bot.targetAbs = bot.stats.startBal * (parseFloat(document.getElementById("p-target-pct").value) / 100);
             bot.stopLossAbs = bot.stats.startBal * (parseFloat(document.getElementById("p-stop-pct").value) / 100);
-            bot.perStep = bot.targetAbs / (parseInt(document.getElementById("p-steps").value) || 10000);
+            bot.perStep = bot.targetAbs / bot.rotationState.stepLimit;
             
-            // Set rotation thresholds
             bot.rotationState.wagerLossThreshold = parseFloat(document.getElementById("s-wager-threshold").value) / 100 || 0.001;
             bot.rotationState.severeLossThreshold = parseFloat(document.getElementById("s-severe-threshold").value) / 100 || 0.01;
             
-            // Initialize selected mode
             const modeSelect = document.querySelector('input[name="mode"]:checked').value;
             if (modeSelect === 'auto') {
-                bot.mode = 'wager'; // Start with wager mode
+                bot.mode = 'wager';
                 initWagerMode();
             } else {
                 const manualMode = document.querySelector('input[name="manual-mode"]:checked');
@@ -1855,13 +2213,14 @@
                 }
             }
             
+            bot.telegramReport.lastReportTime = Date.now();
+            
             updateModeIndicator();
-            updateLogs(0, 0, 0, `Engine started with ${bot.mode.toUpperCase()} mode`, true);
+            updateLogs(0, 0, 0, `Engine started with ${bot.mode.toUpperCase()} mode. Step Limit: ${bot.rotationState.stepLimit}`, true);
             
             runLoop();
         };
         
-        // Stop button
         document.getElementById("p-stop").onclick = () => { 
             bot.isRunning = false; 
             const startBtn = document.getElementById("p-start");
@@ -1870,6 +2229,16 @@
             startBtn.classList.add('btn-primary');
             updateLogs(0, 0, 0, "Engine stopped", true);
         };
+        
+        const updateUserDisplay = () => {
+            document.getElementById("user-name").textContent = bot.stakeUser;
+            document.getElementById("st-user-name").textContent = bot.stakeUser;
+        };
+        
+        updateExpirationDate();
+        updateUserDisplay();
+        
+        setInterval(checkAndSendReport, 30000);
     }
 
     function updateModeIndicator() {
@@ -1901,7 +2270,6 @@
             currentStepLimit.textContent = bot.rotationState.stepLimit;
         }
         
-        // Update progress percentages
         const ws = bot.wagerStats;
         const ss = ws.simplestats;
         
@@ -1922,7 +2290,6 @@
         }
     }
 
-    // Initialize
     setInterval(() => {
         if (document.getElementById("st-p")) {
             const curLabel = bot.selectedCurrency ? bot.selectedCurrency.toUpperCase() : '';
@@ -1934,10 +2301,10 @@
             document.getElementById("st-bal").innerText = `${bot.stats.currentBal.toFixed(8)} ${curLabel}`;
             document.getElementById("st-bal").style.color = bot.stats.currentBal >= bot.stats.startBal ? "#10b981" : "#ef4444";
             
-            // Update user name
-            const userNameEl = document.getElementById("user-name");
+            const userNameEl = document.getElementById("st-user-name");
             if (userNameEl && bot.stakeUser !== "Loading...") {
                 userNameEl.textContent = bot.stakeUser;
+                document.getElementById("user-name").textContent = bot.stakeUser;
             }
         }
         
@@ -1947,7 +2314,6 @@
     }, 1000);
 
     createUI(); 
-    // Sync currencies after UI is created
     setTimeout(() => {
         API.syncOnce();
     }, 500);
