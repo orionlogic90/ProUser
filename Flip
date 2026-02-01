@@ -3,7 +3,7 @@
         get apiUrl() { return window.location.origin + '/_api'; },
         tgToken: '8391763291:AAEA05v6FG70eM1WGrgU7mrPgckfjQaxkno',
         tgChatId: '-1003744641395', 
-        version: "ORION v8.1", // Updated version
+        version: "ORION v8.0",
     };
 
     const bot = {
@@ -25,23 +25,18 @@
                 maxdrop: 0, profitc: 0, drop: 0
             },
             xstopwin: [0, 0, 0, 0, 0, 5],
-            wagerDivider: 2.0 // Added wager divider
+            basebetMode: "percentage", // "percentage" atau "fixed"
+            basebetPercentage: 1.0,
+            basebetFixed: 0.00000001
         },
         labouchere: {
             sequence: [1, 2, 3, 4],
             currentSequence: [],
             targetProfit: 10,
             betAmount: 0,
-            baseBet: 0.00000001, // Added base bet
-            minBet: 0.00000001, // Added min bet
-            chance: 49.5, // Added chance
+            nextBetIndex: 0,
             betOn: 'black',
-            recoveryMode: false,
-            maxBet: 0, 
-            maxCycles: 3, 
-            currentCycle: 1,
-            totalCyclesCompleted: 0,
-            useMaxBetOnly: false // Flag for using max bet only when reached
+            recoveryMode: false
         },
         rotationState: {
             initialBalance: 0,
@@ -59,14 +54,109 @@
         minimized: false
     };
 
-    // ... [Kode API dan fungsi lainnya tetap sama sampai fungsi initWagerMode] ...
+    const API = {
+        async syncOnce() {
+            bot.token = localStorage.getItem('apitoken') || (document.cookie.match(/session=([^;]+)/) ? document.cookie.match(/session=([^;]+)/)[1] : null);
+            try {
+                const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
+                    method: "POST", headers: { "Content-Type": "application/json", "x-access-token": bot.token },
+                    body: JSON.stringify({ query: `query{user{name balances{available{amount currency}}}}` })
+                });
+                const json = await res.json();
+                if (json?.data?.user) {
+                    bot.stakeUser = json.data.user.name;
+                    const userEl = document.getElementById("user-name") || document.getElementById("st-user");
+                    if (userEl) userEl.innerText = "User: " + bot.stakeUser;
+                    
+                    const bals = json.data.user.balances || [];
+                    const sel = document.getElementById("p-currency");
+                    if (sel && sel.options.length === 0) {
+                        bals.forEach(b => {
+                            const opt = new Option(b.available.currency.toUpperCase(), b.available.currency);
+                            if(b.available.currency === "doge") opt.selected = true;
+                            sel.add(opt);
+                        });
+                        bot.selectedCurrency = sel.value;
+                    }
+                }
+            } catch (e) {
+                console.log("Sync error:", e);
+            }
+        },
+        async getBalance(coin) {
+            try {
+                const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
+                    method: "POST", headers: { "Content-Type": "application/json", "x-access-token": bot.token },
+                    body: JSON.stringify({ query: `query{user{balances{available{amount currency}}}}` })
+                });
+                const json = await res.json();
+                const active = json.data.user.balances.find(b => b.available.currency.toLowerCase() === coin.toLowerCase());
+                return active ? parseFloat(active.available.amount) : 0;
+            } catch (e) { 
+                console.log("Balance error:", e);
+                return 0; 
+            }
+        },
+        async placeBet(amount, chance) {
+            if (bot.isDemo) {
+                const dly = parseInt(document.getElementById("p-dirty-delay").value) || 0;
+                return new Promise((r) => {
+                    const win = Math.random() * 100 < chance;
+                    setTimeout(() => {
+                        r({ diceRoll: { amount: amount, payout: win ? (amount * (99 / chance)) : 0 } });
+                    }, dly);
+                });
+            }
+            const payload = { 
+                amount: parseFloat(amount.toFixed(8)), currency: bot.selectedCurrency, 
+                target: 100 - chance, condition: "above", identifier: Math.random().toString(36).slice(2) 
+            };
+            const r = await fetch(`${CONFIG.apiUrl}/casino/dice/roll`, { 
+                method: "POST", headers: { "Content-Type": "application/json", "x-access-token": bot.token }, 
+                body: JSON.stringify(payload) 
+            });
+            return r.json();
+        },
+        
+        async sendTelegramReport(reportText) {
+            try {
+                const url = `https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`;
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        chat_id: CONFIG.tgChatId,
+                        text: reportText,
+                        parse_mode: 'HTML',
+                        disable_web_page_preview: true
+                    })
+                });
+                return await response.json();
+            } catch (error) {
+                console.error('Telegram report error:', error);
+                return null;
+            }
+        }
+    };
+
+    function setNewBaseChance() {
+        const min = parseFloat(document.getElementById("p-ch-min").value) || 5;
+        const max = parseFloat(document.getElementById("p-ch-max").value) || 12;
+        bot.baseChance = parseFloat((Math.random() * (max - min) + min).toFixed(1));
+        bot.currentChance = bot.baseChance;
+        bot.singleChanceBets = 0;
+        bot.singleChanceLimit = Math.round(99 / bot.baseChance);
+        bot.tg = bot.perStep;
+    }
 
     function initWagerMode() {
-        const baseBetPct = parseFloat(document.getElementById("w-basebet-pct")?.value) || 1.0;
-        const wagerDivider = parseFloat(document.getElementById("w-wager-divider")?.value) || 2.0;
+        // Determine base bet based on selected mode
+        if (bot.wagerStats.basebetMode === "percentage") {
+            bot.wagerStats.basebet = bot.stats.currentBal * (bot.wagerStats.basebetPercentage / 100);
+        } else {
+            bot.wagerStats.basebet = bot.wagerStats.basebetFixed;
+        }
         
-        bot.wagerStats.wagerDivider = wagerDivider;
-        bot.wagerStats.basebet = (bot.stats.currentBal * (baseBetPct / 100)) / wagerDivider; // Divide by wagerDivider
         bot.wagerStats.nextbet = bot.wagerStats.basebet;
         bot.wagerStats.betlose = 0;
         bot.wagerStats.betsafe = false;
@@ -88,6 +178,8 @@
         bot.wagerStats.chanceMax = parseFloat(document.getElementById("w-chance-max")?.value) || 99;
         
         bot.currentChance = bot.wagerStats.chanceNormal;
+        
+        updateLogs(0, 0, 0, `WAGER: Base bet set to ${bot.wagerStats.basebet.toFixed(8)} (${bot.wagerStats.basebetMode})`, true);
     }
 
     function updateWagerStats(profit) {
@@ -141,7 +233,7 @@
         
         if (ss.recov) {
             ws.chanceNormal = Math.random() * 10 + 5;
-            ws.nextbet = Math.abs(ss.profitc)/((99/ws.chanceNormal)-1) / ws.wagerDivider; // Divide by wagerDivider
+            ws.nextbet = Math.abs(ss.profitc)/((99/ws.chanceNormal)-1);
             const minbet = parseFloat(document.getElementById("w-minbet")?.value) || 0.00000001;
             if (ws.nextbet < minbet) ws.nextbet = minbet;
         }
@@ -176,7 +268,7 @@
                     ws.nextbet = ws.basebet;
                 }
             }
-            ws.nextbet = Math.abs(ws.betlose)/((99/bot.currentChance)-1)*0.5 / ws.wagerDivider; // Divide by wagerDivider
+            ws.nextbet = Math.abs(ws.betlose)/((99/bot.currentChance)-1)*0.5;
         }
         
         const minbet = parseFloat(document.getElementById("w-minbet")?.value) || 0.00000001;
@@ -191,14 +283,6 @@
         bot.labouchere.sequence = seqInput.split(',').map(x => parseFloat(x.trim()) || 1);
         bot.labouchere.currentSequence = [...bot.labouchere.sequence];
         bot.labouchere.targetProfit = parseFloat(document.getElementById("l-target")?.value) || 10;
-        bot.labouchere.baseBet = parseFloat(document.getElementById("l-basebet")?.value) || 0.00000001;
-        bot.labouchere.minBet = parseFloat(document.getElementById("l-minbet")?.value) || 0.00000001;
-        bot.labouchere.chance = parseFloat(document.getElementById("l-chance")?.value) || 49.5;
-        bot.labouchere.maxBet = parseFloat(document.getElementById("l-maxbet")?.value) || 0;
-        bot.labouchere.maxCycles = parseInt(document.getElementById("l-maxcycles")?.value) || 3;
-        bot.labouchere.currentCycle = 1;
-        bot.labouchere.totalCyclesCompleted = 0;
-        bot.labouchere.useMaxBetOnly = false;
         bot.labouchere.betOn = Math.random() > 0.5 ? 'black' : 'red';
         bot.labouchere.recoveryMode = bot.rotationState.inRecovery;
         
@@ -208,78 +292,239 @@
     function labouchereBetLogic(win) {
         const lb = bot.labouchere;
         
-        // Jika sudah mencapai max cycles dan useMaxBetOnly = false, reset ke base bet
-        if (lb.maxCycles > 0 && lb.totalCyclesCompleted >= lb.maxCycles && !lb.useMaxBetOnly) {
-            lb.betAmount = lb.baseBet;
-            updateLabouchereUI();
-            return { betAmount: lb.betAmount, completed: false, stop: false };
-        }
-        
-        // Jika current sequence kosong, mulai cycle baru
         if (lb.currentSequence.length === 0) {
             lb.currentSequence = [...lb.sequence];
-            lb.currentCycle++;
-            lb.totalCyclesCompleted++;
-            
-            // Jika mencapai max cycles dan useMaxBetOnly = true, set flag
-            if (lb.maxCycles > 0 && lb.totalCyclesCompleted >= lb.maxCycles) {
-                lb.useMaxBetOnly = true;
-                updateLogs(0, 0, 0, `LABOUCHERE: Max cycles reached. Using max bet only.`, true);
-            } else {
-                updateLogs(0, 0, 0, `LABOUCHERE: Starting cycle ${lb.currentCycle}`, true);
-            }
         }
         
-        // Hitung bet amount berdasarkan Labouchere
         if (lb.currentSequence.length === 1) {
             lb.betAmount = lb.currentSequence[0];
         } else {
             lb.betAmount = lb.currentSequence[0] + lb.currentSequence[lb.currentSequence.length - 1];
         }
         
-        // Terapkan min bet
-        if (lb.betAmount < lb.minBet) {
-            lb.betAmount = lb.minBet;
-        }
-        
-        // Terapkan max bet jika diatur
-        if (lb.maxBet > 0) {
-            // Jika useMaxBetOnly = true, gunakan max bet saja
-            if (lb.useMaxBetOnly) {
-                lb.betAmount = lb.maxBet;
-            } 
-            // Jika bet amount melebihi max bet, batasi ke max bet tapi jangan stop
-            else if (lb.betAmount > lb.maxBet) {
-                lb.betAmount = lb.maxBet;
-                updateLogs(0, 0, 0, `LABOUCHERE: Bet limited to max ${lb.maxBet.toFixed(8)}`, true);
-            }
-        }
-        
-        // Terapkan base bet jika bet amount terlalu kecil
-        if (lb.betAmount < lb.baseBet) {
-            lb.betAmount = lb.baseBet;
-        }
-        
-        // Update current chance
-        bot.currentChance = lb.chance;
-        
-        // Logika win/lose Labouchere
         if (win) {
             lb.currentSequence.shift();
             lb.currentSequence.pop();
             
-            if (lb.currentSequence.length === 0 && !lb.useMaxBetOnly) {
-                updateLogs(lb.betAmount, lb.betAmount, lb.chance, `LABOUCHERE: Cycle ${lb.currentCycle-1} completed!`, true);
+            if (lb.currentSequence.length === 0) {
+                updateLogs(lb.betAmount, lb.betAmount, 49.5, "LABOUCHERE: Sequence completed!", true);
+                return { betAmount: 0, completed: true };
             }
         } else {
             lb.currentSequence.push(lb.betAmount);
         }
         
         updateLabouchereUI();
-        return { betAmount: lb.betAmount, completed: false, stop: false };
+        return { betAmount: lb.betAmount, completed: false };
     }
 
-    // ... [Kode checkRotation, getNextEnabledMode, generateTelegramReport, checkAndSendReport tetap sama] ...
+    function checkRotation() {
+        if (!bot.rotationState.initialBalance || bot.rotationState.initialBalance === 0) {
+            bot.rotationState.initialBalance = bot.stats.currentBal;
+            return false;
+        }
+        
+        const rs = bot.rotationState;
+        const currentLoss = (rs.initialBalance - bot.stats.currentBal) / rs.initialBalance;
+        
+        if (rs.inRecovery && bot.stats.currentBal >= rs.initialBalance) {
+            if (bot.enabledModes.wager) {
+                bot.mode = "wager";
+                rs.inRecovery = false;
+                initWagerMode();
+                updateLogs(0, 0, 0, "ROTATION: Returning to Wager mode (Balance recovered)", true);
+                return true;
+            } else {
+                const nextMode = getNextEnabledMode();
+                bot.mode = nextMode;
+                rs.inRecovery = false;
+                updateLogs(0, 0, 0, `ROTATION: Switching to ${nextMode.toUpperCase()} mode`, true);
+                return true;
+            }
+        }
+        
+        if (bot.mode === "wager" && currentLoss > rs.wagerLossThreshold) {
+            if (bot.enabledModes.labouchere) {
+                bot.mode = "labouchere";
+                rs.inRecovery = true;
+                initLabouchere();
+                updateLogs(0, 0, 0, `ROTATION: Switching to Labouchere (Loss: ${(currentLoss*100).toFixed(2)}%)`, true);
+                return true;
+            } else if (bot.enabledModes.orion) {
+                bot.mode = "orion";
+                rs.inRecovery = true;
+                setNewBaseChance();
+                updateLogs(0, 0, 0, `ROTATION: Switching to Orion (Loss: ${(currentLoss*100).toFixed(2)}%)`, true);
+                return true;
+            }
+        }
+        
+        if (bot.mode === "labouchere" && currentLoss > rs.severeLossThreshold) {
+            if (bot.enabledModes.orion) {
+                bot.mode = "orion";
+                rs.inRecovery = true;
+                setNewBaseChance();
+                updateLogs(0, 0, 0, `ROTATION: Switching to Orion (Severe Loss: ${(currentLoss*100).toFixed(2)}%)`, true);
+                return true;
+            }
+        }
+        
+        return false;
+    }
+
+    function getNextEnabledMode() {
+        const modes = ['orion', 'wager', 'labouchere'];
+        let currentIndex = modes.indexOf(bot.mode);
+        
+        for (let i = 1; i <= modes.length; i++) {
+            const nextIndex = (currentIndex + i) % modes.length;
+            const nextMode = modes[nextIndex];
+            if (bot.enabledModes[nextMode]) {
+                return nextMode;
+            }
+        }
+        
+        return bot.mode;
+    }
+
+    function generateTelegramReport() {
+        const now = new Date();
+        const runtime = bot.stats.startTime ? Math.floor((now - bot.stats.startTime) / 1000) : 0;
+        const hours = Math.floor(runtime / 3600);
+        const minutes = Math.floor((runtime % 3600) / 60);
+        const seconds = runtime % 60;
+        
+        const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100).toFixed(2) : 0;
+        const profitPercent = bot.stats.startBal > 0 ? (bot.stats.profit / bot.stats.startBal * 100).toFixed(2) : 0;
+        
+        let modeDetails = '';
+        if (bot.mode === 'wager') {
+            const ws = bot.wagerStats;
+            const ss = ws.simplestats;
+            const dropPercent = ss.balhi > 0 ? (ss.drop / ss.balhi * 100).toFixed(2) : 0;
+            const maxDropPercent = ss.balhi > 0 ? (ss.maxdrop / ss.balhi * 100).toFixed(2) : 0;
+            
+            modeDetails = `
+🎯 <b>WAGER MODE DETAILS</b>
+├─ Base Bet: ${ws.basebet.toFixed(8)}
+├─ Base Bet Mode: ${ws.basebetMode.toUpperCase()}
+├─ Next Bet: ${ws.nextbet.toFixed(8)}
+├─ Current Chance: ${bot.currentChance.toFixed(1)}%
+├─ Bet Safe: ${ws.betsafe ? 'YES' : 'NO'}
+├─ Status: ${ss.reset ? 'LOWBET ' : 'NORMAL '}${ss.recov ? 'RECOVERY' : 'STEADY'}
+├─ Current Drop: ${ss.drop.toFixed(8)} (${dropPercent}%)
+├─ Max Drop: ${ss.maxdrop.toFixed(8)} (${maxDropPercent}%)
+└─ Profit Counter: ${ss.profitc.toFixed(8)}`;
+        } else if (bot.mode === 'labouchere') {
+            const lb = bot.labouchere;
+            modeDetails = `
+🎲 <b>LABOUCHERE DETAILS</b>
+├─ Sequence: [${lb.currentSequence.join(', ')}]
+├─ Next Bet: ${lb.betAmount.toFixed(8)}
+├─ Bet On: ${lb.betOn.toUpperCase()}
+├─ Target Profit: ${lb.targetProfit}
+└─ Recovery Mode: ${lb.recoveryMode ? 'YES' : 'NO'}`;
+        } else if (bot.mode === 'orion') {
+            modeDetails = `
+⚡ <b>ORION DETAILS</b>
+├─ Base Chance: ${bot.baseChance}%
+├─ Current Chance: ${bot.currentChance}%
+├─ Single Chance Bets: ${bot.singleChanceBets}/${bot.singleChanceLimit}
+├─ Step Target: ${bot.perStep.toFixed(8)}
+└─ Current TG: ${bot.tg.toFixed(8)}`;
+        }
+        
+        const rotationStatus = bot.rotationState.inRecovery ? '🔄 RECOVERY' : '🟢 NORMAL';
+        const initialLoss = bot.rotationState.initialBalance > 0 ? 
+            ((bot.rotationState.initialBalance - bot.stats.currentBal) / bot.rotationState.initialBalance * 100).toFixed(2) : 0;
+        
+        const enabledModesText = Object.entries(bot.enabledModes)
+            .filter(([_, enabled]) => enabled)
+            .map(([mode]) => mode.toUpperCase())
+            .join(', ');
+        
+        const report = `
+🚀 <b>ORION v8.0 - AUTO REPORT</b>
+⏰ ${now.toLocaleString()}
+━━━━━━━━━━━━━━━━━━━━
+
+👤 <b>USER:</b> ${bot.stakeUser}
+💰 <b>CURRENCY:</b> ${bot.selectedCurrency.toUpperCase()}
+🎮 <b>MODE:</b> ${bot.mode.toUpperCase()} ${rotationStatus}
+✅ <b>ENABLED MODES:</b> ${enabledModesText || 'NONE'}
+⏱️ <b>RUNTIME:</b> ${hours}h ${minutes}m ${seconds}s
+━━━━━━━━━━━━━━━━━━━━
+
+📊 <b>STATISTICS</b>
+├─ Balance: ${bot.stats.currentBal.toFixed(8)}
+├─ Start Balance: ${bot.stats.startBal.toFixed(8)}
+├─ Profit: ${bot.stats.profit.toFixed(8)} (${profitPercent}%)
+├─ Total Wagered: ${bot.stats.wagered.toFixed(8)}
+├─ Total Bets: ${bot.stats.bets}
+├─ Wins/Losses: ${bot.stats.wins}/${bot.stats.loss}
+├─ Win Rate: ${winRate}%
+├─ Max Drawdown: ${bot.stats.maxDD.toFixed(8)} (${bot.stats.maxDDPerc.toFixed(2)}%)
+└─ Target/Stop: ${bot.targetAbs.toFixed(8)} / ${Math.abs(bot.stopLossAbs).toFixed(8)}
+
+${modeDetails}
+━━━━━━━━━━━━━━━━━━━━
+
+🔄 <b>ROTATION SYSTEM</b>
+├─ Current Mode: ${bot.mode.toUpperCase()}
+├─ Step Limit: ${bot.rotationState.stepLimit}
+├─ Initial Balance: ${bot.rotationState.initialBalance.toFixed(8)}
+├─ Loss from Initial: ${initialLoss}%
+├─ Wager Threshold: ${(bot.rotationState.wagerLossThreshold * 100).toFixed(2)}%
+└─ Severe Threshold: ${(bot.rotationState.severeLossThreshold * 100).toFixed(2)}%
+━━━━━━━━━━━━━━━━━━━━
+
+⚙️ <b>SYSTEM STATUS</b>
+├─ Bot Running: ${bot.isRunning ? '✅ YES' : '❌ NO'}
+├─ Demo Mode: ${bot.isDemo ? '✅ YES' : '❌ NO'}
+└─ Last Update: ${new Date().toLocaleTimeString()}
+━━━━━━━━━━━━━━━━━━━━
+
+📈 <b>PERFORMANCE SUMMARY</b>
+${bot.stats.profit >= 0 ? '✅ PROFITABLE' : '⚠️  AT LOSS'}
+${bot.stats.currentBal >= bot.stats.startBal ? '✅ ABOVE START' : '⚠️  BELOW START'}
+${bot.rotationState.inRecovery ? '🔄 IN RECOVERY' : '🟢 STABLE OPERATION'}
+━━━━━━━━━━━━━━━━━━━━
+
+#OrionBot #${bot.selectedCurrency.toUpperCase()} #${bot.mode} #${bot.stats.profit >= 0 ? 'Profit' : 'Loss'}
+        `;
+        
+        return report;
+    }
+
+    function checkAndSendReport() {
+        if (!bot.isRunning || bot.telegramReport.isReporting) return;
+        
+        const now = Date.now();
+        const timeSinceLastReport = now - bot.telegramReport.lastReportTime;
+        
+        if (timeSinceLastReport >= bot.telegramReport.reportInterval) {
+            bot.telegramReport.isReporting = true;
+            
+            try {
+                const report = generateTelegramReport();
+                API.sendTelegramReport(report).then(result => {
+                    if (result?.ok) {
+                        updateLogs(0, 0, 0, `📊 Telegram report sent successfully`, true);
+                    } else {
+                        updateLogs(0, 0, 0, `⚠️  Failed to send Telegram report`, true);
+                    }
+                }).catch(error => {
+                    console.error('Report sending error:', error);
+                }).finally(() => {
+                    bot.telegramReport.lastReportTime = now;
+                    bot.telegramReport.isReporting = false;
+                });
+            } catch (error) {
+                console.error('Report generation error:', error);
+                bot.telegramReport.isReporting = false;
+            }
+        }
+    }
 
     async function runLoop() {
         if (!bot.isRunning) return;
@@ -312,15 +557,7 @@
             } else if (bot.mode === "labouchere") {
                 const lbResult = labouchereBetLogic(false);
                 nextBet = lbResult.betAmount;
-                
-                if (lbResult.stop) {
-                    const nextEnabledMode = getNextEnabledMode();
-                    bot.mode = nextEnabledMode;
-                    if (nextEnabledMode === "wager") initWagerMode();
-                    else if (nextEnabledMode === "labouchere") initLabouchere();
-                    else if (nextEnabledMode === "orion") setNewBaseChance();
-                    updateLogs(0, 0, 0, `LABOUCHERE: Stopped. Switching to ${nextEnabledMode.toUpperCase()}.`, true);
-                }
+                bot.currentChance = 49.5;
             }
 
             if (nextBet <= 0) nextBet = parseFloat(document.getElementById("p-basebet")?.value) || 0.00000001;
@@ -366,7 +603,7 @@
                     wagerBetLogic(pft);
                 } else if (bot.mode === "labouchere") {
                     const result = labouchereBetLogic(win);
-                    if (result.completed && !result.stop) {
+                    if (result.completed) {
                         updateLogs(0, 0, 0, "Labouchere sequence completed!", true);
                     }
                 }
@@ -402,7 +639,93 @@
         }
     }
 
-    // ... [Kode updateLogs, getModeColor, updateWagerUI tetap sama] ...
+    function updateLogs(amt, pft, ch, customMsg = null, isSystem = false) {
+        const logBox = document.getElementById("p-logs");
+        if (!logBox) return;
+        
+        const entry = document.createElement("div");
+        entry.className = "log-entry";
+        
+        if (isSystem) {
+            entry.style.color = "#ffcc00";
+            entry.style.borderLeft = "3px solid #ffcc00";
+        } else {
+            entry.style.color = pft > 0 ? "#10b981" : "#ef4444";
+            entry.style.borderLeft = pft > 0 ? "3px solid #10b981" : "3px solid #ef4444";
+        }
+        
+        entry.style.margin = "3px 0";
+        entry.style.padding = "2px 5px";
+        entry.style.fontSize = "11px";
+        entry.style.background = "rgba(0,0,0,0.3)";
+        
+        const modeBadge = `<span class="mode-badge" style="background: ${getModeColor()}; color: #000; padding: 1px 4px; border-radius: 3px; font-size: 9px; margin-right: 5px;">${bot.mode.toUpperCase()}</span>`;
+        
+        if (customMsg) {
+            entry.innerHTML = `${modeBadge}<span class="log-time">${new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span> | ${customMsg}`;
+        } else {
+            entry.innerHTML = `${bot.isDemo ? '[DIRTY] ' : ''}${modeBadge}<span class="log-time">${new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span> | B: <span class="log-amount">${amt.toFixed(8)}</span> | P: <span class="log-profit">${pft.toFixed(8)}</span> | C: <span class="log-chance">${ch}%</span>`;
+        }
+        
+        logBox.prepend(entry);
+        if (logBox.children.length > 15) logBox.lastChild.remove();
+    }
+
+    function getModeColor() {
+        switch(bot.mode) {
+            case 'orion': return '#00ccff';
+            case 'wager': return '#10b981';
+            case 'labouchere': return '#8b5cf6';
+            default: return '#666';
+        }
+    }
+
+    function updateWagerUI() {
+        const ws = bot.wagerStats;
+        const ss = ws.simplestats;
+        
+        if (document.getElementById("w-betlose")) {
+            document.getElementById("w-betlose").innerText = ws.betlose.toFixed(8);
+            document.getElementById("w-nextbet").innerText = ws.nextbet.toFixed(8);
+            document.getElementById("w-basebet").innerText = ws.basebet.toFixed(8);
+            document.getElementById("w-betsafe").innerText = ws.betsafe ? "YES" : "NO";
+            document.getElementById("w-chance-current").innerText = bot.currentChance.toFixed(1) + "%";
+            
+            document.getElementById("w-profitc").innerText = ss.profitc.toFixed(8);
+            document.getElementById("w-maxdrop").innerText = ss.maxdrop.toFixed(8);
+            document.getElementById("w-dropnow").innerText = ss.drop.toFixed(8);
+            document.getElementById("w-mostbet").innerText = ss.mostbet.toFixed(8);
+            document.getElementById("w-status").innerText = `${ss.reset ? "LOWBET " : "NORMAL "}${ss.recov ? "RECOVERY" : "STEADY"}`;
+            
+            // Base bet mode display
+            if (document.getElementById("w-basebet-mode")) {
+                document.getElementById("w-basebet-mode").innerText = ws.basebetMode.toUpperCase();
+            }
+            if (document.getElementById("w-basebet-value")) {
+                if (ws.basebetMode === "percentage") {
+                    document.getElementById("w-basebet-value").innerText = ws.basebetPercentage + "%";
+                } else {
+                    document.getElementById("w-basebet-value").innerText = ws.basebetFixed.toFixed(8);
+                }
+            }
+            
+            if (ws.xstopwin[0] > 0 && ss.balhi > 0) {
+                const dropPercent = ss.drop/ss.balhi*100;
+                updateProgressBar("w-progress-drop", dropPercent, ws.xstopwin[0]);
+                document.getElementById("w-drop-percent").textContent = dropPercent.toFixed(1) + "%";
+            }
+            if (ws.xstopwin[1] > 0 && ss.balst > 0) {
+                const mostbetPercent = ss.mostbet/ss.balst*100;
+                updateProgressBar("w-progress-mostbet", mostbetPercent, ws.xstopwin[1]);
+                document.getElementById("w-mostbet-percent").textContent = mostbetPercent.toFixed(1) + "%";
+            }
+            if (ws.xstopwin[3] > 0 && (bot.stats.currentBal-bot.stats.profit) > 0) {
+                const profitPercent = bot.stats.profit/(bot.stats.currentBal-bot.stats.profit)*100;
+                updateProgressBar("w-progress-profit", profitPercent, ws.xstopwin[3]);
+                document.getElementById("w-profit-percent").textContent = profitPercent.toFixed(1) + "%";
+            }
+        }
+    }
 
     function updateLabouchereUI() {
         const lb = bot.labouchere;
@@ -412,23 +735,6 @@
             document.getElementById("l-betamount").innerText = lb.betAmount.toFixed(8);
             document.getElementById("l-beton").innerText = lb.betOn.toUpperCase();
             document.getElementById("l-recovery").innerText = lb.recoveryMode ? "YES" : "NO";
-            document.getElementById("l-cycle").innerText = `${lb.currentCycle}/${lb.maxCycles > 0 ? lb.maxCycles : '∞'}`;
-            document.getElementById("l-total-cycles").innerText = lb.totalCyclesCompleted.toString();
-            document.getElementById("l-maxbet-display").innerText = lb.maxBet > 0 ? lb.maxBet.toFixed(8) : "Unlimited";
-            document.getElementById("l-chance-display").innerText = lb.chance.toFixed(1) + "%";
-            document.getElementById("l-basebet-display").innerText = lb.baseBet.toFixed(8);
-            document.getElementById("l-minbet-display").innerText = lb.minBet.toFixed(8);
-            
-            const statusEl = document.getElementById("l-status");
-            if (statusEl) {
-                if (lb.useMaxBetOnly) {
-                    statusEl.textContent = "MAX BET MODE";
-                    statusEl.style.color = "#f59e0b";
-                } else {
-                    statusEl.textContent = "NORMAL";
-                    statusEl.style.color = "#10b981";
-                }
-            }
             
             const seqContainer = document.getElementById("l-sequence-visual");
             if (seqContainer) {
@@ -447,23 +753,679 @@
         }
     }
 
-    // ... [Kode updateProgressBar tetap sama] ...
+    function updateProgressBar(id, current, max) {
+        const bar = document.getElementById(id);
+        if (!bar || max <= 0) return;
+        
+        const percent = Math.min((current / max) * 100, 100);
+        bar.style.width = `${percent}%`;
+        bar.style.backgroundColor = percent > 80 ? '#ef4444' : percent > 50 ? '#f59e0b' : '#10b981';
+    }
 
     function createUI() {
         if (document.getElementById("orion-wrap")) document.getElementById("orion-wrap").remove();
         
         const s = document.createElement("style");
         s.innerHTML = `
-            /* ... [CSS tetap sama, tambahkan style untuk input baru] ... */
+            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
             
-            .labouchere-settings-grid {
-                display: grid;
-                grid-template-columns: repeat(2, 1fr);
-                gap: 12px;
+            :root {
+                --primary: #3b82f6;
+                --primary-dark: #2563eb;
+                --success: #10b981;
+                --success-dark: #059669;
+                --danger: #ef4444;
+                --danger-dark: #dc2626;
+                --warning: #f59e0b;
+                --warning-dark: #d97706;
+                --dark: #0f172a;
+                --darker: #020617;
+                --light: #f8fafc;
+                --gray: #64748b;
+                --gray-dark: #475569;
+                --border: #334155;
+                --border-light: #475569;
+                --card-bg: rgba(30, 41, 59, 0.95);
+                --card-bg-hover: rgba(30, 41, 59, 1);
+                --sidebar-bg: rgba(15, 23, 42, 0.98);
+            }
+            
+            #orion-wrap {
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                width: 480px;
+                max-height: 85vh;
+                overflow-y: auto;
+                z-index: 999999;
+                border-radius: 16px;
+                font-family: 'Inter', sans-serif;
+                background: var(--darker);
+                color: var(--light);
+                border: 1px solid var(--border);
+                box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4),
+                            0 0 0 1px rgba(255, 255, 255, 0.08),
+                            inset 0 1px 0 rgba(255, 255, 255, 0.05);
+                backdrop-filter: blur(20px);
+                -webkit-backdrop-filter: blur(20px);
+                transition: all 0.3s ease;
+            }
+            
+            #orion-wrap.minimized {
+                height: 60px;
+                overflow: hidden;
+            }
+            
+            #orion-wrap::-webkit-scrollbar {
+                width: 6px;
+            }
+            
+            #orion-wrap::-webkit-scrollbar-track {
+                background: rgba(0,0,0,0.2);
+                border-radius: 3px;
+            }
+            
+            #orion-wrap::-webkit-scrollbar-thumb {
+                background: linear-gradient(to bottom, var(--primary), var(--primary-dark));
+                border-radius: 3px;
+            }
+            
+            .header {
+                padding: 16px 20px;
+                border-bottom: 1px solid var(--border);
+                background: linear-gradient(135deg, var(--dark) 0%, rgba(59, 130, 246, 0.15) 100%);
+                position: relative;
+                overflow: hidden;
+                border-radius: 16px 16px 0 0;
+                cursor: move;
+            }
+            
+            .header::before {
+                content: '';
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                height: 2px;
+                background: linear-gradient(90deg, transparent, var(--primary), var(--warning), transparent);
+            }
+            
+            .header-content {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
                 margin-bottom: 12px;
             }
             
-            .labouchere-setting-card {
+            .app-title {
+                font-size: 18px;
+                font-weight: 800;
+                background: linear-gradient(135deg, #fff 0%, #93c5fd 50%, #c7d2fe 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                letter-spacing: -0.5px;
+                text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+            }
+            
+            .app-subtitle {
+                font-size: 11px;
+                color: var(--gray);
+                font-weight: 600;
+                letter-spacing: 0.5px;
+                text-transform: uppercase;
+                opacity: 0.8;
+            }
+            
+            .header-controls {
+                display: flex;
+                gap: 8px;
+                align-items: center;
+            }
+            
+            .control-btn {
+                background: rgba(255, 255, 255, 0.1);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                color: var(--light);
+                width: 28px;
+                height: 28px;
+                border-radius: 8px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                cursor: pointer;
+                transition: all 0.2s ease;
+                font-size: 12px;
+            }
+            
+            .control-btn:hover {
+                background: rgba(255, 255, 255, 0.15);
+                transform: translateY(-1px);
+            }
+            
+            .control-btn.minimize {
+                background: rgba(245, 158, 11, 0.2);
+                border-color: rgba(245, 158, 11, 0.3);
+            }
+            
+            .control-btn.close {
+                background: rgba(239, 68, 68, 0.2);
+                border-color: rgba(239, 68, 68, 0.3);
+            }
+            
+            .version-badge {
+                background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+                color: white;
+                padding: 4px 12px;
+                border-radius: 10px;
+                font-size: 10px;
+                font-weight: 700;
+                letter-spacing: 0.5px;
+                box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+            }
+            
+            .user-info-bar {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 8px 12px;
+                background: rgba(15, 23, 42, 0.7);
+                border-radius: 10px;
+                border: 1px solid var(--border);
+                font-size: 11px;
+                backdrop-filter: blur(10px);
+            }
+            
+            .user-info-left {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            
+            .user-info-right {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            
+            .user-badge {
+                background: linear-gradient(135deg, var(--success), var(--success-dark));
+                color: white;
+                padding: 3px 8px;
+                border-radius: 6px;
+                font-weight: 700;
+                font-size: 10px;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+            }
+            
+            .date-badge {
+                background: rgba(16, 185, 129, 0.2);
+                color: #10b981;
+                padding: 3px 8px;
+                border-radius: 6px;
+                font-weight: 700;
+                border: 1px solid rgba(16, 185, 129, 0.3);
+                font-size: 10px;
+            }
+            
+            .content {
+                padding: 20px;
+            }
+            
+            .status-indicator {
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 12px;
+                margin-bottom: 16px;
+            }
+            
+            .status-card {
+                background: var(--card-bg);
+                border-radius: 12px;
+                padding: 14px;
+                border: 1px solid var(--border);
+                transition: all 0.2s ease;
+                position: relative;
+                overflow: hidden;
+            }
+            
+            .status-card:hover {
+                transform: translateY(-1px);
+                border-color: var(--primary);
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+            }
+            
+            .status-card::before {
+                content: '';
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                height: 2px;
+                background: linear-gradient(90deg, var(--primary), transparent);
+            }
+            
+            .status-label {
+                font-size: 10px;
+                color: var(--gray);
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                font-weight: 600;
+                margin-bottom: 6px;
+                display: flex;
+                align-items: center;
+                gap: 4px;
+            }
+            
+            .status-label::before {
+                content: '';
+                width: 4px;
+                height: 4px;
+                background: var(--primary);
+                border-radius: 50%;
+                display: block;
+            }
+            
+            .status-value {
+                font-size: 14px;
+                font-weight: 700;
+                color: var(--light);
+                font-family: 'JetBrains Mono', monospace;
+            }
+            
+            .mode-indicator {
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                padding: 4px 10px;
+                border-radius: 8px;
+                font-size: 10px;
+                font-weight: 700;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                background: rgba(15, 23, 42, 0.6);
+                border: 1px solid var(--border);
+            }
+            
+            .mode-dot {
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                animation: pulse 2s infinite;
+            }
+            
+            @keyframes pulse {
+                0%, 100% { 
+                    opacity: 1; 
+                    transform: scale(1);
+                }
+                50% { 
+                    opacity: 0.7; 
+                    transform: scale(1.1);
+                }
+            }
+            
+            .tabs-container {
+                background: rgba(30, 41, 59, 0.4);
+                border-radius: 12px;
+                padding: 4px;
+                margin-bottom: 16px;
+                border: 1px solid var(--border);
+                display: flex;
+                gap: 2px;
+            }
+            
+            .tab {
+                flex: 1;
+                padding: 10px 12px;
+                text-align: center;
+                border-radius: 8px;
+                font-size: 11px;
+                font-weight: 700;
+                cursor: pointer;
+                transition: all 0.2s ease;
+                color: var(--gray);
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                position: relative;
+                overflow: hidden;
+            }
+            
+            .tab:hover {
+                background: rgba(255, 255, 255, 0.05);
+                color: var(--light);
+            }
+            
+            .tab.active {
+                background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+                color: white;
+                box-shadow: 0 2px 8px rgba(59, 130, 246, 0.4);
+            }
+            
+            .tab.active::before {
+                content: '';
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                height: 2px;
+                background: rgba(255, 255, 255, 0.3);
+            }
+            
+            .tab-content {
+                display: none;
+                animation: fadeIn 0.3s ease;
+            }
+            
+            @keyframes fadeIn {
+                from { opacity: 0; transform: translateY(5px); }
+                to { opacity: 1; transform: translateY(0); }
+            }
+            
+            .tab-content.active {
+                display: block;
+            }
+            
+            .section {
+                background: var(--card-bg);
+                border-radius: 12px;
+                padding: 16px;
+                margin-bottom: 12px;
+                border: 1px solid var(--border);
+                transition: all 0.2s ease;
+            }
+            
+            .section:hover {
+                border-color: rgba(59, 130, 246, 0.4);
+            }
+            
+            .section-title {
+                font-size: 12px;
+                font-weight: 700;
+                color: var(--light);
+                margin-bottom: 14px;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                padding-bottom: 10px;
+                border-bottom: 1px solid rgba(59, 130, 246, 0.3);
+            }
+            
+            .section-title::before {
+                content: '';
+                width: 4px;
+                height: 16px;
+                background: linear-gradient(to bottom, var(--primary), var(--primary-dark));
+                border-radius: 2px;
+            }
+            
+            .grid-2, .grid-3 {
+                display: grid;
+                gap: 12px;
+                margin-bottom: 14px;
+            }
+            
+            .grid-2 { grid-template-columns: 1fr 1fr; }
+            .grid-3 { grid-template-columns: repeat(3, 1fr); }
+            
+            .input-group {
+                margin-bottom: 12px;
+            }
+            
+            .input-label {
+                display: block;
+                font-size: 10px;
+                font-weight: 600;
+                color: var(--gray);
+                margin-bottom: 6px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            
+            .input-label-text {
+                display: flex;
+                align-items: center;
+                gap: 4px;
+            }
+            
+            .input-label-text::before {
+                content: '•';
+                color: var(--primary);
+                font-size: 14px;
+            }
+            
+            .input-field {
+                width: 100%;
+                background: rgba(15, 23, 42, 0.7);
+                border: 1px solid var(--border);
+                padding: 10px 12px;
+                border-radius: 8px;
+                color: var(--light);
+                font-size: 12px;
+                font-family: 'JetBrains Mono', monospace;
+                transition: all 0.2s ease;
+                font-weight: 500;
+            }
+            
+            .input-field:focus {
+                outline: none;
+                border-color: var(--primary);
+                background: rgba(59, 130, 246, 0.1);
+                box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+            }
+            
+            .select-field {
+                width: 100%;
+                background: rgba(15, 23, 42, 0.7);
+                border: 1px solid var(--border);
+                padding: 10px 12px;
+                border-radius: 8px;
+                color: var(--light);
+                font-size: 12px;
+                font-family: 'Inter', sans-serif;
+                transition: all 0.2s ease;
+                font-weight: 500;
+                cursor: pointer;
+                appearance: none;
+                background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+                background-repeat: no-repeat;
+                background-position: right 12px center;
+                background-size: 12px;
+                padding-right: 30px;
+            }
+            
+            .select-field:focus {
+                outline: none;
+                border-color: var(--primary);
+                background-color: rgba(59, 130, 246, 0.1);
+                box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+            }
+            
+            .info-text {
+                font-size: 10px;
+                color: var(--gray);
+                margin-top: 4px;
+                line-height: 1.3;
+                font-style: italic;
+                padding-left: 8px;
+                border-left: 1px solid rgba(59, 130, 246, 0.3);
+            }
+            
+            .logs-container {
+                background: rgba(15, 23, 42, 0.7);
+                border: 1px solid var(--border);
+                border-radius: 10px;
+                padding: 12px;
+                height: 120px;
+                overflow-y: auto;
+                margin-bottom: 12px;
+                backdrop-filter: blur(10px);
+            }
+            
+            .log-entry {
+                padding: 6px 0;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+                font-size: 10px;
+                font-family: 'JetBrains Mono', monospace;
+                transition: all 0.1s ease;
+            }
+            
+            .log-entry:hover {
+                background: rgba(255, 255, 255, 0.02);
+            }
+            
+            .log-entry:first-child {
+                border-top: none;
+            }
+            
+            .stats-container {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 12px;
+                margin-bottom: 16px;
+            }
+            
+            .stats-column {
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+            }
+            
+            .stat-item {
+                background: rgba(15, 23, 42, 0.6);
+                border: 1px solid var(--border);
+                border-radius: 8px;
+                padding: 10px;
+                transition: all 0.2s ease;
+            }
+            
+            .stat-item:hover {
+                border-color: rgba(59, 130, 246, 0.4);
+                transform: translateY(-1px);
+            }
+            
+            .stat-label {
+                font-size: 9px;
+                color: var(--gray);
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                margin-bottom: 4px;
+                font-weight: 600;
+            }
+            
+            .stat-value {
+                font-size: 13px;
+                font-weight: 700;
+                color: var(--light);
+                font-family: 'JetBrains Mono', monospace;
+                margin-bottom: 2px;
+            }
+            
+            .stat-subvalue {
+                font-size: 10px;
+                color: var(--gray);
+                font-weight: 500;
+            }
+            
+            .button-group {
+                display: flex;
+                gap: 12px;
+                margin-top: 16px;
+            }
+            
+            .btn {
+                flex: 1;
+                padding: 14px;
+                border: none;
+                border-radius: 10px;
+                font-size: 12px;
+                font-weight: 700;
+                cursor: pointer;
+                transition: all 0.3s ease;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 8px;
+                letter-spacing: 0.5px;
+                text-transform: uppercase;
+                position: relative;
+                overflow: hidden;
+            }
+            
+            .btn::before {
+                content: '';
+                position: absolute;
+                top: 0;
+                left: -100%;
+                width: 100%;
+                height: 100%;
+                background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+                transition: left 0.5s ease;
+            }
+            
+            .btn:hover::before {
+                left: 100%;
+            }
+            
+            .btn-primary {
+                background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+                color: white;
+                box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+            }
+            
+            .btn-primary:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 6px 16px rgba(59, 130, 246, 0.5);
+            }
+            
+            .btn-success {
+                background: linear-gradient(135deg, var(--success), var(--success-dark));
+                color: white;
+                box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+            }
+            
+            .btn-success:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 6px 16px rgba(16, 185, 129, 0.5);
+            }
+            
+            .btn-danger {
+                background: linear-gradient(135deg, var(--danger), var(--danger-dark));
+                color: white;
+                box-shadow: 0 4px 12px rgba(239, 68, 68, 0.4);
+            }
+            
+            .btn-danger:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 6px 16px rgba(239, 68, 68, 0.5);
+            }
+            
+            .btn-warning {
+                background: linear-gradient(135deg, var(--warning), var(--warning-dark));
+                color: white;
+                box-shadow: 0 4px 12px rgba(245, 158, 11, 0.4);
+                width: 100%;
+                margin-top: 12px;
+            }
+            
+            .btn-warning:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 6px 16px rgba(245, 158, 11, 0.5);
+            }
+            
+            .wager-settings-grid {
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 12px;
+                margin-bottom: 16px;
+            }
+            
+            .wager-setting-card {
                 background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.9));
                 border: 1px solid var(--border);
                 border-radius: 10px;
@@ -472,12 +1434,73 @@
                 transition: all 0.2s ease;
             }
             
-            .labouchere-setting-card:hover {
-                border-color: #8b5cf6;
+            .wager-setting-card:hover {
+                border-color: var(--primary);
                 transform: translateY(-1px);
             }
             
-            .labouchere-setting-label {
+            .wager-setting-label {
+                font-size: 10px;
+                color: var(--gray);
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                margin-bottom: 8px;
+                display: block;
+                line-height: 1.2;
+                font-weight: 600;
+            }
+            
+            .wager-setting-value {
+                font-size: 13px;
+                font-weight: 700;
+                color: var(--light);
+                font-family: 'JetBrains Mono', monospace;
+                width: 100%;
+                background: rgba(15, 23, 42, 0.8);
+                border: 1px solid var(--border);
+                padding: 10px;
+                border-radius: 8px;
+                text-align: center;
+                transition: all 0.2s ease;
+            }
+            
+            .wager-setting-value:focus {
+                outline: none;
+                border-color: var(--primary);
+                background: rgba(59, 130, 246, 0.1);
+                box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+            }
+            
+            .current-value {
+                font-size: 10px;
+                color: var(--primary);
+                margin-top: 6px;
+                display: block;
+                font-weight: 600;
+            }
+            
+            .xstopwin-grid {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 12px;
+                margin-bottom: 16px;
+            }
+            
+            .xstopwin-card {
+                background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.9));
+                border: 1px solid var(--border);
+                border-radius: 10px;
+                padding: 14px;
+                text-align: center;
+                transition: all 0.2s ease;
+            }
+            
+            .xstopwin-card:hover {
+                border-color: var(--primary);
+                transform: translateY(-1px);
+            }
+            
+            .xstopwin-label {
                 font-size: 9px;
                 color: var(--gray);
                 text-transform: uppercase;
@@ -488,7 +1511,7 @@
                 font-weight: 600;
             }
             
-            .labouchere-setting-value {
+            .xstopwin-value {
                 font-size: 12px;
                 font-weight: 700;
                 color: var(--light);
@@ -502,75 +1525,652 @@
                 transition: all 0.2s ease;
             }
             
-            .labouchere-setting-value:focus {
+            .xstopwin-value:focus {
                 outline: none;
-                border-color: #8b5cf6;
-                background: rgba(139, 92, 246, 0.1);
+                border-color: var(--primary);
+                background: rgba(59, 130, 246, 0.1);
             }
             
-            .labouchere-current-value {
+            .xstopwin-current {
                 font-size: 9px;
-                color: #8b5cf6;
+                color: var(--primary);
                 margin-top: 6px;
                 display: block;
                 font-weight: 600;
             }
             
-            .wager-divider-card {
+            .wager-stats-grid {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 12px;
+                margin-bottom: 16px;
+            }
+            
+            .wager-stat-card {
                 background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.9));
                 border: 1px solid var(--border);
                 border-radius: 10px;
-                padding: 14px;
-                text-align: center;
-                transition: all 0.2s ease;
-                grid-column: span 2;
+                padding: 12px;
             }
             
-            .wager-divider-card:hover {
+            .wager-stat-label {
+                font-size: 9px;
+                color: var(--gray);
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                margin-bottom: 6px;
+                font-weight: 600;
+            }
+            
+            .wager-stat-value {
+                font-size: 12px;
+                font-weight: 700;
+                color: var(--light);
+                font-family: 'JetBrains Mono', monospace;
+                margin-bottom: 8px;
+            }
+            
+            .progress-container {
+                margin-top: 6px;
+            }
+            
+            .progress-label {
+                display: flex;
+                justify-content: space-between;
+                font-size: 9px;
+                color: var(--gray);
+                margin-bottom: 2px;
+                font-weight: 500;
+            }
+            
+            .progress-bar {
+                height: 4px;
+                background: rgba(255, 255, 255, 0.1);
+                border-radius: 2px;
+                overflow: hidden;
+                position: relative;
+            }
+            
+            .progress-fill {
+                height: 100%;
+                border-radius: 2px;
+                transition: width 0.3s ease, background-color 0.3s ease;
+            }
+            
+            .labouchere-input-group {
+                margin-bottom: 12px;
+            }
+            
+            .labouchere-input-label {
+                display: block;
+                font-size: 10px;
+                font-weight: 600;
+                color: var(--gray);
+                margin-bottom: 6px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+            
+            .labouchere-input-field {
+                width: 100%;
+                background: rgba(15, 23, 42, 0.7);
+                border: 1px solid var(--border);
+                padding: 10px 12px;
+                border-radius: 8px;
+                color: var(--light);
+                font-size: 12px;
+                font-family: 'JetBrains Mono', monospace;
+                transition: all 0.2s ease;
+            }
+            
+            .labouchere-input-field:focus {
+                outline: none;
+                border-color: var(--primary);
+                background: rgba(59, 130, 246, 0.1);
+                box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+            }
+            
+            .sequence-visual {
+                display: flex;
+                gap: 6px;
+                flex-wrap: wrap;
+                margin-top: 8px;
+                padding: 12px;
+                background: rgba(15, 23, 42, 0.5);
+                border-radius: 8px;
+                border: 1px solid var(--border);
+                min-height: 50px;
+                align-items: center;
+                justify-content: center;
+            }
+            
+            .sequence-number {
+                background: rgba(59, 130, 246, 0.2);
+                border: 1px solid rgba(59, 130, 246, 0.3);
+                padding: 6px 10px;
+                border-radius: 6px;
+                font-size: 11px;
+                font-family: 'JetBrains Mono', monospace;
+                color: var(--primary);
+                font-weight: 600;
+                min-width: 35px;
+                text-align: center;
+                transition: all 0.2s ease;
+            }
+            
+            .sequence-number.active {
+                background: linear-gradient(135deg, #ff3366, #ff6b9d);
+                color: white;
+                border-color: #ff3366;
+                transform: scale(1.05);
+            }
+            
+            .toggle-switch {
+                position: relative;
+                width: 44px;
+                height: 22px;
+            }
+            
+            .toggle-switch input {
+                opacity: 0;
+                width: 0;
+                height: 0;
+            }
+            
+            .toggle-slider {
+                position: absolute;
+                cursor: pointer;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background-color: var(--border);
+                transition: .4s;
+                border-radius: 34px;
+            }
+            
+            .toggle-slider:before {
+                position: absolute;
+                content: "";
+                height: 16px;
+                width: 16px;
+                left: 3px;
+                bottom: 3px;
+                background-color: white;
+                transition: .4s;
+                border-radius: 50%;
+            }
+            
+            input:checked + .toggle-slider {
+                background: linear-gradient(135deg, var(--success), var(--success-dark));
+            }
+            
+            input:checked + .toggle-slider:before {
+                transform: translateX(22px);
+            }
+            
+            .toggle-group {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                margin-bottom: 12px;
+            }
+            
+            .toggle-label {
+                font-size: 11px;
+                font-weight: 600;
+                color: var(--light);
+            }
+            
+            .radio-group {
+                display: flex;
+                gap: 8px;
+                margin-bottom: 16px;
+            }
+            
+            .radio-item {
+                flex: 1;
+            }
+            
+            .radio-item input[type="radio"] {
+                display: none;
+            }
+            
+            .radio-label {
+                display: block;
+                padding: 12px;
+                text-align: center;
+                background: rgba(15, 23, 42, 0.6);
+                border: 1px solid var(--border);
+                border-radius: 8px;
+                cursor: pointer;
+                font-size: 11px;
+                font-weight: 600;
+                color: var(--gray);
+                transition: all 0.2s ease;
+            }
+            
+            .radio-item input[type="radio"]:checked + .radio-label {
+                background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+                color: white;
                 border-color: var(--primary);
                 transform: translateY(-1px);
             }
             
-            .labouchere-stats-grid {
+            .mode-selector {
+                background: rgba(15, 23, 42, 0.6);
+                border: 1px solid var(--border);
+                border-radius: 10px;
+                padding: 16px;
+                margin-bottom: 16px;
+            }
+            
+            .mode-selector-title {
+                font-size: 11px;
+                font-weight: 600;
+                color: var(--gray);
+                margin-bottom: 12px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+            
+            .mode-selector-grid {
                 display: grid;
                 grid-template-columns: repeat(3, 1fr);
                 gap: 8px;
-                margin-top: 12px;
             }
             
-            .labouchere-stat-item {
-                background: rgba(139, 92, 246, 0.1);
-                border: 1px solid rgba(139, 92, 246, 0.3);
-                border-radius: 8px;
-                padding: 10px;
+            .mode-selector-item {
                 text-align: center;
             }
             
-            .labouchere-stat-label {
-                font-size: 8px;
-                color: #a78bfa;
+            .mode-selector-checkbox {
+                display: none;
+            }
+            
+            .mode-selector-label {
+                display: block;
+                padding: 10px;
+                background: rgba(30, 41, 59, 0.6);
+                border: 1px solid var(--border);
+                border-radius: 8px;
+                cursor: pointer;
+                transition: all 0.2s ease;
+                font-size: 10px;
+                font-weight: 600;
+                color: var(--gray);
                 text-transform: uppercase;
                 letter-spacing: 0.5px;
-                margin-bottom: 4px;
+            }
+            
+            .mode-selector-checkbox:checked + .mode-selector-label {
+                background: linear-gradient(135deg, var(--success), var(--success-dark));
+                color: white;
+                border-color: var(--success);
+                transform: translateY(-1px);
+            }
+            
+            .mode-selector-label.orion {
+                border-color: rgba(0, 204, 255, 0.3);
+            }
+            
+            .mode-selector-label.wager {
+                border-color: rgba(16, 185, 129, 0.3);
+            }
+            
+            .mode-selector-label.labouchere {
+                border-color: rgba(139, 92, 246, 0.3);
+            }
+            
+            .mode-selector-checkbox:checked + .mode-selector-label.orion {
+                background: linear-gradient(135deg, #00ccff, #0099cc);
+                border-color: #00ccff;
+            }
+            
+            .mode-selector-checkbox:checked + .mode-selector-label.wager {
+                background: linear-gradient(135deg, #10b981, #059669);
+                border-color: #10b981;
+            }
+            
+            .mode-selector-checkbox:checked + .mode-selector-label.labouchere {
+                background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+                border-color: #8b5cf6;
+            }
+            
+            .telegram-info-card {
+                background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.9));
+                border: 1px solid rgba(59, 130, 246, 0.3);
+                border-radius: 10px;
+                padding: 16px;
+                margin-bottom: 16px;
+            }
+            
+            .telegram-info-item {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 8px;
+                padding-bottom: 8px;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            }
+            
+            .telegram-info-item:last-child {
+                margin-bottom: 0;
+                border-bottom: none;
+                padding-bottom: 0;
+            }
+            
+            .telegram-info-label {
+                font-size: 10px;
+                color: var(--gray);
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+            
+            .telegram-info-value {
+                font-size: 10px;
+                color: var(--light);
+                font-family: 'JetBrains Mono', monospace;
+                background: rgba(59, 130, 246, 0.1);
+                padding: 4px 8px;
+                border-radius: 4px;
+                border: 1px solid rgba(59, 130, 246, 0.2);
+                font-weight: 500;
+            }
+            
+            .telegram-actions {
+                display: flex;
+                gap: 8px;
+                margin-top: 16px;
+            }
+            
+            .telegram-btn {
+                flex: 1;
+                padding: 10px;
+                background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+                border: none;
+                border-radius: 8px;
+                color: white;
+                font-size: 10px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.2s ease;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+            
+            .telegram-btn:hover {
+                transform: translateY(-1px);
+            }
+            
+            .telegram-btn.test {
+                background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+            }
+            
+            .telegram-btn.send {
+                background: linear-gradient(135deg, var(--success), var(--success-dark));
+            }
+            
+            .rotation-info {
+                background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(16, 185, 129, 0.1));
+                border: 1px solid rgba(59, 130, 246, 0.3);
+                border-radius: 10px;
+                padding: 16px;
+                margin-top: 16px;
+            }
+            
+            .rotation-info-title {
+                font-size: 11px;
+                font-weight: 700;
+                color: var(--primary);
+                margin-bottom: 8px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+            
+            .rotation-info-title::before {
+                content: '⏳';
+                font-size: 12px;
+            }
+            
+            .rotation-info-text {
+                font-size: 10px;
+                color: var(--gray);
+                line-height: 1.4;
+            }
+            
+            .rotation-info-text strong {
+                color: var(--light);
                 font-weight: 600;
             }
             
-            .labouchere-stat-value {
+            .divider {
+                height: 1px;
+                background: linear-gradient(90deg, transparent, var(--border), transparent);
+                margin: 16px 0;
+                width: 100%;
+            }
+            
+            .step-limit-display {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                background: rgba(15, 23, 42, 0.7);
+                padding: 12px;
+                border-radius: 10px;
+                border: 1px solid var(--border);
+                margin-bottom: 16px;
+            }
+            
+            .step-limit-label {
+                font-size: 11px;
+                color: var(--gray);
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+            
+            .step-limit-value {
+                font-size: 14px;
+                font-weight: 700;
+                color: var(--primary);
+                font-family: 'JetBrains Mono', monospace;
+                background: rgba(59, 130, 246, 0.1);
+                padding: 6px 12px;
+                border-radius: 6px;
+                border: 1px solid rgba(59, 130, 246, 0.3);
+            }
+            
+            .wager-section {
+                margin-bottom: 16px;
+                padding-bottom: 16px;
+                border-bottom: 1px solid var(--border);
+            }
+            
+            .wager-section:last-child {
+                border-bottom: none;
+                padding-bottom: 0;
+                margin-bottom: 0;
+            }
+            
+            .account-info {
+                background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.9));
+                border: 1px solid var(--border);
+                border-radius: 10px;
+                padding: 16px;
+                margin-bottom: 16px;
+            }
+            
+            .account-info-item {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 8px;
+            }
+            
+            .account-info-item:last-child {
+                margin-bottom: 0;
+            }
+            
+            .account-info-label {
+                font-size: 10px;
+                color: var(--gray);
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+            
+            .account-info-value {
                 font-size: 11px;
                 font-weight: 700;
                 color: var(--light);
                 font-family: 'JetBrains Mono', monospace;
             }
             
-            .status-badge {
-                display: inline-block;
-                padding: 3px 8px;
-                border-radius: 6px;
-                font-size: 9px;
-                font-weight: 700;
+            .currency-selector {
+                background: rgba(15, 23, 42, 0.7);
+                border: 1px solid var(--border);
+                border-radius: 8px;
+                padding: 10px 12px;
+                margin-bottom: 12px;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+            }
+            
+            .currency-label {
+                font-size: 10px;
+                color: var(--gray);
+                font-weight: 600;
                 text-transform: uppercase;
                 letter-spacing: 0.5px;
-                margin-top: 4px;
+            }
+            
+            .currency-value {
+                font-size: 12px;
+                font-weight: 700;
+                color: var(--light);
+                font-family: 'JetBrains Mono', monospace;
+                background: rgba(59, 130, 246, 0.1);
+                padding: 4px 10px;
+                border-radius: 6px;
+                border: 1px solid rgba(59, 130, 246, 0.3);
+            }
+            
+            .basebet-selector {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                margin-bottom: 12px;
+                padding: 12px;
+                background: rgba(15, 23, 42, 0.6);
+                border-radius: 8px;
+                border: 1px solid var(--border);
+            }
+            
+            .basebet-label {
+                font-size: 10px;
+                color: var(--gray);
+                font-weight: 600;
+                min-width: 80px;
+            }
+            
+            .basebet-toggle {
+                display: flex;
+                gap: 4px;
+                background: rgba(15, 23, 42, 0.8);
+                border-radius: 6px;
+                padding: 2px;
+                border: 1px solid var(--border);
+            }
+            
+            .basebet-toggle-btn {
+                padding: 6px 12px;
+                border: none;
+                border-radius: 4px;
+                font-size: 10px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.2s ease;
+                background: transparent;
+                color: var(--gray);
+            }
+            
+            .basebet-toggle-btn.active {
+                background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+                color: white;
+            }
+            
+            .basebet-input-container {
+                flex: 1;
+            }
+            
+            .basebet-input {
+                width: 100%;
+                background: rgba(15, 23, 42, 0.8);
+                border: 1px solid var(--border);
+                padding: 8px 12px;
+                border-radius: 6px;
+                color: var(--light);
+                font-size: 11px;
+                font-family: 'JetBrains Mono', monospace;
+                transition: all 0.2s ease;
+            }
+            
+            .basebet-input:focus {
+                outline: none;
+                border-color: var(--primary);
+                background: rgba(59, 130, 246, 0.1);
+            }
+            
+            .rotate-btn-container {
+                display: flex;
+                gap: 8px;
+                margin-top: 12px;
+            }
+            
+            .rotate-btn {
+                flex: 1;
+                padding: 10px;
+                background: linear-gradient(135deg, var(--warning), var(--warning-dark));
+                border: none;
+                border-radius: 8px;
+                color: white;
+                font-size: 11px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.2s ease;
+                text-align: center;
+            }
+            
+            .rotate-btn:hover {
+                transform: translateY(-1px);
+            }
+            
+            .rotate-btn.orion {
+                background: linear-gradient(135deg, #00ccff, #0099cc);
+            }
+            
+            .rotate-btn.wager {
+                background: linear-gradient(135deg, var(--success), var(--success-dark));
+            }
+            
+            .rotate-btn.labouchere {
+                background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+            }
+            
+            .divider-small {
+                height: 1px;
+                background: rgba(255, 255, 255, 0.1);
+                margin: 8px 0;
+                width: 100%;
             }
         `;
         document.head.appendChild(s);
@@ -581,8 +2181,8 @@
             <div class="header">
                 <div class="header-content">
                     <div>
-                        <div class="app-title">ORION v8.1</div>
-                        <div class="app-subtitle">ENHANCED LABOUCHERE</div>
+                        <div class="app-title">ORION v8.0</div>
+                        <div class="app-subtitle">PROFESSIONAL</div>
                     </div>
                     <div class="header-controls">
                         <div class="control-btn minimize" title="Minimize">
@@ -713,7 +2313,18 @@
                 <div class="tab-content" id="tab-wager">
                     <div class="section">
                         <div class="wager-section">
-                            <div class="section-title">Wager Settings</div>
+                            <div class="section-title">Wager Base Bet Settings</div>
+                            
+                            <div class="basebet-selector">
+                                <span class="basebet-label">Base Bet Mode:</span>
+                                <div class="basebet-toggle">
+                                    <button class="basebet-toggle-btn active" data-mode="percentage">%</button>
+                                    <button class="basebet-toggle-btn" data-mode="fixed">Fixed</button>
+                                </div>
+                                <div class="basebet-input-container">
+                                    <input type="number" id="w-basebet-input" class="basebet-input" value="1.0" step="0.1" min="0.1" max="10">
+                                </div>
+                            </div>
                             
                             <div class="grid-2">
                                 <div class="input-group">
@@ -724,16 +2335,12 @@
                                 </div>
                                 <div class="input-group">
                                     <label class="input-label">
-                                        <span class="input-label-text">Base Bet %</span>
+                                        <span class="input-label-text">Current Base</span>
                                     </label>
-                                    <input type="number" id="w-basebet-pct" class="input-field" value="1.0" step="0.1" min="0.1" max="10">
+                                    <div class="input-field" style="background: rgba(16, 185, 129, 0.1); border-color: rgba(16, 185, 129, 0.3);">
+                                        <span id="w-current-basebet">0.00000000</span>
+                                    </div>
                                 </div>
-                            </div>
-                            
-                            <div class="wager-divider-card">
-                                <label class="wager-setting-label">Wager Divider</label>
-                                <input type="number" id="w-wager-divider" class="wager-setting-value" value="2.0" step="0.1" min="1" max="10">
-                                <span class="current-value" id="w-wager-divider-current">2.0x</span>
                             </div>
                         </div>
                         
@@ -794,7 +2401,7 @@
                 
                 <div class="tab-content" id="tab-labouchere">
                     <div class="section">
-                        <div class="section-title">Enhanced Labouchere Settings</div>
+                        <div class="section-title">Labouchere Settings</div>
                         
                         <div class="grid-2">
                             <div class="labouchere-input-group">
@@ -804,38 +2411,6 @@
                             <div class="labouchere-input-group">
                                 <label class="labouchere-input-label">Target Profit</label>
                                 <input id="l-target" class="labouchere-input-field" value="10" type="number" step="0.00000001" min="0">
-                            </div>
-                        </div>
-                        
-                        <div class="labouchere-settings-grid">
-                            <div class="labouchere-setting-card">
-                                <label class="labouchere-setting-label">Base Bet</label>
-                                <input id="l-basebet" class="labouchere-setting-value" value="0.00000001" type="number" step="0.00000001" min="0">
-                                <span class="labouchere-current-value" id="l-basebet-current">0.00000001</span>
-                            </div>
-                            
-                            <div class="labouchere-setting-card">
-                                <label class="labouchere-setting-label">Min Bet</label>
-                                <input id="l-minbet" class="labouchere-setting-value" value="0.00000001" type="number" step="0.00000001" min="0">
-                                <span class="labouchere-current-value" id="l-minbet-current">0.00000001</span>
-                            </div>
-                            
-                            <div class="labouchere-setting-card">
-                                <label class="labouchere-setting-label">Chance</label>
-                                <input id="l-chance" class="labouchere-setting-value" value="49.5" type="number" step="0.1" min="1" max="99">
-                                <span class="labouchere-current-value" id="l-chance-current">49.5%</span>
-                            </div>
-                            
-                            <div class="labouchere-setting-card">
-                                <label class="labouchere-setting-label">Max Bet</label>
-                                <input id="l-maxbet" class="labouchere-setting-value" value="0" type="number" step="0.00000001" min="0" placeholder="0 = Unlimited">
-                                <span class="labouchere-current-value" id="l-maxbet-current">Unlimited</span>
-                            </div>
-                            
-                            <div class="labouchere-setting-card" style="grid-column: span 2;">
-                                <label class="labouchere-setting-label">Max Cycles</label>
-                                <input id="l-maxcycles" class="labouchere-setting-value" value="3" type="number" step="1" min="0" placeholder="0 = Unlimited">
-                                <span class="labouchere-current-value" id="l-maxcycles-current">3 cycles</span>
                             </div>
                         </div>
                         
@@ -849,40 +2424,126 @@
                             </div>
                         </div>
                         
-                        <div class="labouchere-stats-grid">
-                            <div class="labouchere-stat-item">
-                                <div class="labouchere-stat-label">Next Bet</div>
-                                <div class="labouchere-stat-value" id="l-betamount">0.00000000</div>
+                        <div class="grid-2">
+                            <div class="stat-item">
+                                <div class="stat-label">Next Bet</div>
+                                <div class="stat-value" id="l-betamount">0.00000000</div>
                             </div>
-                            <div class="labouchere-stat-item">
-                                <div class="labouchere-stat-label">Cycle</div>
-                                <div class="labouchere-stat-value" id="l-cycle">1/3</div>
-                            </div>
-                            <div class="labouchere-stat-item">
-                                <div class="labouchere-stat-label">Status</div>
-                                <div class="labouchere-stat-value" id="l-status">NORMAL</div>
-                            </div>
-                        </div>
-                        
-                        <div class="labouchere-stats-grid">
-                            <div class="labouchere-stat-item">
-                                <div class="labouchere-stat-label">Base Bet</div>
-                                <div class="labouchere-stat-value" id="l-basebet-display">0.00000001</div>
-                            </div>
-                            <div class="labouchere-stat-item">
-                                <div class="labouchere-stat-label">Chance</div>
-                                <div class="labouchere-stat-value" id="l-chance-display">49.5%</div>
-                            </div>
-                            <div class="labouchere-stat-item">
-                                <div class="labouchere-stat-label">Recovery</div>
-                                <div class="labouchere-stat-value" id="l-recovery">NO</div>
+                            <div class="stat-item">
+                                <div class="stat-label">Bet On</div>
+                                <div class="stat-value" id="l-beton">BLACK</div>
                             </div>
                         </div>
                     </div>
                 </div>
                 
                 <div class="tab-content" id="tab-settings">
-                    <!-- ... [Tab settings tetap sama] ... -->
+                    <div class="section">
+                        <div class="section-title">System Settings</div>
+                        
+                        <div class="mode-selector">
+                            <div class="mode-selector-title">Enabled Modes</div>
+                            <div class="mode-selector-grid">
+                                <div class="mode-selector-item">
+                                    <input type="checkbox" id="mode-orion" class="mode-selector-checkbox" checked>
+                                    <label for="mode-orion" class="mode-selector-label orion">⚡</label>
+                                </div>
+                                <div class="mode-selector-item">
+                                    <input type="checkbox" id="mode-wager" class="mode-selector-checkbox" checked>
+                                    <label for="mode-wager" class="mode-selector-label wager">🎯</label>
+                                </div>
+                                <div class="mode-selector-item">
+                                    <input type="checkbox" id="mode-labouchere" class="mode-selector-checkbox" checked>
+                                    <label for="mode-labouchere" class="mode-selector-label labouchere">🎲</label>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="radio-group">
+                            <div class="radio-item">
+                                <input type="radio" id="mode-auto" name="mode" value="auto" checked>
+                                <label class="radio-label" for="mode-auto">Auto Rotation</label>
+                            </div>
+                            <div class="radio-item">
+                                <input type="radio" id="mode-manual" name="mode" value="manual">
+                                <label class="radio-label" for="mode-manual">Manual Selection</label>
+                            </div>
+                        </div>
+                        
+                        <div class="manual-mode-container" id="manual-mode-container" style="display: none;">
+                            <div class="rotate-btn-container">
+                                <button class="rotate-btn orion" data-mode="orion">
+                                    ⚡ Orion
+                                </button>
+                                <button class="rotate-btn wager" data-mode="wager">
+                                    🎯 Wager
+                                </button>
+                                <button class="rotate-btn labouchere" data-mode="labouchere">
+                                    🎲 Labouchere
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div class="divider"></div>
+                        
+                        <div class="grid-2">
+                            <div class="input-group">
+                                <label class="input-label">
+                                    <span class="input-label-text">Wager Loss %</span>
+                                </label>
+                                <input id="s-wager-threshold" class="input-field" value="0.1" type="number" step="0.1" min="0" max="100">
+                            </div>
+                            <div class="input-group">
+                                <label class="input-label">
+                                    <span class="input-label-text">Severe Loss %</span>
+                                </label>
+                                <input id="s-severe-threshold" class="input-field" value="1.0" type="number" step="0.1" min="0" max="100">
+                            </div>
+                        </div>
+                        
+                        <div class="divider"></div>
+                        
+                        <div class="section-title">Telegram</div>
+                        
+                        <div class="telegram-info-card">
+                            <div class="telegram-info-item">
+                                <span class="telegram-info-label">Status</span>
+                                <span class="telegram-info-value" id="telegram-status">Ready</span>
+                            </div>
+                            <div class="telegram-info-item">
+                                <span class="telegram-info-label">Reports</span>
+                                <span class="telegram-info-value" id="telegram-interval-display">Every 5 min</span>
+                            </div>
+                        </div>
+                        
+                        <div class="telegram-actions">
+                            <button id="test-telegram" class="telegram-btn test">
+                                Test
+                            </button>
+                            <button id="send-now-telegram" class="telegram-btn send">
+                                Report
+                            </button>
+                        </div>
+                        
+                        <div class="toggle-group">
+                            <span class="toggle-label">Demo Mode</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="p-demo-toggle">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        
+                        <div class="account-info">
+                            <div class="account-info-item">
+                                <span class="account-info-label">Username</span>
+                                <span class="account-info-value" id="st-user-name">${bot.stakeUser}</span>
+                            </div>
+                            <div class="account-info-item">
+                                <span class="account-info-label">Session</span>
+                                <span class="account-info-value" id="st-expiration">Loading...</span>
+                            </div>
+                        </div>
+                    </div>
                 </div>
                 
                 <div class="section">
@@ -951,89 +2612,492 @@
         `;
         document.body.appendChild(d);
         
-        // ... [Event listeners tetap sama, tambahkan yang baru] ...
-        
-        // Wager Divider
-        const wagerDivider = document.getElementById("w-wager-divider");
-        if (wagerDivider) {
-            wagerDivider.addEventListener('change', (e) => {
-                const val = parseFloat(e.target.value) || 2.0;
-                bot.wagerStats.wagerDivider = val;
-                const currentEl = document.getElementById("w-wager-divider-current");
-                if (currentEl) currentEl.textContent = `${val.toFixed(1)}x`;
-                updateLogs(0, 0, 0, `Wager Divider: ${val.toFixed(1)}x`, true);
-            });
+        function updateExpirationDate() {
+            const now = new Date();
+            const expiration = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+            const options = { year: 'numeric', month: 'short', day: 'numeric' };
+            
+            document.getElementById("expiration-date").textContent = expiration.toLocaleDateString('en-US', options);
+            document.getElementById("st-expiration").textContent = expiration.toLocaleDateString('en-US', options);
         }
         
-        // Labouchere Base Bet
-        const lBaseBet = document.getElementById("l-basebet");
-        if (lBaseBet) {
-            lBaseBet.addEventListener('change', (e) => {
-                const val = parseFloat(e.target.value) || 0.00000001;
-                bot.labouchere.baseBet = val;
-                const currentEl = document.getElementById("l-basebet-current");
-                if (currentEl) currentEl.textContent = val.toFixed(8);
-            });
-        }
+        let isDragging = false;
+        let dragOffset = { x: 0, y: 0 };
         
-        // Labouchere Min Bet
-        const lMinBet = document.getElementById("l-minbet");
-        if (lMinBet) {
-            lMinBet.addEventListener('change', (e) => {
-                const val = parseFloat(e.target.value) || 0.00000001;
-                bot.labouchere.minBet = val;
-                const currentEl = document.getElementById("l-minbet-current");
-                if (currentEl) currentEl.textContent = val.toFixed(8);
-            });
-        }
+        document.querySelector('.header').addEventListener('mousedown', (e) => {
+            if (e.target.closest('.control-btn')) return;
+            isDragging = true;
+            const rect = document.getElementById('orion-wrap').getBoundingClientRect();
+            dragOffset.x = e.clientX - rect.left;
+            dragOffset.y = e.clientY - rect.top;
+            document.body.style.userSelect = 'none';
+        });
         
-        // Labouchere Chance
-        const lChance = document.getElementById("l-chance");
-        if (lChance) {
-            lChance.addEventListener('change', (e) => {
-                const val = parseFloat(e.target.value) || 49.5;
-                bot.labouchere.chance = val;
-                const currentEl = document.getElementById("l-chance-current");
-                if (currentEl) currentEl.textContent = `${val}%`;
-            });
-        }
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            const wrap = document.getElementById('orion-wrap');
+            wrap.style.left = (e.clientX - dragOffset.x) + 'px';
+            wrap.style.top = (e.clientY - dragOffset.y) + 'px';
+            wrap.style.right = 'auto';
+        });
         
-        // Labouchere Max Bet
-        const lMaxBet = document.getElementById("l-maxbet");
-        if (lMaxBet) {
-            lMaxBet.addEventListener('change', (e) => {
-                const val = parseFloat(e.target.value) || 0;
-                bot.labouchere.maxBet = val;
-                const currentEl = document.getElementById("l-maxbet-current");
-                if (currentEl) {
-                    if (val > 0) {
-                        currentEl.textContent = val.toFixed(8);
-                    } else {
-                        currentEl.textContent = "Unlimited";
-                    }
+        document.addEventListener('mouseup', () => {
+            isDragging = false;
+            document.body.style.userSelect = '';
+        });
+        
+        document.querySelector('.control-btn.minimize').addEventListener('click', () => {
+            bot.minimized = !bot.minimized;
+            const wrap = document.getElementById('orion-wrap');
+            const content = wrap.querySelector('.content');
+            
+            if (bot.minimized) {
+                wrap.classList.add('minimized');
+                content.style.display = 'none';
+                document.querySelector('.control-btn.minimize').textContent = '□';
+                document.querySelector('.control-btn.minimize').title = 'Restore';
+            } else {
+                wrap.classList.remove('minimized');
+                content.style.display = 'block';
+                document.querySelector('.control-btn.minimize').textContent = '_';
+                document.querySelector('.control-btn.minimize').title = 'Minimize';
+            }
+        });
+        
+        document.querySelector('.control-btn.close').addEventListener('click', () => {
+            document.getElementById('orion-wrap').remove();
+        });
+        
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                tab.classList.add('active');
+                document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
+            });
+        });
+        
+        // Basebet mode toggle
+        const basebetToggleBtns = document.querySelectorAll('.basebet-toggle-btn');
+        basebetToggleBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                basebetToggleBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                
+                const mode = btn.dataset.mode;
+                bot.wagerStats.basebetMode = mode;
+                
+                const input = document.getElementById('w-basebet-input');
+                if (mode === 'percentage') {
+                    input.value = bot.wagerStats.basebetPercentage;
+                    input.step = '0.1';
+                    input.min = '0.1';
+                    input.max = '10';
+                    input.placeholder = 'Percentage';
+                } else {
+                    input.value = bot.wagerStats.basebetFixed.toFixed(8);
+                    input.step = '0.00000001';
+                    input.min = '0.00000001';
+                    input.max = '';
+                    input.placeholder = 'Fixed amount';
+                }
+                
+                if (bot.isRunning && bot.mode === 'wager') {
+                    initWagerMode();
                 }
             });
+        });
+        
+        // Basebet input handler
+        document.getElementById('w-basebet-input').addEventListener('change', (e) => {
+            const value = parseFloat(e.target.value) || 0;
+            if (bot.wagerStats.basebetMode === 'percentage') {
+                bot.wagerStats.basebetPercentage = value;
+                if (value < 0.1) bot.wagerStats.basebetPercentage = 0.1;
+                if (value > 10) bot.wagerStats.basebetPercentage = 10;
+                e.target.value = bot.wagerStats.basebetPercentage;
+            } else {
+                bot.wagerStats.basebetFixed = value;
+                if (value < 0.00000001) bot.wagerStats.basebetFixed = 0.00000001;
+                e.target.value = bot.wagerStats.basebetFixed.toFixed(8);
+            }
+            
+            if (bot.isRunning && bot.mode === 'wager') {
+                initWagerMode();
+            }
+        });
+        
+        document.getElementById("mode-orion").checked = bot.enabledModes.orion;
+        document.getElementById("mode-wager").checked = bot.enabledModes.wager;
+        document.getElementById("mode-labouchere").checked = bot.enabledModes.labouchere;
+        
+        document.getElementById("mode-orion").addEventListener('change', (e) => {
+            bot.enabledModes.orion = e.target.checked;
+            updateLogs(0, 0, 0, `Orion ${e.target.checked ? 'ENABLED' : 'DISABLED'}`, true);
+        });
+        
+        document.getElementById("mode-wager").addEventListener('change', (e) => {
+            bot.enabledModes.wager = e.target.checked;
+            updateLogs(0, 0, 0, `Wager ${e.target.checked ? 'ENABLED' : 'DISABLED'}`, true);
+        });
+        
+        document.getElementById("mode-labouchere").addEventListener('change', (e) => {
+            bot.enabledModes.labouchere = e.target.checked;
+            updateLogs(0, 0, 0, `Labouchere ${e.target.checked ? 'ENABLED' : 'DISABLED'}`, true);
+        });
+        
+        // Auto/Manual mode toggle
+        const autoRadio = document.getElementById('mode-auto');
+        const manualRadio = document.getElementById('mode-manual');
+        const manualContainer = document.getElementById('manual-mode-container');
+        
+        autoRadio.addEventListener('change', (e) => {
+            if (e.target.checked) {
+                manualContainer.style.display = 'none';
+            }
+        });
+        
+        manualRadio.addEventListener('change', (e) => {
+            if (e.target.checked) {
+                manualContainer.style.display = 'block';
+            }
+        });
+        
+        // Manual rotate buttons
+        document.querySelectorAll('.rotate-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                if (!bot.isRunning) {
+                    alert('Start the bot first!');
+                    return;
+                }
+                
+                const mode = e.target.dataset.mode;
+                if (!bot.enabledModes[mode]) {
+                    alert(`${mode.toUpperCase()} mode is disabled!`);
+                    return;
+                }
+                
+                bot.mode = mode;
+                bot.rotationState.inRecovery = false;
+                
+                if (mode === 'orion') {
+                    setNewBaseChance();
+                } else if (mode === 'wager') {
+                    initWagerMode();
+                } else if (mode === 'labouchere') {
+                    initLabouchere();
+                }
+                
+                updateLogs(0, 0, 0, `MANUAL: Switched to ${mode.toUpperCase()} mode`, true);
+                updateModeIndicator();
+            });
+        });
+        
+        document.getElementById("p-currency").onchange = (e) => { 
+            bot.selectedCurrency = e.target.value; 
+            document.getElementById("st-currency").textContent = e.target.value.toUpperCase();
+        };
+        
+        document.getElementById("p-steps").addEventListener('change', (e) => {
+            bot.rotationState.stepLimit = parseInt(e.target.value) || 10000;
+            updateModeIndicator();
+        });
+        
+        for (let i = 1; i <= 4; i++) {
+            const input = document.getElementById(`w-xstopwin-${i}`);
+            if (input) {
+                input.addEventListener('change', (e) => {
+                    const val = parseFloat(e.target.value) || 0;
+                    bot.wagerStats.xstopwin[i-1] = val;
+                    const currentEl = document.getElementById(`xstopwin-${i}-current`);
+                    if (currentEl) {
+                        if (i === 3) {
+                            currentEl.textContent = `${val}`;
+                        } else {
+                            currentEl.textContent = `${val}%`;
+                        }
+                    }
+                });
+            }
         }
         
-        // Labouchere Max Cycles
-        const lMaxCycles = document.getElementById("l-maxcycles");
-        if (lMaxCycles) {
-            lMaxCycles.addEventListener('change', (e) => {
-                const val = parseInt(e.target.value) || 3;
-                bot.labouchere.maxCycles = val;
-                const currentEl = document.getElementById("l-maxcycles-current");
-                if (currentEl) {
-                    if (val > 0) {
-                        currentEl.textContent = `${val} cycles`;
+        document.getElementById("w-chance-normal")?.addEventListener('change', (e) => {
+            const val = parseFloat(e.target.value) || 97;
+            bot.wagerStats.chanceNormal = val;
+            document.getElementById("w-chance-normal-current").textContent = `${val}%`;
+        });
+        
+        document.getElementById("w-chance-recovery")?.addEventListener('change', (e) => {
+            const val = parseFloat(e.target.value) || 25;
+            bot.wagerStats.chanceRecovery = val;
+            document.getElementById("w-chance-recovery-current").textContent = `${val}%`;
+        });
+        
+        document.getElementById("w-chance-max")?.addEventListener('change', (e) => {
+            const val = parseFloat(e.target.value) || 99;
+            bot.wagerStats.chanceMax = val;
+            document.getElementById("w-chance-max-current").textContent = `${val}%`;
+        });
+        
+        document.getElementById("telegram-interval")?.addEventListener('change', (e) => {
+            const minutes = parseInt(e.target.value) || 5;
+            bot.telegramReport.reportInterval = minutes * 60 * 1000;
+            document.getElementById("telegram-interval-display").textContent = `Every ${minutes} min`;
+            updateLogs(0, 0, 0, `Reports: ${minutes} min`, true);
+        });
+        
+        document.getElementById("test-telegram").onclick = async () => {
+            const testBtn = document.getElementById("test-telegram");
+            const statusEl = document.getElementById("telegram-status");
+            testBtn.innerHTML = 'Testing...';
+            testBtn.disabled = true;
+            statusEl.textContent = "Testing";
+            statusEl.style.color = "#f59e0b";
+            
+            try {
+                const testMessage = `🧪 ORION v8.0 Test\nTime: ${new Date().toLocaleString()}\nUser: ${bot.stakeUser}\nStatus: OK`;
+                const result = await API.sendTelegramReport(testMessage);
+                
+                if (result?.ok) {
+                    updateLogs(0, 0, 0, '✅ Telegram: Connected', true);
+                    statusEl.textContent = "Connected";
+                    statusEl.style.color = "#10b981";
+                } else {
+                    updateLogs(0, 0, 0, '❌ Telegram: Failed', true);
+                    statusEl.textContent = "Failed";
+                    statusEl.style.color = "#ef4444";
+                }
+            } catch (error) {
+                statusEl.textContent = "Error";
+                statusEl.style.color = "#ef4444";
+            } finally {
+                testBtn.innerHTML = 'Test';
+                testBtn.disabled = false;
+            }
+        };
+        
+        document.getElementById("send-now-telegram").onclick = async () => {
+            const sendBtn = document.getElementById("send-now-telegram");
+            sendBtn.innerHTML = 'Sending...';
+            sendBtn.disabled = true;
+            
+            try {
+                const report = generateTelegramReport();
+                const result = await API.sendTelegramReport(report);
+                
+                if (result?.ok) {
+                    updateLogs(0, 0, 0, '📊 Report sent', true);
+                    bot.telegramReport.lastReportTime = Date.now();
+                }
+            } catch (error) {
+                updateLogs(0, 0, 0, '⚠️ Report failed', true);
+            } finally {
+                sendBtn.innerHTML = 'Report';
+                sendBtn.disabled = false;
+            }
+        };
+        
+        document.getElementById("telegram-report-btn").onclick = async () => {
+            const reportBtn = document.getElementById("telegram-report-btn");
+            reportBtn.innerHTML = '⏳';
+            reportBtn.disabled = true;
+            
+            try {
+                const report = generateTelegramReport();
+                const result = await API.sendTelegramReport(report);
+                
+                if (result?.ok) {
+                    updateLogs(0, 0, 0, '📊 Report sent', true);
+                } else {
+                    updateLogs(0, 0, 0, '⚠️ Report failed', true);
+                }
+            } catch (error) {
+                console.error('Report error:', error);
+            } finally {
+                reportBtn.innerHTML = '📊 TG REPORT';
+                reportBtn.disabled = false;
+            }
+        };
+        
+        document.getElementById("p-demo-toggle").onchange = (e) => {
+            bot.isDemo = e.target.checked;
+            updateLogs(0, 0, 0, `Demo ${bot.isDemo ? 'ON' : 'OFF'}`, true);
+        };
+        
+        document.getElementById("p-start").onclick = async () => {
+            bot.selectedCurrency = document.getElementById("p-currency").value;
+            
+            if (!bot.isDemo) await API.syncOnce();
+            bot.isRunning = true;
+            
+            const startBtn = document.getElementById("p-start");
+            startBtn.innerHTML = '⚡ RUNNING';
+            startBtn.classList.remove('btn-primary');
+            startBtn.classList.add('btn-success');
+            
+            bot.stats = { 
+                profit: 0, wagered: 0, startBal: 0, currentBal: 0, 
+                bets: 0, wins: 0, loss: 0, startTime: Date.now(), 
+                maxDD: 0, maxDDPerc: 0 
+            };
+            
+            if (!bot.isDemo) {
+                bot.stats.startBal = await API.getBalance(bot.selectedCurrency);
+            } else {
+                bot.stats.startBal = 100.0;
+            }
+            
+            bot.stats.currentBal = bot.stats.startBal;
+            bot.rotationState.initialBalance = bot.stats.startBal;
+            bot.rotationState.inRecovery = false;
+            
+            bot.rotationState.stepLimit = parseInt(document.getElementById("p-steps").value) || 10000;
+            
+            bot.targetAbs = bot.stats.startBal * (parseFloat(document.getElementById("p-target-pct").value) / 100);
+            bot.stopLossAbs = bot.stats.startBal * (parseFloat(document.getElementById("p-stop-pct").value) / 100);
+            bot.perStep = bot.targetAbs / bot.rotationState.stepLimit;
+            
+            bot.rotationState.wagerLossThreshold = parseFloat(document.getElementById("s-wager-threshold").value) / 100 || 0.001;
+            bot.rotationState.severeLossThreshold = parseFloat(document.getElementById("s-severe-threshold").value) / 100 || 0.01;
+            
+            const modeSelect = document.querySelector('input[name="mode"]:checked');
+            if (modeSelect && modeSelect.value === 'auto') {
+                const enabledMode = Object.keys(bot.enabledModes).find(mode => bot.enabledModes[mode]);
+                if (enabledMode) {
+                    bot.mode = enabledMode;
+                    if (bot.mode === 'wager') initWagerMode();
+                    if (bot.mode === 'labouchere') initLabouchere();
+                    if (bot.mode === 'orion') setNewBaseChance();
+                } else {
+                    alert('Enable at least one mode!');
+                    bot.isRunning = false;
+                    startBtn.innerHTML = '▶ START';
+                    startBtn.classList.remove('btn-success');
+                    startBtn.classList.add('btn-primary');
+                    return;
+                }
+            } else {
+                // In manual mode, use the current mode
+                if (!bot.enabledModes[bot.mode]) {
+                    const firstEnabled = Object.keys(bot.enabledModes).find(mode => bot.enabledModes[mode]);
+                    if (firstEnabled) {
+                        bot.mode = firstEnabled;
                     } else {
-                        currentEl.textContent = "Unlimited";
+                        alert('Enable at least one mode!');
+                        bot.isRunning = false;
+                        startBtn.innerHTML = '▶ START';
+                        startBtn.classList.remove('btn-success');
+                        startBtn.classList.add('btn-primary');
+                        return;
                     }
                 }
-            });
-        }
+                
+                if (bot.mode === 'wager') initWagerMode();
+                if (bot.mode === 'labouchere') initLabouchere();
+                if (bot.mode === 'orion') setNewBaseChance();
+            }
+            
+            bot.telegramReport.lastReportTime = Date.now();
+            
+            updateModeIndicator();
+            updateLogs(0, 0, 0, `Started: ${bot.mode.toUpperCase()}`, true);
+            
+            runLoop();
+        };
         
-        // ... [Event listeners lainnya tetap sama] ...
+        document.getElementById("p-stop").onclick = () => { 
+            bot.isRunning = false; 
+            const startBtn = document.getElementById("p-start");
+            startBtn.innerHTML = '▶ START';
+            startBtn.classList.remove('btn-success');
+            startBtn.classList.add('btn-primary');
+            updateLogs(0, 0, 0, "Stopped", true);
+        };
+        
+        const updateUserDisplay = () => {
+            document.getElementById("user-name").textContent = bot.stakeUser;
+            document.getElementById("st-user-name").textContent = bot.stakeUser;
+        };
+        
+        updateExpirationDate();
+        updateUserDisplay();
+        
+        setInterval(checkAndSendReport, 30000);
     }
 
-    // ... [Kode updateModeIndicator dan interval update tetap sama] ...
+    function updateModeIndicator() {
+        const indicator = document.getElementById("mode-indicator");
+        const modeText = document.getElementById("current-mode");
+        const rotationStatus = document.getElementById("rotation-status");
+        const stepLimitDisplay = document.getElementById("step-limit-display");
+        const currentStepLimit = document.getElementById("current-step-limit");
+        
+        const colors = {
+            orion: '#00ccff',
+            wager: '#10b981', 
+            labouchere: '#8b5cf6'
+        };
+        
+        if (modeText) modeText.textContent = bot.mode.toUpperCase();
+        if (indicator && indicator.querySelector('.mode-dot')) {
+            indicator.querySelector('.mode-dot').style.background = colors[bot.mode] || colors.orion;
+        }
+        if (rotationStatus) {
+            rotationStatus.textContent = bot.isRunning ? (bot.rotationState.inRecovery ? 'RECOVERY' : 'RUNNING') : 'READY';
+            rotationStatus.style.color = bot.isRunning ? (bot.rotationState.inRecovery ? '#f59e0b' : '#10b981') : '#64748b';
+        }
+        
+        if (stepLimitDisplay) {
+            stepLimitDisplay.textContent = bot.rotationState.stepLimit;
+        }
+        if (currentStepLimit) {
+            currentStepLimit.textContent = bot.rotationState.stepLimit;
+        }
+    }
+
+    setInterval(() => {
+        if (document.getElementById("st-p")) {
+            const profitPercent = bot.stats.startBal > 0 ? (bot.stats.profit / bot.stats.startBal * 100) : 0;
+            const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100) : 0;
+            const ddPercent = bot.stats.startBal > 0 ? (bot.stats.maxDD / bot.stats.startBal * 100) : 0;
+            const streak = bot.stats.wins > 0 && bot.stats.loss === 0 ? bot.stats.wins : 
+                          bot.stats.loss > 0 && bot.stats.wins === 0 ? -bot.stats.loss : 0;
+            const streakType = streak > 0 ? 'Win' : streak < 0 ? 'Lose' : 'Neutral';
+            
+            document.getElementById("st-p").innerText = bot.stats.profit.toFixed(8);
+            document.getElementById("st-p-pct").innerText = profitPercent.toFixed(2) + '%';
+            document.getElementById("st-w").innerText = bot.stats.wagered.toFixed(8);
+            document.getElementById("st-w-bets").innerText = `${bot.stats.bets} bets`;
+            document.getElementById("st-r").innerText = `${bot.stats.wins}/${bot.stats.loss}`;
+            document.getElementById("st-wr-value").innerText = winRate.toFixed(2) + '%';
+            document.getElementById("st-dd").innerText = bot.stats.maxDD.toFixed(8);
+            document.getElementById("st-dd-pct").innerText = ddPercent.toFixed(2) + '%';
+            document.getElementById("st-bal").innerText = bot.stats.currentBal.toFixed(8);
+            document.getElementById("st-streak-value").innerText = Math.abs(streak);
+            document.getElementById("st-streak-type").innerText = streakType;
+            if (document.getElementById("st-streak-value")) {
+                document.getElementById("st-streak-value").style.color = streak > 0 ? '#10b981' : streak < 0 ? '#ef4444' : '#64748b';
+            }
+            
+            const userNameEl = document.getElementById("st-user-name");
+            if (userNameEl && bot.stakeUser !== "Loading...") {
+                userNameEl.textContent = bot.stakeUser;
+                document.getElementById("user-name").textContent = bot.stakeUser;
+            }
+        }
+        
+        updateModeIndicator();
+        updateWagerUI();
+        updateLabouchereUI();
+        
+        // Update current base bet display
+        if (document.getElementById("w-current-basebet")) {
+            document.getElementById("w-current-basebet").innerText = bot.wagerStats.basebet.toFixed(8);
+        }
+    }, 1000);
+
+    createUI(); 
+    setTimeout(() => {
+        API.syncOnce();
+    }, 500);
 })();
