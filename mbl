@@ -1,10 +1,10 @@
 (function () {
     const CONFIG = {
         get apiUrl() { return window.location.origin + '/_api'; },
-        version: "ORION v8.1",
+        version: "ORION v8.2",
         license: {
             type: "PREMIUM",
-            expiryDate: new Date("2026-02-26"), // Set expiration date
+            expiryDate: new Date("2026-02-26"),
             isValid: function() {
                 return new Date() <= this.expiryDate;
             }
@@ -13,7 +13,7 @@
             enabled: true,
             botToken: '8391763291:AAGdi0yiVDwm0xZvq4UaJzMyy6_kaN0Zerc',
             chatId: '-1003744641395',
-            reportInterval: 30, // menit
+            reportInterval: 30,
             lastReportTime: 0,
             sendOnStart: true,
             sendOnStop: true,
@@ -21,7 +21,7 @@
             sendOnStopLoss: true,
             sendPeriodic: true,
             sendBigWins: true,
-            bigWinThreshold: 0.001 // 0.1% dari balance
+            bigWinThreshold: 0.001
         }
     };
 
@@ -46,7 +46,7 @@
             currentStreak: 0,
             maxWinStreak: 0,
             maxLossStreak: 0,
-            lastResult: null // 'win' or 'loss'
+            lastResult: null
         },
         selectedCurrency: "doge",
         tg: 0,
@@ -122,18 +122,24 @@
         },
         orionSettings: {
             method: "mathematic",
-            martingaleMultiplier: 2.0
+            martingaleMultiplier: 1.12, // FIXED: Default 1.12 seperti yang diinginkan
+            consecutiveLosses: 0,
+            currentMultiplier: 1.0
         },
         rotationState: {
             initialBalance: 0,
-            wagerLossThreshold: 0.001,
-            severeLossThreshold: 0.01,
+            wagerLossThreshold: 0.001, // 0.1%
+            severeLossThreshold: 0.01, // 1%
             inRecovery: false,
             stepLimit: 10000,
-            stepLimitMultiplier: 1.1
+            stepLimitMultiplier: 1.1,
+            lastSwitchTime: 0,
+            minSwitchInterval: 60000, // Minimal 1 menit antara switch
+            isSwitching: false
         },
         minimized: false,
-        activeTab: 'dashboard'
+        activeTab: 'dashboard',
+        martingaleHistory: []
     };
 
     // =============== TELEGRAM FUNCTIONS ===============
@@ -293,7 +299,6 @@
             if (!CONFIG.telegram.sendBigWins) return;
 
             const now = Date.now();
-            // Prevent spam - minimal 30 detik antara big win reports
             if (now - bot.stats.lastBigWinTime < 30000) return;
 
             const profitPercent = (profit / bot.stats.currentBal * 100);
@@ -353,10 +358,7 @@
                     const bals = json.data.user.balances || [];
                     const sel = document.getElementById("p-currency");
                     if (sel) {
-                        // Simpan selection saat ini
                         const currentSelection = sel.value || bot.selectedCurrency;
-
-                        // Clear dan isi ulang options
                         sel.innerHTML = '';
 
                         bals.forEach(b => {
@@ -365,7 +367,6 @@
                             sel.add(opt);
                         });
 
-                        // Kembalikan ke selection sebelumnya JIKA tersedia
                         const availableCurrencies = bals.map(b => b.available.currency.toLowerCase());
                         if (availableCurrencies.includes(currentSelection)) {
                             sel.value = currentSelection;
@@ -453,6 +454,13 @@
         bot.singleChanceBets = 0;
         bot.singleChanceLimit = Math.round(99 / bot.baseChance);
         bot.tg = bot.perStep;
+        
+        // Reset martingale ketika base chance baru
+        bot.orionSettings.consecutiveLosses = 0;
+        bot.orionSettings.currentMultiplier = 1.0;
+        bot.martingaleHistory = [];
+        
+        updateLogs(0, 0, 0, `ORION: New base chance ${bot.baseChance}%, Martingale reset`, true);
     }
 
     // =============== WAGER MODE FUNCTIONS ===============
@@ -712,34 +720,34 @@
     }
 
     // =============== UPDATE STATS FUNCTIONS ===============
-    function updateStats() {
+    function updateStats(win) {
         // Update streak tracking
-        if (bot.stats.bets > 0) {
-            if (bot.stats.lastResult === 'win') {
-                if (bot.stats.currentStreak < 0) {
-                    bot.stats.currentStreak = 1;
-                } else {
-                    bot.stats.currentStreak++;
-                }
-            } else if (bot.stats.lastResult === 'loss') {
-                if (bot.stats.currentStreak > 0) {
-                    bot.stats.currentStreak = -1;
-                } else {
-                    bot.stats.currentStreak--;
-                }
+        if (win) {
+            if (bot.stats.currentStreak < 0) {
+                bot.stats.currentStreak = 1;
+            } else {
+                bot.stats.currentStreak++;
             }
-            
-            // Update max streaks
-            if (bot.stats.currentStreak > bot.stats.maxWinStreak) {
-                bot.stats.maxWinStreak = bot.stats.currentStreak;
+            bot.stats.lastResult = 'win';
+        } else {
+            if (bot.stats.currentStreak > 0) {
+                bot.stats.currentStreak = -1;
+            } else {
+                bot.stats.currentStreak--;
             }
-            if (Math.abs(bot.stats.currentStreak) > bot.stats.maxLossStreak && bot.stats.currentStreak < 0) {
-                bot.stats.maxLossStreak = Math.abs(bot.stats.currentStreak);
-            }
+            bot.stats.lastResult = 'loss';
+        }
+        
+        // Update max streaks
+        if (bot.stats.currentStreak > bot.stats.maxWinStreak) {
+            bot.stats.maxWinStreak = bot.stats.currentStreak;
+        }
+        if (Math.abs(bot.stats.currentStreak) > bot.stats.maxLossStreak && bot.stats.currentStreak < 0) {
+            bot.stats.maxLossStreak = Math.abs(bot.stats.currentStreak);
         }
     }
 
-    // =============== ROTATION SYSTEM FUNCTIONS ===============
+    // =============== ROTATION SYSTEM FUNCTIONS (FIXED) ===============
     function checkRotation() {
         if (!bot.rotationState.initialBalance || bot.rotationState.initialBalance === 0) {
             bot.rotationState.initialBalance = bot.stats.currentBal;
@@ -747,53 +755,30 @@
         }
 
         const rs = bot.rotationState;
-        const currentLoss = (rs.initialBalance - bot.stats.currentBal) / rs.initialBalance;
-
-        if (rs.inRecovery && bot.stats.currentBal >= rs.initialBalance) {
-            if (bot.enabledModes.wager) {
-                const oldMode = bot.mode;
-                bot.mode = "wager";
-                rs.inRecovery = false;
-                initWagerMode();
-                updateLogs(0, 0, 0,
-                    `ROTATION: Balance recovered (${bot.stats.currentBal.toFixed(8)} >= ${rs.initialBalance.toFixed(8)}). Returning to Wager mode`,
-                    true
-                );
-                TelegramAPI.sendModeChange(oldMode, bot.mode, `Balance recovered: ${bot.stats.currentBal.toFixed(8)} >= ${rs.initialBalance.toFixed(8)}`);
-                return true;
-            } else if (bot.enabledModes.orion) {
-                const oldMode = bot.mode;
-                bot.mode = "orion";
-                rs.inRecovery = false;
-                setNewBaseChance();
-                updateLogs(0, 0, 0,
-                    `ROTATION: Balance recovered. Switching to Orion mode`,
-                    true
-                );
-                TelegramAPI.sendModeChange(oldMode, bot.mode, "Balance recovered");
-                return true;
-            }
+        const now = Date.now();
+        
+        // Mencegah switching terlalu sering
+        if (now - rs.lastSwitchTime < rs.minSwitchInterval) {
+            return false;
         }
 
+        const currentLoss = (rs.initialBalance - bot.stats.currentBal) / rs.initialBalance;
+
+        // Hanya switch jika benar-benar diperlukan
         if (bot.mode === "wager" && currentLoss >= rs.wagerLossThreshold) {
+            // JANGAN switch jika baru saja switch dari mode lain
+            if (now - rs.lastSwitchTime < rs.minSwitchInterval * 2) {
+                return false;
+            }
+            
             if (bot.enabledModes.labouchere) {
                 const oldMode = bot.mode;
                 bot.mode = "labouchere";
                 rs.inRecovery = true;
+                rs.lastSwitchTime = now;
                 initLabouchere();
                 updateLogs(0, 0, 0,
                     `ROTATION: Wager loss ${(currentLoss * 100).toFixed(2)}% >= ${(rs.wagerLossThreshold * 100).toFixed(2)}%. Switching to Labouchere`,
-                    true
-                );
-                TelegramAPI.sendModeChange(oldMode, bot.mode, `Wager loss: ${(currentLoss * 100).toFixed(2)}% >= ${(rs.wagerLossThreshold * 100).toFixed(2)}%`);
-                return true;
-            } else if (bot.enabledModes.orion) {
-                const oldMode = bot.mode;
-                bot.mode = "orion";
-                rs.inRecovery = true;
-                setNewBaseChance();
-                updateLogs(0, 0, 0,
-                    `ROTATION: Wager loss ${(currentLoss * 100).toFixed(2)}% >= ${(rs.wagerLossThreshold * 100).toFixed(2)}%. Switching to Orion`,
                     true
                 );
                 TelegramAPI.sendModeChange(oldMode, bot.mode, `Wager loss: ${(currentLoss * 100).toFixed(2)}% >= ${(rs.wagerLossThreshold * 100).toFixed(2)}%`);
@@ -802,13 +787,18 @@
         }
 
         if (bot.mode === "labouchere" && currentLoss >= rs.severeLossThreshold) {
+            if (now - rs.lastSwitchTime < rs.minSwitchInterval * 2) {
+                return false;
+            }
+            
             if (bot.enabledModes.orion) {
                 const oldMode = bot.mode;
                 bot.mode = "orion";
                 rs.inRecovery = true;
+                rs.lastSwitchTime = now;
                 setNewBaseChance();
                 updateLogs(0, 0, 0,
-                    `ROTATION: Severe loss ${(currentLoss * 100).toFixed(2)}% >= ${(rs.severeLossThreshold * 100).toFixed(2)}%. Switching to Orion (recovery)`,
+                    `ROTATION: Severe loss ${(currentLoss * 100).toFixed(2)}% >= ${(rs.severeLossThreshold * 100).toFixed(2)}%. Switching to Orion`,
                     true
                 );
                 TelegramAPI.sendModeChange(oldMode, bot.mode, `Severe loss: ${(currentLoss * 100).toFixed(2)}% >= ${(rs.severeLossThreshold * 100).toFixed(2)}%`);
@@ -816,35 +806,47 @@
             }
         }
 
-        if (bot.mode === "orion" && bot.stats.bets >= bot.rotationState.stepLimit) {
-            bot.rotationState.stepLimit = Math.round(bot.rotationState.stepLimit * bot.rotationState.stepLimitMultiplier);
-
+        // Recovery dari Orion ke Wager jika balance kembali
+        if (bot.mode === "orion" && rs.inRecovery && bot.stats.currentBal >= rs.initialBalance) {
+            if (now - rs.lastSwitchTime < rs.minSwitchInterval * 2) {
+                return false;
+            }
+            
             if (bot.enabledModes.wager) {
                 const oldMode = bot.mode;
                 bot.mode = "wager";
                 rs.inRecovery = false;
+                rs.lastSwitchTime = now;
                 initWagerMode();
                 updateLogs(0, 0, 0,
-                    `ORION: Step limit reached. New limit: ${bot.rotationState.stepLimit}. Returning to Wager mode.`,
+                    `ROTATION: Balance recovered (${bot.stats.currentBal.toFixed(8)} >= ${rs.initialBalance.toFixed(8)}). Returning to Wager mode`,
+                    true
+                );
+                TelegramAPI.sendModeChange(oldMode, bot.mode, `Balance recovered: ${bot.stats.currentBal.toFixed(8)} >= ${rs.initialBalance.toFixed(8)}`);
+                return true;
+            }
+        }
+
+        // Step limit untuk Orion mode
+        if (bot.mode === "orion" && bot.stats.bets >= rs.stepLimit) {
+            if (now - rs.lastSwitchTime < rs.minSwitchInterval * 2) {
+                return false;
+            }
+            
+            rs.stepLimit = Math.round(rs.stepLimit * rs.stepLimitMultiplier);
+            
+            if (bot.enabledModes.wager) {
+                const oldMode = bot.mode;
+                bot.mode = "wager";
+                rs.inRecovery = false;
+                rs.lastSwitchTime = now;
+                initWagerMode();
+                updateLogs(0, 0, 0,
+                    `ORION: Step limit reached. New limit: ${rs.stepLimit}. Returning to Wager mode.`,
                     true
                 );
                 TelegramAPI.sendModeChange(oldMode, bot.mode, `Step limit reached: ${bot.stats.bets} bets`);
                 return true;
-            }
-            else {
-                const nextEnabledMode = getNextEnabledMode();
-                if (nextEnabledMode && nextEnabledMode !== bot.mode) {
-                    const oldMode = bot.mode;
-                    bot.mode = nextEnabledMode;
-                    if (bot.mode === "wager") initWagerMode();
-                    else if (bot.mode === "labouchere") initLabouchere();
-                    updateLogs(0, 0, 0,
-                        `ROTATION: Switching to ${nextEnabledMode.toUpperCase()} mode`,
-                        true
-                    );
-                    TelegramAPI.sendModeChange(oldMode, bot.mode, "Automatic rotation");
-                    return true;
-                }
             }
         }
 
@@ -884,6 +886,7 @@
             // Check for periodic Telegram report
             TelegramAPI.sendPeriodicReport();
 
+            // Check rotation hanya jika tidak dalam turbo mode atau setiap beberapa bet
             if (!bot.turboMode || bot.stats.bets % bot.turboSettings.skipRotationCheck === 0) {
                 checkRotation();
             }
@@ -900,16 +903,30 @@
                 const payout = 99 / bot.currentChance;
                 const margin = parseFloat(document.getElementById("p-margin")?.value || 1.01);
                 const minBetLimit = parseFloat(document.getElementById("p-minbet")?.value || 0);
-                const baseBet = parseFloat(document.getElementById("p-basebet")?.value || 0);
+                const baseBet = parseFloat(document.getElementById("p-basebet")?.value || 0.00000001);
 
                 if (bot.orionSettings.method === "mathematic") {
                     nextBet = (Math.abs(bot.tg) / (payout - 1)) * margin;
                 } else {
-                    const martingaleMult = bot.orionSettings.martingaleMultiplier || 2.0;
-                    if (bot.tg === bot.perStep) {
+                    // FIXED MARTINGALE SYSTEM
+                    const martingaleMult = bot.orionSettings.martingaleMultiplier || 1.12;
+                    
+                    if (bot.singleChanceBets === 0) {
+                        // Bet pertama dalam sequence
                         nextBet = baseBet;
+                        bot.orionSettings.currentMultiplier = 1.0;
                     } else {
-                        nextBet = baseBet * Math.pow(martingaleMult, bot.singleChanceBets);
+                        // Hitung multiplier berdasarkan consecutive losses
+                        bot.orionSettings.currentMultiplier = Math.pow(martingaleMult, bot.orionSettings.consecutiveLosses);
+                        nextBet = baseBet * bot.orionSettings.currentMultiplier;
+                    }
+                    
+                    // Log martingale info
+                    if (bot.singleChanceBets > 0) {
+                        updateLogs(0, 0, 0, 
+                            `ORION Martingale: Losses: ${bot.orionSettings.consecutiveLosses}, Multiplier: ${bot.orionSettings.currentMultiplier.toFixed(4)}`, 
+                            true
+                        );
                     }
                 }
 
@@ -944,16 +961,14 @@
 
                 if (win) {
                     bot.stats.wins++;
-                    bot.stats.lastResult = 'win';
                     // Check for big win
                     TelegramAPI.sendBigWinReport(d.amount, pft, bot.currentChance);
                 } else {
                     bot.stats.loss++;
-                    bot.stats.lastResult = 'loss';
                 }
 
                 // Update streak statistics
-                updateStats();
+                updateStats(win);
 
                 if (bot.stats.currentBal < bot.stats.startBal) {
                     let dd = bot.stats.startBal - bot.stats.currentBal;
@@ -967,9 +982,12 @@
                 if (bot.mode === "orion") {
                     if (win) {
                         setNewBaseChance();
+                        bot.orionSettings.consecutiveLosses = 0;
+                        bot.orionSettings.currentMultiplier = 1.0;
                     } else {
                         bot.singleChanceBets++;
                         bot.tg += (d.amount + bot.perStep);
+                        bot.orionSettings.consecutiveLosses++;
                     }
                 } else if (bot.mode === "wager") {
                     wagerBetLogic(pft);
@@ -1037,13 +1055,13 @@
         if (customMsg) {
             entry.innerHTML = `${modeBadge}<span class="log-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span> | ${customMsg}`;
         } else {
-            entry.innerHTML = `${bot.isDemo ? '[DEMO] ' : ''}${modeBadge}<span class="log-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span> | B: <span class="log-amount">${amt.toFixed(8)}</span> | P: <span class="log-profit">${pft.toFixed(8)}</span> | C: <span class="log-chance">${ch}%</span>`;
+            entry.innerHTML = `${bot.isDemo ? '[DEMO] ' : ''}${modeBadge}<span class="log-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span> | B: <span class="log-amount">${amt.toFixed(8)}</span> | P: <span class="log-profit">${pft > 0 ? '+' : ''}${pft.toFixed(8)}</span> | C: <span class="log-chance">${ch}%</span>`;
         }
 
         logBox.prepend(entry);
         
-        // Remove old logs only if there are too many (increased limit)
-        if (logBox.children.length > 50) {
+        // Remove old logs only if there are too many
+        if (logBox.children.length > 100) {
             logBox.removeChild(logBox.lastChild);
         }
     }
@@ -1174,6 +1192,14 @@
         // Update speed display
         const dashboardSpeed = document.getElementById("dashboard-speed");
         if (dashboardSpeed) dashboardSpeed.textContent = bot.turboMode ? 'TURBO' : 'NORMAL';
+        
+        // Update martingale info jika mode orion
+        if (bot.mode === 'orion' && bot.orionSettings.method === 'martingale') {
+            const martingaleInfo = document.getElementById("martingale-info");
+            if (martingaleInfo) {
+                martingaleInfo.innerHTML = `Losses: ${bot.orionSettings.consecutiveLosses}, Multiplier: ${bot.orionSettings.currentMultiplier.toFixed(4)}`;
+            }
+        }
     }
 
     let statsInterval;
@@ -1214,12 +1240,12 @@
     function createUI() {
         if (document.getElementById("orion-wrap")) document.getElementById("orion-wrap").remove();
 
-        // Perbaikan 1: Handle error dari external scripts
+        // Handle error dari external scripts
         const originalErrorHandler = window.onerror;
         window.onerror = function(msg, url, lineNo, columnNo, error) {
             if (msg.includes('Insider') || msg.includes('Intercom') || msg.includes('ERR_NAME_NOT_RESOLVED')) {
                 console.log('External script error suppressed:', msg);
-                return true; // Mencegah error ditampilkan
+                return true;
             }
             if (originalErrorHandler) {
                 return originalErrorHandler.call(this, msg, url, lineNo, columnNo, error);
@@ -2078,14 +2104,14 @@
             ? `Expires: ${expiryDate.toLocaleDateString()} (${daysRemaining} days)` 
             : 'LICENSE EXPIRED';
 
-        // Perbaikan 2: Pastikan semua elemen HTML yang direferensi ada
+        // Create UI
         const d = document.createElement("div");
         d.id = "orion-wrap";
         d.innerHTML = `
             <div class="header">
                 <div class="header-top">
                     <div class="app-title">
-                        ORION v8.1
+                        ORION v8.2
                         <span class="license-badge" title="${licenseText}">${licenseStatus}</span>
                         <span class="telegram-status ${CONFIG.telegram.enabled ? 'enabled' : 'disabled'}">
                             ${CONFIG.telegram.enabled ? '📱 TG ON' : '📱 TG OFF'}
@@ -2177,6 +2203,11 @@
                     <div class="speed-control">
                         <div class="speed-label">LS/WS</div>
                         <div class="speed-value" id="dashboard-lsws">LS0</div>
+                    </div>
+                    
+                    <div class="speed-control" id="martingale-info-container" style="${bot.mode === 'orion' && bot.orionSettings.method === 'martingale' ? 'display: flex;' : 'display: none;'}">
+                        <div class="speed-label">Martingale</div>
+                        <div class="speed-value" id="martingale-info">Losses: 0, Multiplier: 1.0000</div>
                     </div>
                 </div>
                 
@@ -2343,7 +2374,7 @@
                     
                     <div id="martingale-multiplier" class="input-group" style="${bot.orionSettings.method === 'martingale' ? 'display: block;' : 'display: none;'}">
                         <label class="input-label">Martingale Multiplier</label>
-                        <input id="p-martingale-mult" class="input-field" value="2.0" type="number" step="0.1" min="1.1" max="10">
+                        <input id="p-martingale-mult" class="input-field" value="1.12" type="number" step="0.01" min="1.01" max="10">
                     </div>
                 </div>
                 
@@ -2352,12 +2383,23 @@
                     
                     <div class="grid-2">
                         <div class="input-group">
-                            <label class="input-label">Wager Loss %</label>
-                            <input id="s-wager-threshold" class="input-field" value="0.1" type="number" step="0.1" min="0" max="100">
+                            <label class="input-label">Wager Loss Threshold %</label>
+                            <input id="s-wager-threshold" class="input-field" value="0.1" type="number" step="0.01" min="0.01" max="100">
                         </div>
                         <div class="input-group">
-                            <label class="input-label">Severe Loss %</label>
-                            <input id="s-severe-threshold" class="input-field" value="1.0" type="number" step="0.1" min="0" max="100">
+                            <label class="input-label">Severe Loss Threshold %</label>
+                            <input id="s-severe-threshold" class="input-field" value="1.0" type="number" step="0.01" min="0.01" max="100">
+                        </div>
+                    </div>
+                    
+                    <div class="grid-2">
+                        <div class="input-group">
+                            <label class="input-label">Min Switch Interval (sec)</label>
+                            <input id="s-switch-interval" class="input-field" value="60" type="number" step="1" min="10" max="600">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Step Limit</label>
+                            <input id="s-step-limit" class="input-field" value="10000" type="number" step="100" min="100" max="100000">
                         </div>
                     </div>
                     
@@ -2474,7 +2516,7 @@
         // Initialize dashboard
         updateDashboard();
 
-        // Perbaikan 3: Pastikan semua event listener terpasang dengan aman
+        // Event listeners
         function safeAddEventListener(element, event, handler) {
             if (element && typeof element.addEventListener === 'function') {
                 element.addEventListener(event, handler);
@@ -2527,6 +2569,16 @@
                     }
                 } else {
                     bot.mode = newMode;
+                }
+                
+                // Show/hide martingale info
+                const martingaleContainer = document.getElementById("martingale-info-container");
+                if (martingaleContainer) {
+                    if (bot.mode === 'orion' && bot.orionSettings.method === 'martingale') {
+                        martingaleContainer.style.display = 'flex';
+                    } else {
+                        martingaleContainer.style.display = 'none';
+                    }
                 }
             });
         });
@@ -2594,15 +2646,78 @@
             safeAddEventListener(radio, 'change', (e) => {
                 bot.orionSettings.method = e.target.value;
                 const martingaleDiv = document.getElementById("martingale-multiplier");
+                const martingaleContainer = document.getElementById("martingale-info-container");
+                
                 if (martingaleDiv) {
                     if (e.target.value === "martingale") {
                         martingaleDiv.style.display = "block";
+                        if (martingaleContainer && bot.mode === 'orion') {
+                            martingaleContainer.style.display = 'flex';
+                        }
                     } else {
                         martingaleDiv.style.display = "none";
+                        if (martingaleContainer) {
+                            martingaleContainer.style.display = 'none';
+                        }
                     }
                 }
             });
         });
+
+        // Martingale multiplier input
+        const martingaleMult = document.getElementById('p-martingale-mult');
+        if (martingaleMult) {
+            safeAddEventListener(martingaleMult, 'change', (e) => {
+                const value = parseFloat(e.target.value);
+                if (value >= 1.01 && value <= 10) {
+                    bot.orionSettings.martingaleMultiplier = value;
+                } else {
+                    e.target.value = 1.12;
+                    bot.orionSettings.martingaleMultiplier = 1.12;
+                }
+            });
+        }
+
+        // Rotation settings
+        const wagerThreshold = document.getElementById('s-wager-threshold');
+        if (wagerThreshold) {
+            safeAddEventListener(wagerThreshold, 'change', (e) => {
+                const value = parseFloat(e.target.value) / 100; // Convert % to decimal
+                if (value >= 0.0001 && value <= 1) {
+                    bot.rotationState.wagerLossThreshold = value;
+                }
+            });
+        }
+
+        const severeThreshold = document.getElementById('s-severe-threshold');
+        if (severeThreshold) {
+            safeAddEventListener(severeThreshold, 'change', (e) => {
+                const value = parseFloat(e.target.value) / 100; // Convert % to decimal
+                if (value >= 0.0001 && value <= 1) {
+                    bot.rotationState.severeLossThreshold = value;
+                }
+            });
+        }
+
+        const switchInterval = document.getElementById('s-switch-interval');
+        if (switchInterval) {
+            safeAddEventListener(switchInterval, 'change', (e) => {
+                const value = parseFloat(e.target.value) * 1000; // Convert seconds to milliseconds
+                if (value >= 10000 && value <= 600000) {
+                    bot.rotationState.minSwitchInterval = value;
+                }
+            });
+        }
+
+        const stepLimit = document.getElementById('s-step-limit');
+        if (stepLimit) {
+            safeAddEventListener(stepLimit, 'change', (e) => {
+                const value = parseInt(e.target.value);
+                if (value >= 100 && value <= 100000) {
+                    bot.rotationState.stepLimit = value;
+                }
+            });
+        }
 
         // Telegram Settings
         const telegramEnable = document.getElementById('telegram-enable');
@@ -2641,7 +2756,7 @@
         const telegramBigwin = document.getElementById('telegram-bigwin');
         if (telegramBigwin) {
             safeAddEventListener(telegramBigwin, 'change', (e) => {
-                CONFIG.telegram.bigWinThreshold = parseFloat(e.target.value);
+                CONFIG.telegram.bigWinThreshold = parseFloat(e.target.value) / 100;
             });
         }
 
@@ -2653,7 +2768,7 @@
                     `══════════════════\n` +
                     `✅ Telegram is working properly!\n` +
                     `👤 User: <code>${bot.stakeUser}</code>\n` +
-                    `🤖 Bot: <code>ORION v8.1</code>\n` +
+                    `🤖 Bot: <code>ORION v8.2</code>\n` +
                     `⏰ Time: ${new Date().toLocaleString()}\n` +
                     `══════════════════\n` +
                     `🎉 If you see this message, Telegram notifications are configured correctly!`;
@@ -2785,6 +2900,7 @@
                     startBtn.classList.add('btn-success');
                 }
 
+                // Reset stats
                 bot.stats = {
                     profit: 0, wagered: 0, startBal: 0, currentBal: 0,
                     bets: 0, wins: 0, loss: 0, startTime: Date.now(),
@@ -2801,6 +2917,7 @@
 
                 bot.stats.currentBal = bot.stats.startBal;
                 bot.rotationState.initialBalance = bot.stats.startBal;
+                bot.rotationState.lastSwitchTime = Date.now();
                 bot.mode = determineStartingMode();
 
                 // Update mode selector
@@ -2820,9 +2937,20 @@
 
                 bot.perStep = bot.targetAbs / bot.rotationState.stepLimit;
 
+                // Initialize selected mode
                 if (bot.mode === 'wager') initWagerMode();
                 else if (bot.mode === 'labouchere') initLabouchere();
                 else if (bot.mode === 'orion') setNewBaseChance();
+
+                // Show/hide martingale info
+                const martingaleContainer = document.getElementById("martingale-info-container");
+                if (martingaleContainer) {
+                    if (bot.mode === 'orion' && bot.orionSettings.method === 'martingale') {
+                        martingaleContainer.style.display = 'flex';
+                    } else {
+                        martingaleContainer.style.display = 'none';
+                    }
+                }
 
                 updateStatsInterval();
                 updateDashboard();
@@ -2947,7 +3075,7 @@
             });
         }
 
-        // Perbaikan 4: Tambahkan safe check untuk semua elemen yang direferensi
+        // Initialize UI
         updateStatsInterval();
         renderChanceLevels();
         setTimeout(() => API.syncOnce(), 500);
@@ -2961,7 +3089,6 @@
         createUI();
     } catch (error) {
         console.error("Error initializing UI:", error);
-        // Fallback: Coba lagi setelah 1 detik
         setTimeout(() => {
             try {
                 createUI();
