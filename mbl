@@ -2,6 +2,13 @@
     const CONFIG = {
         get apiUrl() { return window.location.origin + '/_api'; },
         version: "ORION v8.1",
+        license: {
+            type: "PREMIUM",
+            expiryDate: new Date("2025-12-31"), // Set expiration date
+            isValid: function() {
+                return new Date() <= this.expiryDate;
+            }
+        },
         telegram: {
             enabled: true,
             botToken: '8391763291:AAGdi0yiVDwm0xZvq4UaJzMyy6_kaN0Zerc',
@@ -35,7 +42,11 @@
             startTime: null,
             maxDD: 0,
             maxDDPerc: 0,
-            lastBigWinTime: 0
+            lastBigWinTime: 0,
+            currentStreak: 0,
+            maxWinStreak: 0,
+            maxLossStreak: 0,
+            lastResult: null // 'win' or 'loss'
         },
         selectedCurrency: "doge",
         tg: 0,
@@ -203,6 +214,8 @@
                 `❌ Losses: <code>${bot.stats.loss}</code>\n` +
                 `📊 Win Rate: <code>${winRate.toFixed(2)}%</code>\n` +
                 `📉 Max DD: <code>${bot.stats.maxDD.toFixed(8)} (${bot.stats.maxDDPerc.toFixed(2)}%)</code>\n` +
+                `🔥 Max Win Streak: <code>${bot.stats.maxWinStreak}</code>\n` +
+                `💀 Max Loss Streak: <code>${bot.stats.maxLossStreak}</code>\n` +
                 `══════════════════\n` +
                 `⏰ ${new Date().toLocaleString()}`;
 
@@ -268,6 +281,7 @@
                     `🎲 Bets: <code>${bot.stats.bets} (${bot.stats.wins}W/${bot.stats.loss}L)</code>\n` +
                     `📊 Win Rate: <code>${winRate.toFixed(2)}%</code>\n` +
                     `📉 Max DD: <code>${bot.stats.maxDD.toFixed(8)} (${bot.stats.maxDDPerc.toFixed(2)}%)</code>\n` +
+                    `🔥 Current Streak: <code>${bot.stats.currentStreak > 0 ? 'W' + bot.stats.currentStreak : 'L' + Math.abs(bot.stats.currentStreak)}</code>\n` +
                     `══════════════════\n` +
                     `⏰ ${new Date().toLocaleString()}`;
 
@@ -697,6 +711,34 @@
         return { betAmount: lb.betAmount, completed: false };
     }
 
+    // =============== UPDATE STATS FUNCTIONS ===============
+    function updateStats() {
+        // Update streak tracking
+        if (bot.stats.bets > 0) {
+            if (bot.stats.lastResult === 'win') {
+                if (bot.stats.currentStreak < 0) {
+                    bot.stats.currentStreak = 1;
+                } else {
+                    bot.stats.currentStreak++;
+                }
+            } else if (bot.stats.lastResult === 'loss') {
+                if (bot.stats.currentStreak > 0) {
+                    bot.stats.currentStreak = -1;
+                } else {
+                    bot.stats.currentStreak--;
+                }
+            }
+            
+            // Update max streaks
+            if (bot.stats.currentStreak > bot.stats.maxWinStreak) {
+                bot.stats.maxWinStreak = bot.stats.currentStreak;
+            }
+            if (Math.abs(bot.stats.currentStreak) > bot.stats.maxLossStreak && bot.stats.currentStreak < 0) {
+                bot.stats.maxLossStreak = Math.abs(bot.stats.currentStreak);
+            }
+        }
+    }
+
     // =============== ROTATION SYSTEM FUNCTIONS ===============
     function checkRotation() {
         if (!bot.rotationState.initialBalance || bot.rotationState.initialBalance === 0) {
@@ -902,11 +944,16 @@
 
                 if (win) {
                     bot.stats.wins++;
+                    bot.stats.lastResult = 'win';
                     // Check for big win
                     TelegramAPI.sendBigWinReport(d.amount, pft, bot.currentChance);
                 } else {
                     bot.stats.loss++;
+                    bot.stats.lastResult = 'loss';
                 }
+
+                // Update streak statistics
+                updateStats();
 
                 if (bot.stats.currentBal < bot.stats.startBal) {
                     let dd = bot.stats.startBal - bot.stats.currentBal;
@@ -944,6 +991,9 @@
                     updateLogs(0, 0, 0, "🛑 STOP LOSS REACHED!", true);
                     TelegramAPI.sendStopLossReached();
                 }
+
+                // Update dashboard after each bet
+                updateDashboard();
             }
 
             if (bot.isRunning && !bot.isPaused) {
@@ -991,7 +1041,11 @@
         }
 
         logBox.prepend(entry);
-        if (logBox.children.length > 15) logBox.lastChild.remove();
+        
+        // Remove old logs only if there are too many (increased limit)
+        if (logBox.children.length > 50) {
+            logBox.removeChild(logBox.lastChild);
+        }
     }
 
     function getModeColor() {
@@ -1047,6 +1101,81 @@
         }
     }
 
+    function updateDashboard() {
+        // Update current mode
+        const currentMode = document.getElementById("current-mode");
+        if (currentMode) {
+            currentMode.textContent = bot.mode.toUpperCase();
+            if (bot.isPaused) {
+                currentMode.textContent += " (PAUSED)";
+            }
+        }
+
+        // Update dashboard stats
+        const dashboardBalance = document.getElementById("dashboard-balance");
+        if (dashboardBalance) dashboardBalance.innerText = bot.stats.currentBal.toFixed(8);
+
+        const dashboardProfit = document.getElementById("dashboard-profit");
+        if (dashboardProfit) dashboardProfit.innerText = bot.stats.profit.toFixed(8);
+
+        const profitPercent = bot.stats.startBal > 0 ? (bot.stats.profit / bot.stats.startBal * 100) : 0;
+        const dashboardProfitPct = document.getElementById("dashboard-profit-pct");
+        if (dashboardProfitPct) dashboardProfitPct.innerText = profitPercent.toFixed(2) + '%';
+
+        const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100) : 0;
+        const dashboardWinrate = document.getElementById("dashboard-winrate");
+        if (dashboardWinrate) dashboardWinrate.innerText = winRate.toFixed(2) + '%';
+
+        const dashboardWinsLosses = document.getElementById("dashboard-wins-losses");
+        if (dashboardWinsLosses) dashboardWinsLosses.innerText = `${bot.stats.wins}/${bot.stats.loss}`;
+
+        const dashboardBets = document.getElementById("dashboard-bets");
+        if (dashboardBets) dashboardBets.innerText = bot.stats.bets;
+
+        const dashboardWins = document.getElementById("dashboard-wins");
+        if (dashboardWins) dashboardWins.innerText = bot.stats.wins;
+
+        const dashboardLosses = document.getElementById("dashboard-losses");
+        if (dashboardLosses) dashboardLosses.innerText = bot.stats.loss;
+
+        const dashboardWagered = document.getElementById("dashboard-wagered");
+        if (dashboardWagered) dashboardWagered.innerText = bot.stats.wagered.toFixed(8);
+
+        const dashboardRuntime = document.getElementById("dashboard-runtime");
+        if (dashboardRuntime && bot.stats.startTime) {
+            const now = new Date();
+            const runtime = Math.floor((now - bot.stats.startTime) / 1000);
+            const hours = Math.floor(runtime / 3600);
+            const minutes = Math.floor((runtime % 3600) / 60);
+            const seconds = runtime % 60;
+            dashboardRuntime.innerText = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+        }
+
+        // Update LS/WS
+        const dashboardLsWs = document.getElementById("dashboard-lsws");
+        if (dashboardLsWs) {
+            if (bot.mode === 'labouchere') {
+                dashboardLsWs.innerText = `LS${bot.labouchere.currentLs}`;
+            } else {
+                const streakType = bot.stats.currentStreak > 0 ? 'WS' : 'LS';
+                const streakValue = Math.abs(bot.stats.currentStreak);
+                dashboardLsWs.innerText = `${streakType}${streakValue}`;
+            }
+        }
+
+        // Update currency display
+        const stCurrency = document.getElementById("st-currency");
+        if (stCurrency) stCurrency.textContent = bot.selectedCurrency.toUpperCase();
+
+        // Update account name
+        const dashboardAccount = document.getElementById("dashboard-account");
+        if (dashboardAccount) dashboardAccount.textContent = bot.stakeUser;
+
+        // Update speed display
+        const dashboardSpeed = document.getElementById("dashboard-speed");
+        if (dashboardSpeed) dashboardSpeed.textContent = bot.turboMode ? 'TURBO' : 'NORMAL';
+    }
+
     let statsInterval;
 
     function updateStatsInterval() {
@@ -1055,16 +1184,7 @@
         const interval = bot.turboMode ? bot.turboSettings.updateInterval : 1000;
 
         statsInterval = setInterval(async () => {
-            // Update current mode
-            const currentMode = document.getElementById("current-mode");
-            if (currentMode) {
-                currentMode.textContent = bot.mode.toUpperCase();
-                if (bot.isPaused) {
-                    currentMode.textContent += " (PAUSED)";
-                }
-            }
-
-            // Update balance
+            // Update balance if not in demo mode
             if (bot.isRunning && !bot.isDemo) {
                 try {
                     const newBalance = await API.getBalance(bot.selectedCurrency);
@@ -1074,74 +1194,38 @@
                 }
             }
 
-            // Update dashboard stats
+            // Update dashboard
+            updateDashboard();
+
+            // Update header balance
             const headerBalance = document.getElementById("header-balance");
             if (headerBalance) {
                 headerBalance.innerText = bot.stats.currentBal.toFixed(8);
             }
 
-            // Update dashboard stats
-            const stP = document.getElementById("st-p");
-            if (stP) {
-                const profitPercent = bot.stats.startBal > 0 ? (bot.stats.profit / bot.stats.startBal * 100) : 0;
-                const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100) : 0;
-                const ddPercent = bot.stats.startBal > 0 ? (bot.stats.maxDD / bot.stats.startBal * 100) : 0;
-
-                // Update dashboard elements
-                const dashboardBalance = document.getElementById("dashboard-balance");
-                if (dashboardBalance) dashboardBalance.innerText = bot.stats.currentBal.toFixed(8);
-
-                const dashboardProfit = document.getElementById("dashboard-profit");
-                if (dashboardProfit) dashboardProfit.innerText = bot.stats.profit.toFixed(8);
-
-                const dashboardWinrate = document.getElementById("dashboard-winrate");
-                if (dashboardWinrate) dashboardWinrate.innerText = winRate.toFixed(2) + '%';
-
-                const dashboardBets = document.getElementById("dashboard-bets");
-                if (dashboardBets) dashboardBets.innerText = bot.stats.bets;
-
-                const dashboardWins = document.getElementById("dashboard-wins");
-                if (dashboardWins) dashboardWins.innerText = bot.stats.wins;
-
-                const dashboardLosses = document.getElementById("dashboard-losses");
-                if (dashboardLosses) dashboardLosses.innerText = bot.stats.loss;
-
-                const dashboardWagered = document.getElementById("dashboard-wagered");
-                if (dashboardWagered) dashboardWagered.innerText = bot.stats.wagered.toFixed(8);
-
-                const dashboardRuntime = document.getElementById("dashboard-runtime");
-                if (dashboardRuntime && bot.stats.startTime) {
-                    const now = new Date();
-                    const runtime = Math.floor((now - bot.stats.startTime) / 1000);
-                    const hours = Math.floor(runtime / 3600);
-                    const minutes = Math.floor((runtime % 3600) / 60);
-                    const seconds = runtime % 60;
-                    dashboardRuntime.innerText = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-                }
-
-                // Update LS/WS
-                const dashboardLsWs = document.getElementById("dashboard-lsws");
-                if (dashboardLsWs) {
-                    if (bot.mode === 'labouchere') {
-                        dashboardLsWs.innerText = `LS${bot.labouchere.currentLs}`;
-                    } else {
-                        // Calculate current win/loss streak
-                        let streak = 0;
-                        // You might want to implement streak tracking
-                        dashboardLsWs.innerText = `WS${streak}`;
-                    }
-                }
-
-                if (!bot.turboMode || bot.stats.bets % 10 === 0) {
-                    updateWagerUI();
-                    updateLabouchereUI();
-                }
+            // Update other UI elements
+            if (!bot.turboMode || bot.stats.bets % 10 === 0) {
+                updateWagerUI();
+                updateLabouchereUI();
             }
         }, interval);
     }
 
     function createUI() {
         if (document.getElementById("orion-wrap")) document.getElementById("orion-wrap").remove();
+
+        // Perbaikan 1: Handle error dari external scripts
+        const originalErrorHandler = window.onerror;
+        window.onerror = function(msg, url, lineNo, columnNo, error) {
+            if (msg.includes('Insider') || msg.includes('Intercom') || msg.includes('ERR_NAME_NOT_RESOLVED')) {
+                console.log('External script error suppressed:', msg);
+                return true; // Mencegah error ditampilkan
+            }
+            if (originalErrorHandler) {
+                return originalErrorHandler.call(this, msg, url, lineNo, columnNo, error);
+            }
+            return false;
+        };
 
         const s = document.createElement("style");
         s.innerHTML = `
@@ -1169,10 +1253,14 @@
                 --gray: #64748b;
                 --border: #334155;
                 --card-bg: rgba(30, 41, 59, 0.95);
+                --license-expired: #ef4444;
+                --license-active: #10b981;
             }
             
             * {
                 box-sizing: border-box;
+                margin: 0;
+                padding: 0;
             }
             
             #orion-wrap {
@@ -1189,6 +1277,7 @@
                 display: flex;
                 flex-direction: column;
                 overflow: hidden;
+                font-family: 'Inter', sans-serif;
             }
             
             .header {
@@ -1199,6 +1288,7 @@
                 position: sticky;
                 top: 0;
                 z-index: 100;
+                backdrop-filter: blur(10px);
             }
             
             .header-top {
@@ -1209,11 +1299,32 @@
             }
             
             .app-title {
-                font-size: 18px;
+                font-size: 16px;
                 font-weight: 700;
                 background: linear-gradient(135deg, #fff 0%, #93c5fd 100%);
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            
+            .license-badge {
+                font-size: 10px;
+                padding: 2px 6px;
+                border-radius: 4px;
+                font-weight: 600;
+                background: ${CONFIG.license.isValid() ? 'var(--license-active)' : 'var(--license-expired)'};
+                color: white;
+            }
+            
+            .telegram-status {
+                font-size: 10px;
+                padding: 2px 6px;
+                border-radius: 4px;
+                font-weight: 600;
+                background: ${CONFIG.telegram.enabled ? 'var(--telegram)' : 'var(--gray)'};
+                color: white;
             }
             
             .header-controls {
@@ -1233,6 +1344,11 @@
                 justify-content: center;
                 font-size: 14px;
                 cursor: pointer;
+                transition: all 0.2s;
+            }
+            
+            .control-btn:hover {
+                background: rgba(255, 255, 255, 0.2);
             }
             
             .tabs-wrapper {
@@ -1270,6 +1386,11 @@
                 align-items: center;
                 justify-content: center;
                 min-width: 0;
+                transition: all 0.2s;
+            }
+            
+            .tab:hover {
+                color: var(--light);
             }
             
             .tab.active {
@@ -1283,11 +1404,11 @@
                 overflow-y: auto;
                 padding: 16px;
                 -webkit-overflow-scrolling: touch;
+                flex-direction: column;
             }
             
             .tab-content.active {
                 display: flex;
-                flex-direction: column;
             }
             
             /* DASHBOARD STYLES */
@@ -1303,6 +1424,12 @@
                 border-radius: 12px;
                 padding: 16px;
                 border: 1px solid var(--border);
+                backdrop-filter: blur(10px);
+                transition: transform 0.2s;
+            }
+            
+            .dashboard-card:hover {
+                transform: translateY(-2px);
             }
             
             .dashboard-card-title {
@@ -1319,12 +1446,14 @@
                 font-weight: 700;
                 color: var(--light);
                 font-family: 'Courier New', monospace;
+                line-height: 1.2;
             }
             
             .dashboard-card-small {
                 font-size: 10px;
                 color: var(--gray);
                 margin-top: 4px;
+                font-weight: 500;
             }
             
             .account-info {
@@ -1333,6 +1462,7 @@
                 padding: 16px;
                 margin-bottom: 12px;
                 border: 1px solid var(--border);
+                backdrop-filter: blur(10px);
             }
             
             .account-row {
@@ -1340,17 +1470,27 @@
                 justify-content: space-between;
                 align-items: center;
                 margin-bottom: 12px;
+                padding-bottom: 8px;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            }
+            
+            .account-row:last-child {
+                margin-bottom: 0;
+                padding-bottom: 0;
+                border-bottom: none;
             }
             
             .account-label {
                 font-size: 12px;
                 color: var(--gray);
+                font-weight: 500;
             }
             
             .account-value {
                 font-size: 13px;
                 font-weight: 600;
                 color: var(--light);
+                font-family: 'Courier New', monospace;
             }
             
             .mode-selector {
@@ -1360,6 +1500,7 @@
                 padding: 4px;
                 margin-bottom: 12px;
                 border: 1px solid var(--border);
+                backdrop-filter: blur(10px);
             }
             
             .mode-btn {
@@ -1373,6 +1514,12 @@
                 background: transparent;
                 color: var(--gray);
                 text-align: center;
+                transition: all 0.2s;
+            }
+            
+            .mode-btn:hover {
+                color: var(--light);
+                background: rgba(255, 255, 255, 0.05);
             }
             
             .mode-btn.active {
@@ -1386,6 +1533,7 @@
                 padding: 16px;
                 margin-bottom: 12px;
                 border: 1px solid var(--border);
+                backdrop-filter: blur(10px);
             }
             
             .control-buttons {
@@ -1413,6 +1561,12 @@
                 white-space: nowrap;
                 overflow: hidden;
                 text-overflow: ellipsis;
+                transition: all 0.2s;
+            }
+            
+            .control-button:hover {
+                transform: translateY(-2px);
+                filter: brightness(1.1);
             }
             
             .btn-start {
@@ -1443,11 +1597,17 @@
                 background: rgba(15, 23, 42, 0.6);
                 border-radius: 8px;
                 border: 1px solid var(--border);
+                margin-bottom: 8px;
+            }
+            
+            .speed-control:last-child {
+                margin-bottom: 0;
             }
             
             .speed-label {
                 font-size: 12px;
                 color: var(--gray);
+                font-weight: 500;
             }
             
             .speed-value {
@@ -1457,6 +1617,7 @@
                 font-family: 'Courier New', monospace;
             }
             
+            /* LIVE LOGS IMPROVEMENTS */
             .live-logs {
                 background: var(--card-bg);
                 border-radius: 12px;
@@ -1465,8 +1626,31 @@
                 flex: 1;
                 display: flex;
                 flex-direction: column;
-                min-height: 200px;
-                max-height: 300px;
+                min-height: 300px;
+                max-height: 400px;
+                backdrop-filter: blur(10px);
+            }
+            
+            .live-logs-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 12px;
+            }
+            
+            .clear-logs-btn {
+                background: rgba(255, 255, 255, 0.1);
+                border: 1px solid var(--border);
+                color: var(--light);
+                padding: 4px 8px;
+                border-radius: 4px;
+                font-size: 10px;
+                cursor: pointer;
+                transition: all 0.2s;
+            }
+            
+            .clear-logs-btn:hover {
+                background: rgba(255, 255, 255, 0.2);
             }
             
             .logs-container {
@@ -1477,12 +1661,44 @@
                 border-radius: 8px;
                 padding: 12px;
                 font-family: 'Courier New', monospace;
-                font-size: 11px;
+                font-size: 12px;
+                line-height: 1.4;
             }
             
             .log-entry {
-                padding: 6px 0;
+                padding: 8px 0;
                 border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+                word-break: break-word;
+                display: flex;
+                align-items: flex-start;
+                gap: 8px;
+            }
+            
+            .log-entry:last-child {
+                border-bottom: none;
+            }
+            
+            .log-time {
+                color: var(--gray);
+                font-size: 10px;
+                min-width: 45px;
+                flex-shrink: 0;
+            }
+            
+            .log-amount, .log-profit, .log-chance {
+                font-weight: 600;
+            }
+            
+            .mode-badge {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                padding: 1px 4px;
+                border-radius: 3px;
+                font-size: 9px;
+                font-weight: 700;
+                margin-right: 6px;
+                flex-shrink: 0;
             }
             
             /* SETTINGS STYLES */
@@ -1492,6 +1708,7 @@
                 padding: 16px;
                 margin-bottom: 12px;
                 border: 1px solid var(--border);
+                backdrop-filter: blur(10px);
             }
             
             .section-title {
@@ -1536,11 +1753,13 @@
                 font-size: 13px;
                 font-family: 'Courier New', monospace;
                 height: 40px;
+                transition: all 0.2s;
             }
             
             .input-field:focus {
                 outline: none;
                 border-color: var(--primary);
+                box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
             }
             
             .select-field {
@@ -1554,6 +1773,13 @@
                 font-family: 'Inter', sans-serif;
                 cursor: pointer;
                 height: 40px;
+                transition: all 0.2s;
+            }
+            
+            .select-field:focus {
+                outline: none;
+                border-color: var(--primary);
+                box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
             }
             
             .toggle-group {
@@ -1591,6 +1817,7 @@
                 bottom: 0;
                 background-color: var(--border);
                 border-radius: 34px;
+                transition: .4s;
             }
             
             .toggle-slider:before {
@@ -1602,6 +1829,7 @@
                 bottom: 3px;
                 background-color: white;
                 border-radius: 50%;
+                transition: .4s;
             }
             
             input:checked + .toggle-slider {
@@ -1641,6 +1869,12 @@
                 display: flex;
                 align-items: center;
                 justify-content: center;
+                transition: all 0.2s;
+            }
+            
+            .radio-label:hover {
+                color: var(--light);
+                background: rgba(255, 255, 255, 0.05);
             }
             
             .radio-item input[type="radio"]:checked + .radio-label {
@@ -1669,6 +1903,11 @@
                 border-radius: 8px;
                 padding: 10px;
                 text-align: center;
+                transition: all 0.2s;
+            }
+            
+            .chance-level-card:hover {
+                transform: translateY(-2px);
             }
             
             .chance-level-card.active {
@@ -1701,6 +1940,7 @@
                 padding: 16px;
                 margin-bottom: 12px;
                 border: 1px solid var(--border);
+                backdrop-filter: blur(10px);
             }
             
             .telegram-test-btn {
@@ -1718,6 +1958,12 @@
                 align-items: center;
                 justify-content: center;
                 gap: 8px;
+                transition: all 0.2s;
+            }
+            
+            .telegram-test-btn:hover {
+                transform: translateY(-2px);
+                filter: brightness(1.1);
             }
             
             .support-link {
@@ -1739,8 +1985,10 @@
             
             .support-link:hover {
                 background: rgba(15, 23, 42, 0.8);
+                transform: translateY(-2px);
             }
             
+            /* RESPONSIVE DESIGN */
             @media (min-width: 768px) {
                 #orion-wrap {
                     top: 20px;
@@ -1751,10 +1999,24 @@
                     height: calc(100% - 40px);
                     border-radius: 16px;
                     border: 1px solid var(--border);
+                    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
                 }
                 
                 .dashboard-grid {
                     grid-template-columns: repeat(4, 1fr);
+                }
+                
+                .live-logs {
+                    min-height: 400px;
+                    max-height: 500px;
+                }
+                
+                .logs-container {
+                    font-size: 13px;
+                }
+                
+                .app-title {
+                    font-size: 18px;
                 }
             }
             
@@ -1766,16 +2028,65 @@
                 .control-buttons {
                     grid-template-columns: repeat(2, 1fr);
                 }
+                
+                .grid-2 {
+                    grid-template-columns: 1fr;
+                }
+                
+                .logs-container {
+                    font-size: 11px;
+                }
+            }
+            
+            @media (min-width: 1024px) {
+                .dashboard-grid {
+                    grid-template-columns: repeat(4, 1fr);
+                }
+                
+                .control-buttons {
+                    grid-template-columns: repeat(4, 1fr);
+                }
+            }
+            
+            /* SCROLLBAR STYLES */
+            ::-webkit-scrollbar {
+                width: 8px;
+                height: 8px;
+            }
+            
+            ::-webkit-scrollbar-track {
+                background: rgba(255, 255, 255, 0.05);
+                border-radius: 4px;
+            }
+            
+            ::-webkit-scrollbar-thumb {
+                background: var(--primary);
+                border-radius: 4px;
+            }
+            
+            ::-webkit-scrollbar-thumb:hover {
+                background: var(--primary-dark);
             }
         `;
         document.head.appendChild(s);
 
+        // Get expiry date info
+        const expiryDate = CONFIG.license.expiryDate;
+        const daysRemaining = Math.ceil((expiryDate - new Date()) / (1000 * 60 * 60 * 24));
+        const licenseStatus = CONFIG.license.isValid() ? 'ACTIVE' : 'EXPIRED';
+        const licenseText = CONFIG.license.isValid() 
+            ? `Expires: ${expiryDate.toLocaleDateString()} (${daysRemaining} days)` 
+            : 'LICENSE EXPIRED';
+
+        // Perbaikan 2: Pastikan semua elemen HTML yang direferensi ada
         const d = document.createElement("div");
         d.id = "orion-wrap";
         d.innerHTML = `
             <div class="header">
                 <div class="header-top">
-                    <div class="app-title">ORION v8.1 
+                    <div class="app-title">
+                        ORION v8.1
+                        <span class="license-badge" title="${licenseText}">${licenseStatus}</span>
                         <span class="telegram-status ${CONFIG.telegram.enabled ? 'enabled' : 'disabled'}">
                             ${CONFIG.telegram.enabled ? '📱 TG ON' : '📱 TG OFF'}
                         </span>
@@ -1826,11 +2137,21 @@
                     </div>
                     <div class="account-row">
                         <div class="account-label">License</div>
-                        <div class="account-value">ORION v8.1</div>
+                        <div class="account-value" style="color: ${CONFIG.license.isValid() ? 'var(--license-active)' : 'var(--license-expired)'}">
+                            ${licenseStatus} - ${licenseText}
+                        </div>
                     </div>
                     <div class="account-row">
                         <div class="account-label">Current Mode</div>
                         <div class="account-value" id="current-mode">${bot.mode.toUpperCase()}</div>
+                    </div>
+                    <div class="account-row">
+                        <div class="account-label">Runtime</div>
+                        <div class="account-value" id="dashboard-runtime">00:00:00</div>
+                    </div>
+                    <div class="account-row">
+                        <div class="account-label">Wagered</div>
+                        <div class="account-value" id="dashboard-wagered">0.00000000</div>
                     </div>
                 </div>
                 
@@ -1860,7 +2181,10 @@
                 </div>
                 
                 <div class="live-logs">
-                    <div class="section-title">Live Logs</div>
+                    <div class="live-logs-header">
+                        <div class="section-title">Live Logs</div>
+                        <button class="clear-logs-btn" id="clear-logs">Clear Logs</button>
+                    </div>
                     <div class="logs-container" id="p-logs">
                         <div style="color: var(--gray); text-align: center; padding: 40px 0; font-style: italic;">
                             Waiting for engine start...
@@ -2147,20 +2471,43 @@
         `;
         document.body.appendChild(d);
 
-        // Event Listeners
+        // Initialize dashboard
+        updateDashboard();
+
+        // Perbaikan 3: Pastikan semua event listener terpasang dengan aman
+        function safeAddEventListener(element, event, handler) {
+            if (element && typeof element.addEventListener === 'function') {
+                element.addEventListener(event, handler);
+            }
+        }
+
+        // Clear logs button
+        const clearLogsBtn = document.getElementById('clear-logs');
+        if (clearLogsBtn) {
+            safeAddEventListener(clearLogsBtn, 'click', () => {
+                const logBox = document.getElementById("p-logs");
+                if (logBox) {
+                    logBox.innerHTML = '<div style="color: var(--gray); text-align: center; padding: 40px 0; font-style: italic;">Logs cleared</div>';
+                }
+                updateLogs(0, 0, 0, "Logs cleared", true);
+            });
+        }
+
+        // Tab navigation
         document.querySelectorAll('.tab').forEach(tab => {
-            tab.addEventListener('click', () => {
+            safeAddEventListener(tab, 'click', () => {
                 document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
                 document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
                 tab.classList.add('active');
                 const tabId = tab.dataset.tab;
-                document.getElementById(`tab-${tabId}`).classList.add('active');
+                const content = document.getElementById(`tab-${tabId}`);
+                if (content) content.classList.add('active');
             });
         });
 
         // Mode selector
         document.querySelectorAll('.mode-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
+            safeAddEventListener(btn, 'click', () => {
                 document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 const newMode = btn.dataset.mode;
@@ -2192,17 +2539,18 @@
                 bot.selectedCurrency = savedCurrency;
             }
 
-            pCurrency.onchange = (e) => {
+            safeAddEventListener(pCurrency, 'change', (e) => {
                 const newCurrency = e.target.value;
                 bot.selectedCurrency = newCurrency;
-                document.getElementById("st-currency").textContent = newCurrency.toUpperCase();
+                const stCurrency = document.getElementById("st-currency");
+                if (stCurrency) stCurrency.textContent = newCurrency.toUpperCase();
                 localStorage.setItem('orion_selected_currency', newCurrency);
-            };
+            });
         }
 
         // Basebet mode radio buttons
         document.querySelectorAll('input[name="basebet-mode"]').forEach(radio => {
-            radio.addEventListener('change', (e) => {
+            safeAddEventListener(radio, 'change', (e) => {
                 bot.wagerStats.basebetMode = e.target.value;
                 const input = document.getElementById('w-basebet-input');
                 const label = document.getElementById('basebet-label');
@@ -2225,287 +2573,363 @@
         });
 
         // Basebet input
-        document.getElementById('w-basebet-input').addEventListener('change', (e) => {
-            const value = parseFloat(e.target.value) || 0;
-            if (bot.wagerStats.basebetMode === 'percentage') {
-                bot.wagerStats.basebetPercentage = value;
-                if (value < 0.1) e.target.value = 0.1;
-                if (value > 10) e.target.value = 10;
-            } else {
-                bot.wagerStats.basebetFixed = value;
-                if (value < 0.00000001) e.target.value = 0.00000001;
-                e.target.value = value.toFixed(8);
-            }
-        });
+        const wBasebetInput = document.getElementById('w-basebet-input');
+        if (wBasebetInput) {
+            safeAddEventListener(wBasebetInput, 'change', (e) => {
+                const value = parseFloat(e.target.value) || 0;
+                if (bot.wagerStats.basebetMode === 'percentage') {
+                    bot.wagerStats.basebetPercentage = value;
+                    if (value < 0.1) e.target.value = 0.1;
+                    if (value > 10) e.target.value = 10;
+                } else {
+                    bot.wagerStats.basebetFixed = value;
+                    if (value < 0.00000001) e.target.value = 0.00000001;
+                    e.target.value = value.toFixed(8);
+                }
+            });
+        }
 
         // Orion method radio buttons
         document.querySelectorAll('input[name="orion-method"]').forEach(radio => {
-            radio.addEventListener('change', (e) => {
+            safeAddEventListener(radio, 'change', (e) => {
                 bot.orionSettings.method = e.target.value;
                 const martingaleDiv = document.getElementById("martingale-multiplier");
-                if (e.target.value === "martingale") {
-                    martingaleDiv.style.display = "block";
-                } else {
-                    martingaleDiv.style.display = "none";
+                if (martingaleDiv) {
+                    if (e.target.value === "martingale") {
+                        martingaleDiv.style.display = "block";
+                    } else {
+                        martingaleDiv.style.display = "none";
+                    }
                 }
             });
         });
 
         // Telegram Settings
-        document.getElementById('telegram-enable').addEventListener('change', (e) => {
-            CONFIG.telegram.enabled = e.target.checked;
-            document.querySelector('.telegram-status').className = 
-                `telegram-status ${CONFIG.telegram.enabled ? 'enabled' : 'disabled'}`;
-            document.querySelector('.telegram-status').textContent = 
-                CONFIG.telegram.enabled ? '📱 TG ON' : '📱 TG OFF';
-        });
-
-        document.getElementById('telegram-token').addEventListener('change', (e) => {
-            CONFIG.telegram.botToken = e.target.value;
-        });
-
-        document.getElementById('telegram-chatid').addEventListener('change', (e) => {
-            CONFIG.telegram.chatId = e.target.value;
-        });
-
-        document.getElementById('telegram-interval').addEventListener('change', (e) => {
-            CONFIG.telegram.reportInterval = parseInt(e.target.value);
-        });
-
-        document.getElementById('telegram-bigwin').addEventListener('change', (e) => {
-            CONFIG.telegram.bigWinThreshold = parseFloat(e.target.value);
-        });
-
-        // Test Telegram button
-        document.getElementById('telegram-test').addEventListener('click', async () => {
-            const testMessage = `🔔 <b>ORION BOT TEST MESSAGE</b>\n` +
-                `══════════════════\n` +
-                `✅ Telegram is working properly!\n` +
-                `👤 User: <code>${bot.stakeUser}</code>\n` +
-                `🤖 Bot: <code>ORION v8.1</code>\n` +
-                `⏰ Time: ${new Date().toLocaleString()}\n` +
-                `══════════════════\n` +
-                `🎉 If you see this message, Telegram notifications are configured correctly!`;
-
-            try {
-                await TelegramAPI.sendMessage(testMessage);
-                updateLogs(0, 0, 0, "✅ Telegram test message sent successfully!", true);
-            } catch (error) {
-                updateLogs(0, 0, 0, `❌ Telegram test failed: ${error.message}`, true);
-            }
-        });
-
-        // Mode toggles
-        document.getElementById('mode-wager').addEventListener('change', (e) => {
-            bot.enabledModes.wager = e.target.checked;
-        });
-
-        document.getElementById('mode-labouchere').addEventListener('change', (e) => {
-            bot.enabledModes.labouchere = e.target.checked;
-        });
-
-        document.getElementById('mode-orion').addEventListener('change', (e) => {
-            bot.enabledModes.orion = e.target.checked;
-        });
-
-        // Turbo toggle
-        document.getElementById('p-turbo-toggle').addEventListener('change', (e) => {
-            bot.turboMode = e.target.checked;
-            const turboSettings = document.getElementById('turbo-settings');
-            if (turboSettings) {
-                turboSettings.style.display = e.target.checked ? 'grid' : 'none';
-            }
-            document.getElementById('dashboard-speed').textContent = bot.turboMode ? 'TURBO' : 'NORMAL';
-            updateStatsInterval();
-            updateLogs(0, 0, 0, `Turbo Mode ${bot.turboMode ? 'ENABLED 🚀' : 'DISABLED'}`, true);
-        });
-
-        // Demo mode toggle
-        document.getElementById('p-demo-toggle').addEventListener('change', (e) => {
-            bot.isDemo = e.target.checked;
-            updateLogs(0, 0, 0, `Demo Mode ${bot.isDemo ? 'ENABLED' : 'DISABLED'}`, true);
-        });
-
-        // Start button
-        document.getElementById("p-start").onclick = async () => {
-            if (bot.isRunning) return;
-
-            if (!bot.isDemo) {
-                try {
-                    bot.token = localStorage.getItem('apitoken') || (document.cookie.match(/session=([^;]+)/) ? document.cookie.match(/session=([^;]+)/)[1] : null);
-                    const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json",
-                            "x-access-token": bot.token
-                        },
-                        body: JSON.stringify({
-                            query: `query{user{name balances{available{amount currency}}}}`
-                        })
-                    });
-                    const json = await res.json();
-                    if (json?.data?.user) {
-                        bot.stakeUser = json.data.user.name;
-                        document.getElementById("dashboard-account").textContent = bot.stakeUser;
-
-                        const bals = json.data.user.balances || [];
-                        const sel = document.getElementById("p-currency");
-                        if (sel) {
-                            const currentSelection = sel.value;
-                            sel.innerHTML = '';
-
-                            bals.forEach(b => {
-                                const currency = b.available.currency.toLowerCase();
-                                const opt = new Option(currency.toUpperCase(), currency);
-                                sel.add(opt);
-                            });
-
-                            const availableCurrencies = bals.map(b => b.available.currency.toLowerCase());
-                            if (availableCurrencies.includes(currentSelection)) {
-                                sel.value = currentSelection;
-                                bot.selectedCurrency = currentSelection;
-                            } else if (availableCurrencies.includes('doge')) {
-                                sel.value = 'doge';
-                                bot.selectedCurrency = 'doge';
-                            } else if (bals.length > 0) {
-                                sel.value = bals[0].available.currency.toLowerCase();
-                                bot.selectedCurrency = sel.value;
-                            }
-                        }
-                    }
-                } catch (e) {
-                    console.log("Sync error:", e);
-                }
-            }
-
-            bot.isRunning = true;
-            bot.isPaused = false;
-
-            const startBtn = document.getElementById("p-start");
-            startBtn.innerHTML = '⚡ RUNNING';
-            startBtn.classList.remove('btn-start');
-            startBtn.classList.add('btn-success');
-
-            bot.stats = {
-                profit: 0, wagered: 0, startBal: 0, currentBal: 0,
-                bets: 0, wins: 0, loss: 0, startTime: Date.now(),
-                maxDD: 0, maxDDPerc: 0, lastBigWinTime: 0
-            };
-
-            if (!bot.isDemo) {
-                bot.stats.startBal = await API.getBalance(bot.selectedCurrency);
-            } else {
-                bot.stats.startBal = 100.0;
-            }
-
-            bot.stats.currentBal = bot.stats.startBal;
-            bot.rotationState.initialBalance = bot.stats.startBal;
-            bot.mode = determineStartingMode();
-
-            // Update mode selector
-            document.querySelectorAll('.mode-btn').forEach(btn => {
-                btn.classList.remove('active');
-                if (btn.dataset.mode === bot.mode) {
-                    btn.classList.add('active');
+        const telegramEnable = document.getElementById('telegram-enable');
+        if (telegramEnable) {
+            safeAddEventListener(telegramEnable, 'change', (e) => {
+                CONFIG.telegram.enabled = e.target.checked;
+                const telegramStatus = document.querySelector('.telegram-status');
+                if (telegramStatus) {
+                    telegramStatus.className = `telegram-status ${CONFIG.telegram.enabled ? 'enabled' : 'disabled'}`;
+                    telegramStatus.textContent = CONFIG.telegram.enabled ? '📱 TG ON' : '📱 TG OFF';
                 }
             });
+        }
 
-            const targetPct = document.getElementById("p-target-pct");
-            const stopPct = document.getElementById("p-stop-pct");
-            if (targetPct && stopPct) {
-                bot.targetAbs = bot.stats.startBal * (parseFloat(targetPct.value) / 100);
-                bot.stopLossAbs = bot.stats.startBal * (parseFloat(stopPct.value) / 100);
-            }
+        const telegramToken = document.getElementById('telegram-token');
+        if (telegramToken) {
+            safeAddEventListener(telegramToken, 'change', (e) => {
+                CONFIG.telegram.botToken = e.target.value;
+            });
+        }
 
-            bot.perStep = bot.targetAbs / bot.rotationState.stepLimit;
+        const telegramChatId = document.getElementById('telegram-chatid');
+        if (telegramChatId) {
+            safeAddEventListener(telegramChatId, 'change', (e) => {
+                CONFIG.telegram.chatId = e.target.value;
+            });
+        }
 
-            if (bot.mode === 'wager') initWagerMode();
-            else if (bot.mode === 'labouchere') initLabouchere();
-            else if (bot.mode === 'orion') setNewBaseChance();
+        const telegramInterval = document.getElementById('telegram-interval');
+        if (telegramInterval) {
+            safeAddEventListener(telegramInterval, 'change', (e) => {
+                CONFIG.telegram.reportInterval = parseInt(e.target.value);
+            });
+        }
 
-            updateStatsInterval();
-            updateLogs(0, 0, 0, `Started in ${bot.mode.toUpperCase()} mode. Balance: ${bot.stats.startBal.toFixed(8)} (${bot.selectedCurrency.toUpperCase()})`, true);
-            
-            if (CONFIG.telegram.enabled && CONFIG.telegram.sendOnStart) {
-                TelegramAPI.sendStartReport();
-            }
-            
-            runLoop();
-        };
+        const telegramBigwin = document.getElementById('telegram-bigwin');
+        if (telegramBigwin) {
+            safeAddEventListener(telegramBigwin, 'change', (e) => {
+                CONFIG.telegram.bigWinThreshold = parseFloat(e.target.value);
+            });
+        }
 
-        // Pause button
-        document.getElementById("p-pause").onclick = () => {
-            if (!bot.isRunning) return;
-            bot.isPaused = !bot.isPaused;
-            const pauseBtn = document.getElementById("p-pause");
-            if (bot.isPaused) {
-                pauseBtn.innerHTML = '▶ RESUME';
-                pauseBtn.classList.remove('btn-pause');
-                pauseBtn.classList.add('btn-success');
-                updateLogs(0, 0, 0, "Bot PAUSED", true);
-            } else {
-                pauseBtn.innerHTML = '⏸ PAUSE';
-                pauseBtn.classList.remove('btn-success');
-                pauseBtn.classList.add('btn-pause');
-                updateLogs(0, 0, 0, "Bot RESUMED", true);
-                runLoop();
-            }
-        };
+        // Test Telegram button
+        const telegramTest = document.getElementById('telegram-test');
+        if (telegramTest) {
+            safeAddEventListener(telegramTest, 'click', async () => {
+                const testMessage = `🔔 <b>ORION BOT TEST MESSAGE</b>\n` +
+                    `══════════════════\n` +
+                    `✅ Telegram is working properly!\n` +
+                    `👤 User: <code>${bot.stakeUser}</code>\n` +
+                    `🤖 Bot: <code>ORION v8.1</code>\n` +
+                    `⏰ Time: ${new Date().toLocaleString()}\n` +
+                    `══════════════════\n` +
+                    `🎉 If you see this message, Telegram notifications are configured correctly!`;
 
-        // Stop button
-        document.getElementById("p-stop").onclick = () => {
-            bot.isRunning = false;
-            bot.isPaused = false;
-            const startBtn = document.getElementById("p-start");
-            startBtn.innerHTML = '▶ START';
-            startBtn.classList.remove('btn-success');
-            startBtn.classList.add('btn-start');
-            if (statsInterval) clearInterval(statsInterval);
-            updateLogs(0, 0, 0, "Bot STOPPED", true);
-            
-            if (CONFIG.telegram.enabled && CONFIG.telegram.sendOnStop) {
-                TelegramAPI.sendStopReport("Manual Stop");
-            }
-        };
+                try {
+                    await TelegramAPI.sendMessage(testMessage);
+                    updateLogs(0, 0, 0, "✅ Telegram test message sent successfully!", true);
+                } catch (error) {
+                    updateLogs(0, 0, 0, `❌ Telegram test failed: ${error.message}`, true);
+                }
+            });
+        }
 
-        // Turbo button
-        document.getElementById("p-turbo").onclick = () => {
-            bot.turboMode = !bot.turboMode;
-            document.getElementById("p-turbo-toggle").checked = bot.turboMode;
-            const turboSettings = document.getElementById('turbo-settings');
-            if (turboSettings) {
-                turboSettings.style.display = bot.turboMode ? 'grid' : 'none';
-            }
-            document.getElementById('dashboard-speed').textContent = bot.turboMode ? 'TURBO' : 'NORMAL';
-            updateStatsInterval();
-            updateLogs(0, 0, 0, `Turbo Mode ${bot.turboMode ? 'ENABLED 🚀' : 'DISABLED'}`, true);
-        };
+        // Mode toggles
+        const modeWager = document.getElementById('mode-wager');
+        if (modeWager) {
+            safeAddEventListener(modeWager, 'change', (e) => {
+                bot.enabledModes.wager = e.target.checked;
+            });
+        }
 
-        // Control buttons
-        document.querySelector('.control-btn.minimize').addEventListener('click', () => {
-            bot.minimized = !bot.minimized;
-            const content = document.querySelectorAll('.tab-content');
-            if (bot.minimized) {
-                content.forEach(el => el.style.display = 'none');
-                updateLogs(0, 0, 0, "Bot minimized - Running in background", true);
-            } else {
-                content.forEach(el => {
-                    if (el.classList.contains('active')) {
-                        el.style.display = 'flex';
+        const modeLabouchere = document.getElementById('mode-labouchere');
+        if (modeLabouchere) {
+            safeAddEventListener(modeLabouchere, 'change', (e) => {
+                bot.enabledModes.labouchere = e.target.checked;
+            });
+        }
+
+        const modeOrion = document.getElementById('mode-orion');
+        if (modeOrion) {
+            safeAddEventListener(modeOrion, 'change', (e) => {
+                bot.enabledModes.orion = e.target.checked;
+            });
+        }
+
+        // Turbo toggle
+        const turboToggle = document.getElementById('p-turbo-toggle');
+        if (turboToggle) {
+            safeAddEventListener(turboToggle, 'change', (e) => {
+                bot.turboMode = e.target.checked;
+                const turboSettings = document.getElementById('turbo-settings');
+                if (turboSettings) {
+                    turboSettings.style.display = e.target.checked ? 'grid' : 'none';
+                }
+                const dashboardSpeed = document.getElementById('dashboard-speed');
+                if (dashboardSpeed) dashboardSpeed.textContent = bot.turboMode ? 'TURBO' : 'NORMAL';
+                updateStatsInterval();
+                updateLogs(0, 0, 0, `Turbo Mode ${bot.turboMode ? 'ENABLED 🚀' : 'DISABLED'}`, true);
+            });
+        }
+
+        // Demo mode toggle
+        const demoToggle = document.getElementById('p-demo-toggle');
+        if (demoToggle) {
+            safeAddEventListener(demoToggle, 'change', (e) => {
+                bot.isDemo = e.target.checked;
+                updateLogs(0, 0, 0, `Demo Mode ${bot.isDemo ? 'ENABLED' : 'DISABLED'}`, true);
+            });
+        }
+
+        // Start button
+        const pStart = document.getElementById("p-start");
+        if (pStart) {
+            pStart.onclick = async () => {
+                if (bot.isRunning) return;
+
+                // Check license
+                if (!CONFIG.license.isValid() && !bot.isDemo) {
+                    alert(`License has expired! Please renew your license.\nExpiry Date: ${CONFIG.license.expiryDate.toLocaleDateString()}`);
+                    return;
+                }
+
+                if (!bot.isDemo) {
+                    try {
+                        bot.token = localStorage.getItem('apitoken') || (document.cookie.match(/session=([^;]+)/) ? document.cookie.match(/session=([^;]+)/)[1] : null);
+                        const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json",
+                                "x-access-token": bot.token
+                            },
+                            body: JSON.stringify({
+                                query: `query{user{name balances{available{amount currency}}}}`
+                            })
+                        });
+                        const json = await res.json();
+                        if (json?.data?.user) {
+                            bot.stakeUser = json.data.user.name;
+                            const dashboardAccount = document.getElementById("dashboard-account");
+                            if (dashboardAccount) dashboardAccount.textContent = bot.stakeUser;
+
+                            const bals = json.data.user.balances || [];
+                            const sel = document.getElementById("p-currency");
+                            if (sel) {
+                                const currentSelection = sel.value;
+                                sel.innerHTML = '';
+
+                                bals.forEach(b => {
+                                    const currency = b.available.currency.toLowerCase();
+                                    const opt = new Option(currency.toUpperCase(), currency);
+                                    sel.add(opt);
+                                });
+
+                                const availableCurrencies = bals.map(b => b.available.currency.toLowerCase());
+                                if (availableCurrencies.includes(currentSelection)) {
+                                    sel.value = currentSelection;
+                                    bot.selectedCurrency = currentSelection;
+                                } else if (availableCurrencies.includes('doge')) {
+                                    sel.value = 'doge';
+                                    bot.selectedCurrency = 'doge';
+                                } else if (bals.length > 0) {
+                                    sel.value = bals[0].available.currency.toLowerCase();
+                                    bot.selectedCurrency = sel.value;
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        console.log("Sync error:", e);
+                    }
+                }
+
+                bot.isRunning = true;
+                bot.isPaused = false;
+
+                const startBtn = document.getElementById("p-start");
+                if (startBtn) {
+                    startBtn.innerHTML = '⚡ RUNNING';
+                    startBtn.classList.remove('btn-start');
+                    startBtn.classList.add('btn-success');
+                }
+
+                bot.stats = {
+                    profit: 0, wagered: 0, startBal: 0, currentBal: 0,
+                    bets: 0, wins: 0, loss: 0, startTime: Date.now(),
+                    maxDD: 0, maxDDPerc: 0, lastBigWinTime: 0,
+                    currentStreak: 0, maxWinStreak: 0, maxLossStreak: 0,
+                    lastResult: null
+                };
+
+                if (!bot.isDemo) {
+                    bot.stats.startBal = await API.getBalance(bot.selectedCurrency);
+                } else {
+                    bot.stats.startBal = 100.0;
+                }
+
+                bot.stats.currentBal = bot.stats.startBal;
+                bot.rotationState.initialBalance = bot.stats.startBal;
+                bot.mode = determineStartingMode();
+
+                // Update mode selector
+                document.querySelectorAll('.mode-btn').forEach(btn => {
+                    btn.classList.remove('active');
+                    if (btn.dataset.mode === bot.mode) {
+                        btn.classList.add('active');
                     }
                 });
-            }
-        });
 
-        document.querySelector('.control-btn.close').addEventListener('click', () => {
-            if (bot.isRunning) {
-                if (confirm("Bot is still running. Are you sure you want to close?")) {
+                const targetPct = document.getElementById("p-target-pct");
+                const stopPct = document.getElementById("p-stop-pct");
+                if (targetPct && stopPct) {
+                    bot.targetAbs = bot.stats.startBal * (parseFloat(targetPct.value) / 100);
+                    bot.stopLossAbs = bot.stats.startBal * (parseFloat(stopPct.value) / 100);
+                }
+
+                bot.perStep = bot.targetAbs / bot.rotationState.stepLimit;
+
+                if (bot.mode === 'wager') initWagerMode();
+                else if (bot.mode === 'labouchere') initLabouchere();
+                else if (bot.mode === 'orion') setNewBaseChance();
+
+                updateStatsInterval();
+                updateDashboard();
+                updateLogs(0, 0, 0, `Started in ${bot.mode.toUpperCase()} mode. Balance: ${bot.stats.startBal.toFixed(8)} (${bot.selectedCurrency.toUpperCase()})`, true);
+                
+                if (CONFIG.telegram.enabled && CONFIG.telegram.sendOnStart) {
+                    TelegramAPI.sendStartReport();
+                }
+                
+                runLoop();
+            };
+        }
+
+        // Pause button
+        const pPause = document.getElementById("p-pause");
+        if (pPause) {
+            pPause.onclick = () => {
+                if (!bot.isRunning) return;
+                bot.isPaused = !bot.isPaused;
+                const pauseBtn = document.getElementById("p-pause");
+                if (pauseBtn) {
+                    if (bot.isPaused) {
+                        pauseBtn.innerHTML = '▶ RESUME';
+                        pauseBtn.classList.remove('btn-pause');
+                        pauseBtn.classList.add('btn-success');
+                        updateLogs(0, 0, 0, "Bot PAUSED", true);
+                    } else {
+                        pauseBtn.innerHTML = '⏸ PAUSE';
+                        pauseBtn.classList.remove('btn-success');
+                        pauseBtn.classList.add('btn-pause');
+                        updateLogs(0, 0, 0, "Bot RESUMED", true);
+                        runLoop();
+                    }
+                }
+            };
+        }
+
+        // Stop button
+        const pStop = document.getElementById("p-stop");
+        if (pStop) {
+            pStop.onclick = () => {
+                bot.isRunning = false;
+                bot.isPaused = false;
+                const startBtn = document.getElementById("p-start");
+                if (startBtn) {
+                    startBtn.innerHTML = '▶ START';
+                    startBtn.classList.remove('btn-success');
+                    startBtn.classList.add('btn-start');
+                }
+                if (statsInterval) clearInterval(statsInterval);
+                updateLogs(0, 0, 0, "Bot STOPPED", true);
+                
+                if (CONFIG.telegram.enabled && CONFIG.telegram.sendOnStop) {
+                    TelegramAPI.sendStopReport("Manual Stop");
+                }
+            };
+        }
+
+        // Turbo button
+        const pTurbo = document.getElementById("p-turbo");
+        if (pTurbo) {
+            pTurbo.onclick = () => {
+                bot.turboMode = !bot.turboMode;
+                const turboToggle = document.getElementById('p-turbo-toggle');
+                if (turboToggle) turboToggle.checked = bot.turboMode;
+                const turboSettings = document.getElementById('turbo-settings');
+                if (turboSettings) {
+                    turboSettings.style.display = bot.turboMode ? 'grid' : 'none';
+                }
+                const dashboardSpeed = document.getElementById('dashboard-speed');
+                if (dashboardSpeed) dashboardSpeed.textContent = bot.turboMode ? 'TURBO' : 'NORMAL';
+                updateStatsInterval();
+                updateLogs(0, 0, 0, `Turbo Mode ${bot.turboMode ? 'ENABLED 🚀' : 'DISABLED'}`, true);
+            };
+        }
+
+        // Control buttons
+        const minimizeBtn = document.querySelector('.control-btn.minimize');
+        if (minimizeBtn) {
+            safeAddEventListener(minimizeBtn, 'click', () => {
+                bot.minimized = !bot.minimized;
+                const content = document.querySelectorAll('.tab-content');
+                if (bot.minimized) {
+                    content.forEach(el => el.style.display = 'none');
+                    updateLogs(0, 0, 0, "Bot minimized - Running in background", true);
+                } else {
+                    content.forEach(el => {
+                        if (el.classList.contains('active')) {
+                            el.style.display = 'flex';
+                        }
+                    });
+                }
+            });
+        }
+
+        const closeBtn = document.querySelector('.control-btn.close');
+        if (closeBtn) {
+            safeAddEventListener(closeBtn, 'click', () => {
+                if (bot.isRunning) {
+                    if (confirm("Bot is still running. Are you sure you want to close?")) {
+                        document.getElementById("orion-wrap").remove();
+                    }
+                } else {
                     document.getElementById("orion-wrap").remove();
                 }
-            } else {
-                document.getElementById("orion-wrap").remove();
-            }
-        });
+            });
+        }
 
         // Initialize chance levels
         function renderChanceLevels() {
@@ -2523,11 +2947,27 @@
             });
         }
 
+        // Perbaikan 4: Tambahkan safe check untuk semua elemen yang direferensi
         updateStatsInterval();
         renderChanceLevels();
         setTimeout(() => API.syncOnce(), 500);
+        
+        // Initial dashboard update
+        updateDashboard();
     }
 
     // Initialize UI
-    createUI();
+    try {
+        createUI();
+    } catch (error) {
+        console.error("Error initializing UI:", error);
+        // Fallback: Coba lagi setelah 1 detik
+        setTimeout(() => {
+            try {
+                createUI();
+            } catch (e) {
+                console.error("Failed to initialize UI after retry:", e);
+            }
+        }, 1000);
+    }
 })();
