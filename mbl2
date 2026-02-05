@@ -1,7 +1,7 @@
 (function () {
     const CONFIG = {
         get apiUrl() { return window.location.origin + '/_api'; },
-        version: "ORION v8.4",
+        version: "ORION v8.5",
         license: {
             type: "PREMIUM",
             expiryDate: new Date("2026-02-26"),
@@ -44,10 +44,12 @@
             maxDDPerc: 0,
             lastBigWinTime: 0,
             currentStreak: 0,
-            maxWinStreak: 0,
-            maxLossStreak: 0,
+            bestWinStreak: 0,
+            worstLossStreak: 0,
             lastResult: null,
-            lastBetAmount: 0
+            lastBetAmount: 0,
+            betTimes: [],
+            betsPerSecond: 0
         },
         selectedCurrency: "doge",
         globalMinBet: 0.00000001,
@@ -70,12 +72,19 @@
             smartwager: true,
             orion: true
         },
+        autoRotate: {
+            enabled: true,
+            lossThreshold: 5, // % loss untuk trigger auto rotate
+            lastRotateTime: 0,
+            minRotateInterval: 30000 // 30 detik minimal interval rotate
+        },
         smartWager: {
             basebet: 0,
             nextbet: 0,
             baseChance: 97,
             currentChance: 97,
-            recoveryThreshold: 0.5, // %
+            recoveryChance: 49.5,
+            recoveryThreshold: 0.5,
             recoveryMultiplier: 1.5,
             recoveryMode: false,
             recoveryBets: 0,
@@ -104,12 +113,12 @@
         activeTab: 'dashboard',
         martingaleHistory: [],
         stakeChat: {
-            enabled: false, // Nonaktifkan chat sementara
+            enabled: false,
             currentRoom: null,
             rooms: [],
             messages: [],
-            autoRefresh: true,
-            refreshInterval: 5, // seconds
+            autoRefresh: false,
+            refreshInterval: 5,
             lastRefresh: 0,
             unreadCount: 0,
             showAllTypes: true,
@@ -195,8 +204,8 @@
                 `❌ Losses: <code>${bot.stats.loss}</code>\n` +
                 `📊 Win Rate: <code>${winRate.toFixed(2)}%</code>\n` +
                 `📉 Max DD: <code>${bot.stats.maxDD.toFixed(8)} (${bot.stats.maxDDPerc.toFixed(2)}%)</code>\n` +
-                `🔥 Max Win Streak: <code>${bot.stats.maxWinStreak}</code>\n` +
-                `💀 Max Loss Streak: <code>${bot.stats.maxLossStreak}</code>\n` +
+                `🔥 Best Win Streak: <code>${bot.stats.bestWinStreak}</code>\n` +
+                `💀 Worst Loss Streak: <code>${bot.stats.worstLossStreak}</code>\n` +
                 `══════════════════\n` +
                 `⏰ ${new Date().toLocaleString()}`;
 
@@ -263,6 +272,7 @@
                     `📊 Win Rate: <code>${winRate.toFixed(2)}%</code>\n` +
                     `📉 Max DD: <code>${bot.stats.maxDD.toFixed(8)} (${bot.stats.maxDDPerc.toFixed(2)}%)</code>\n` +
                     `🔥 Current Streak: <code>${bot.stats.currentStreak > 0 ? 'W' + bot.stats.currentStreak : 'L' + Math.abs(bot.stats.currentStreak)}</code>\n` +
+                    `⚡ Speed: <code>${bot.stats.betsPerSecond.toFixed(2)} bet/sec</code>\n` +
                     `══════════════════\n` +
                     `⏰ ${new Date().toLocaleString()}`;
 
@@ -305,6 +315,21 @@
                 `📝 Reason: ${reason}\n` +
                 `💰 Balance: <code>${bot.stats.currentBal.toFixed(8)}</code>\n` +
                 `📉 P/L: <code>${bot.stats.profit > 0 ? '+' : ''}${bot.stats.profit.toFixed(8)}</code>\n` +
+                `══════════════════\n` +
+                `⏰ ${new Date().toLocaleString()}`;
+
+            return this.sendMessage(message);
+        },
+
+        async sendAutoRotateReport(oldMode, newMode, lossPercent) {
+            const message = `🔄 <b>AUTO ROTATE TRIGGERED</b>\n` +
+                `══════════════════\n` +
+                `👤 User: <code>${bot.stakeUser}</code>\n` +
+                `📊 From: <b>${oldMode.toUpperCase()}</b>\n` +
+                `📈 To: <b>${newMode.toUpperCase()}</b>\n` +
+                `📉 Loss Trigger: <code>${lossPercent.toFixed(2)}% >= ${bot.autoRotate.lossThreshold}%</code>\n` +
+                `💰 Balance: <code>${bot.stats.currentBal.toFixed(8)}</code>\n` +
+                `📊 P/L: <code>${bot.stats.profit > 0 ? '+' : ''}${bot.stats.profit.toFixed(8)}</code>\n` +
                 `══════════════════\n` +
                 `⏰ ${new Date().toLocaleString()}`;
 
@@ -459,6 +484,9 @@
                 );
             }
             
+            // Check auto rotate condition
+            checkAutoRotate(profit);
+            
         } else {
             sw.consecutiveLosses = 0;
             sw.profitSinceRecovery += profit;
@@ -484,8 +512,8 @@
             // Increase bet in recovery mode
             sw.nextbet = sw.basebet * Math.pow(sw.recoveryMultiplier, sw.recoveryBets);
             
-            // Adjust chance in recovery (lower chance = higher payout)
-            sw.currentChance = Math.max(50, sw.baseChance - (sw.recoveryBets * 5));
+            // Use recovery chance
+            sw.currentChance = sw.recoveryChance;
             
             // Check max recovery bets
             if (sw.recoveryBets >= sw.maxRecoveryBets) {
@@ -521,21 +549,97 @@
         };
     }
 
-    function updateSmartWagerUI() {
-        const sw = bot.smartWager;
+    // =============== AUTO ROTATE FUNCTION ===============
+    function checkAutoRotate(profit) {
+        if (!bot.autoRotate.enabled || !bot.isRunning) return;
         
-        if (document.getElementById("sw-basebet")) {
-            document.getElementById("sw-basebet").innerText = sw.basebet.toFixed(8);
-            document.getElementById("sw-nextbet").innerText = sw.nextbet.toFixed(8);
-            document.getElementById("sw-chance").innerText = sw.currentChance.toFixed(1) + "%";
-            document.getElementById("sw-recovery-mode").innerText = sw.recoveryMode ? "YES" : "NO";
-            document.getElementById("sw-recovery-bets").innerText = `${sw.recoveryBets}/${sw.maxRecoveryBets}`;
-            document.getElementById("sw-loss-streak").innerText = sw.consecutiveLosses;
-            
-            const lossAmount = sw.consecutiveLosses * (bot.stats.lastBetAmount || 0);
-            const lossPercent = bot.stats.currentBal > 0 ? (lossAmount / bot.stats.currentBal * 100) : 0;
-            if (document.getElementById("sw-loss-percent")) {
-                document.getElementById("sw-loss-percent").innerText = lossPercent.toFixed(2) + "%";
+        const now = Date.now();
+        const timeSinceLastRotate = now - bot.autoRotate.lastRotateTime;
+        
+        // Check minimum interval
+        if (timeSinceLastRotate < bot.autoRotate.minRotateInterval) return;
+        
+        // Calculate current loss percentage
+        const lossPercent = Math.abs(bot.stats.profit) / bot.stats.startBal * 100;
+        
+        // Check if loss threshold is reached
+        if (lossPercent >= bot.autoRotate.lossThreshold) {
+            // Check if we should rotate from smartwager to orion
+            if (bot.mode === "smartwager" && bot.enabledModes.orion) {
+                const oldMode = bot.mode;
+                bot.mode = "orion";
+                bot.autoRotate.lastRotateTime = now;
+                
+                // Initialize Orion mode
+                setNewBaseChance();
+                
+                updateLogs(0, 0, 0, 
+                    `🔄 AUTO ROTATE: Smart Wager → Orion (Loss: ${lossPercent.toFixed(2)}% >= ${bot.autoRotate.lossThreshold}%)`, 
+                    true
+                );
+                
+                // Update UI
+                updateModeUI();
+                
+                // Send Telegram notification
+                if (CONFIG.telegram.enabled) {
+                    TelegramAPI.sendAutoRotateReport(oldMode, bot.mode, lossPercent);
+                }
+            }
+            // Check if we should rotate from orion to smartwager
+            else if (bot.mode === "orion" && bot.enabledModes.smartwager) {
+                const oldMode = bot.mode;
+                bot.mode = "smartwager";
+                bot.autoRotate.lastRotateTime = now;
+                
+                // Initialize Smart Wager mode
+                initSmartWager();
+                
+                updateLogs(0, 0, 0, 
+                    `🔄 AUTO ROTATE: Orion → Smart Wager (Loss: ${lossPercent.toFixed(2)}% >= ${bot.autoRotate.lossThreshold}%)`, 
+                    true
+                );
+                
+                // Update UI
+                updateModeUI();
+                
+                // Send Telegram notification
+                if (CONFIG.telegram.enabled) {
+                    TelegramAPI.sendAutoRotateReport(oldMode, bot.mode, lossPercent);
+                }
+            }
+        }
+    }
+
+    function updateModeUI() {
+        // Update mode buttons
+        document.querySelectorAll('.mode-btn').forEach(btn => {
+            btn.classList.remove('active');
+            if (btn.dataset.mode === bot.mode) {
+                btn.classList.add('active');
+            }
+        });
+        
+        // Update current mode display
+        const currentMode = document.getElementById("current-mode");
+        if (currentMode) {
+            currentMode.textContent = bot.mode.toUpperCase();
+            currentMode.style.color = getModeColor();
+        }
+        
+        // Show/hide panels
+        const smartWagerPanel = document.getElementById("smartwager-panel");
+        const martingaleContainer = document.getElementById("martingale-info-container");
+        
+        if (smartWagerPanel) {
+            smartWagerPanel.style.display = bot.mode === 'smartwager' ? 'block' : 'none';
+        }
+        
+        if (martingaleContainer) {
+            if (bot.mode === 'orion' && bot.orionSettings.method === 'martingale') {
+                martingaleContainer.style.display = 'flex';
+            } else {
+                martingaleContainer.style.display = 'none';
             }
         }
     }
@@ -559,6 +663,21 @@
 
     // =============== UPDATE STATS FUNCTIONS ===============
     function updateStats(win) {
+        const now = Date.now();
+        bot.stats.betTimes.push(now);
+        
+        // Keep only last 30 seconds of bet times for calculation
+        const thirtySecondsAgo = now - 30000;
+        while (bot.stats.betTimes.length > 0 && bot.stats.betTimes[0] < thirtySecondsAgo) {
+            bot.stats.betTimes.shift();
+        }
+        
+        // Calculate bets per second (average over last 30 seconds)
+        if (bot.stats.betTimes.length > 1) {
+            const timeSpan = (bot.stats.betTimes[bot.stats.betTimes.length - 1] - bot.stats.betTimes[0]) / 1000;
+            bot.stats.betsPerSecond = timeSpan > 0 ? (bot.stats.betTimes.length - 1) / timeSpan : 0;
+        }
+        
         if (win) {
             if (bot.stats.currentStreak < 0) {
                 bot.stats.currentStreak = 1;
@@ -566,6 +685,11 @@
                 bot.stats.currentStreak++;
             }
             bot.stats.lastResult = 'win';
+            
+            // Update best win streak
+            if (bot.stats.currentStreak > bot.stats.bestWinStreak) {
+                bot.stats.bestWinStreak = bot.stats.currentStreak;
+            }
         } else {
             if (bot.stats.currentStreak > 0) {
                 bot.stats.currentStreak = -1;
@@ -573,13 +697,16 @@
                 bot.stats.currentStreak--;
             }
             bot.stats.lastResult = 'loss';
+            
+            // Update worst loss streak
+            if (Math.abs(bot.stats.currentStreak) > bot.stats.worstLossStreak) {
+                bot.stats.worstLossStreak = Math.abs(bot.stats.currentStreak);
+            }
         }
         
-        if (bot.stats.currentStreak > bot.stats.maxWinStreak) {
-            bot.stats.maxWinStreak = bot.stats.currentStreak;
-        }
-        if (Math.abs(bot.stats.currentStreak) > bot.stats.maxLossStreak && bot.stats.currentStreak < 0) {
-            bot.stats.maxLossStreak = Math.abs(bot.stats.currentStreak);
+        // Check auto rotate on loss
+        if (!win) {
+            checkAutoRotate(-bot.stats.lastBetAmount);
         }
     }
 
@@ -617,13 +744,6 @@
                     } else {
                         bot.orionSettings.currentMultiplier = Math.pow(martingaleMult, bot.orionSettings.consecutiveLosses);
                         nextBet = baseBet * bot.orionSettings.currentMultiplier;
-                    }
-                    
-                    if (bot.singleChanceBets > 0) {
-                        updateLogs(0, 0, 0, 
-                            `ORION Martingale: Losses: ${bot.orionSettings.consecutiveLosses}, Multiplier: ${bot.orionSettings.currentMultiplier.toFixed(4)}`, 
-                            true
-                        );
                     }
                 }
 
@@ -676,7 +796,8 @@
                     if (ddPerc > bot.stats.maxDDPerc) bot.stats.maxDDPerc = ddPerc;
                 }
 
-                const logLine = `a:${d.amount.toFixed(8)} c:${bot.currentChance.toFixed(1)}% p:${pft > 0 ? '+' : ''}${pft.toFixed(8)} m:${bot.mode.charAt(0).toUpperCase()}`;
+                // Clean log format
+                const logLine = `a:${d.amount.toFixed(8)} c:${bot.currentChance.toFixed(1)}% p:${pft > 0 ? '+' : ''}${pft.toFixed(8)}`;
                 updateLogs(d.amount, pft, bot.currentChance, logLine);
 
                 if (bot.mode === "orion") {
@@ -744,12 +865,11 @@
             entry.style.borderLeft = pft > 0 ? "3px solid #10b981" : "3px solid #ef4444";
         }
 
-        const modeBadge = `<span class="mode-badge" style="background: ${getModeColor()}; color: #000; padding: 1px 4px; border-radius: 3px; font-size: 9px; margin-right: 5px;">${bot.mode.charAt(0).toUpperCase()}</span>`;
-
         if (customMsg) {
-            entry.innerHTML = `${modeBadge}${customMsg}`;
+            entry.innerHTML = customMsg;
         } else {
-            entry.innerHTML = `${modeBadge}a:${amt.toFixed(8)} c:${ch}% p:${pft > 0 ? '+' : ''}${pft.toFixed(8)} m:${bot.mode.charAt(0).toUpperCase()}`;
+            // Clean format: a:amount c:chance% p:profit
+            entry.innerHTML = `a:${amt.toFixed(8)} c:${ch}% p:${pft > 0 ? '+' : ''}${pft.toFixed(8)}`;
         }
 
         logBox.prepend(entry);
@@ -816,22 +936,24 @@
             dashboardRuntime.innerText = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
         }
 
-        const dashboardLsWs = document.getElementById("dashboard-lsws");
-        if (dashboardLsWs) {
-            const streakType = bot.stats.currentStreak > 0 ? 'WS' : 'LS';
-            const streakValue = Math.abs(bot.stats.currentStreak);
-            dashboardLsWs.innerText = `${streakType}${streakValue}`;
+        // Changed to Best WS / Worst LS
+        const dashboardWsLs = document.getElementById("dashboard-wsls");
+        if (dashboardWsLs) {
+            dashboardWsLs.innerText = `BWS:${bot.stats.bestWinStreak} WLS:${bot.stats.worstLossStreak}`;
         }
 
+        const dashboardSpeed = document.getElementById("dashboard-speed");
+        if (dashboardSpeed) {
+            // Display bets per second
+            dashboardSpeed.textContent = `${bot.stats.betsPerSecond.toFixed(2)} bet/sec`;
+        }
+        
         const stCurrency = document.getElementById("st-currency");
         if (stCurrency) stCurrency.textContent = bot.selectedCurrency.toUpperCase();
 
         const dashboardAccount = document.getElementById("dashboard-account");
         if (dashboardAccount) dashboardAccount.textContent = bot.stakeUser;
 
-        const dashboardSpeed = document.getElementById("dashboard-speed");
-        if (dashboardSpeed) dashboardSpeed.textContent = bot.turboMode ? 'TURBO' : 'NORMAL';
-        
         if (bot.mode === 'orion' && bot.orionSettings.method === 'martingale') {
             const martingaleInfo = document.getElementById("martingale-info");
             if (martingaleInfo) {
@@ -840,6 +962,31 @@
         }
         
         updateSmartWagerUI();
+    }
+
+    function updateSmartWagerUI() {
+        const sw = bot.smartWager;
+        
+        if (document.getElementById("sw-basebet")) {
+            document.getElementById("sw-basebet").innerText = sw.basebet.toFixed(8);
+            document.getElementById("sw-nextbet").innerText = sw.nextbet.toFixed(8);
+            document.getElementById("sw-chance").innerText = sw.currentChance.toFixed(1) + "%";
+            document.getElementById("sw-recovery-mode").innerText = sw.recoveryMode ? "YES" : "NO";
+            document.getElementById("sw-recovery-bets").innerText = `${sw.recoveryBets}/${sw.maxRecoveryBets}`;
+            document.getElementById("sw-loss-streak").innerText = sw.consecutiveLosses;
+            
+            const lossAmount = sw.consecutiveLosses * (bot.stats.lastBetAmount || 0);
+            const lossPercent = bot.stats.currentBal > 0 ? (lossAmount / bot.stats.currentBal * 100) : 0;
+            if (document.getElementById("sw-loss-percent")) {
+                document.getElementById("sw-loss-percent").innerText = lossPercent.toFixed(2) + "%";
+            }
+            
+            const statusEl = document.getElementById("sw-status");
+            if (statusEl) {
+                statusEl.className = sw.recoveryMode ? "smartwager-status status-recovery" : "smartwager-status status-normal";
+                statusEl.innerText = sw.recoveryMode ? "RECOVERY" : "NORMAL";
+            }
+        }
     }
 
     let statsInterval;
@@ -1076,221 +1223,6 @@
             
             .tab-content.active {
                 display: flex;
-            }
-            
-            /* CHAT ROOM STYLES */
-            .chat-room {
-                display: flex;
-                flex-direction: column;
-                height: 100%;
-                background: var(--chat-bg);
-                border-radius: 12px;
-                overflow: hidden;
-                border: 1px solid var(--border);
-            }
-            
-            .chat-header {
-                padding: 12px;
-                background: rgba(30, 41, 59, 0.9);
-                border-bottom: 1px solid var(--border);
-                display: flex;
-                gap: 8px;
-                align-items: center;
-            }
-            
-            .chat-room-select {
-                flex: 1;
-                background: rgba(15, 23, 42, 0.7);
-                border: 1px solid var(--border);
-                padding: 8px 12px;
-                border-radius: 8px;
-                color: var(--light);
-                font-size: 12px;
-                font-family: 'Inter', sans-serif;
-                cursor: pointer;
-            }
-            
-            .chat-controls {
-                display: flex;
-                gap: 4px;
-            }
-            
-            .chat-btn {
-                background: rgba(59, 130, 246, 0.2);
-                border: 1px solid rgba(59, 130, 246, 0.3);
-                color: var(--light);
-                padding: 8px 12px;
-                border-radius: 6px;
-                font-size: 12px;
-                cursor: pointer;
-                transition: all 0.2s;
-                display: flex;
-                align-items: center;
-                gap: 4px;
-            }
-            
-            .chat-btn:hover {
-                background: rgba(59, 130, 246, 0.3);
-            }
-            
-            .chat-btn:disabled {
-                opacity: 0.5;
-                cursor: not-allowed;
-            }
-            
-            .chat-messages {
-                flex: 1;
-                overflow-y: auto;
-                padding: 12px;
-                background: rgba(15, 23, 42, 0.5);
-                display: flex;
-                flex-direction: column;
-                gap: 8px;
-            }
-            
-            .chat-empty {
-                text-align: center;
-                color: var(--gray);
-                padding: 40px 0;
-                font-style: italic;
-            }
-            
-            .chat-message {
-                padding: 8px 12px;
-                border-radius: 8px;
-                background: rgba(255, 255, 255, 0.05);
-                border-left: 3px solid var(--primary);
-                font-size: 12px;
-                line-height: 1.4;
-                animation: fadeIn 0.3s ease;
-            }
-            
-            @keyframes fadeIn {
-                from { opacity: 0; transform: translateY(5px); }
-                to { opacity: 1; transform: translateY(0); }
-            }
-            
-            .chat-message.my-message {
-                background: rgba(59, 130, 246, 0.15);
-                border-left-color: var(--primary);
-            }
-            
-            .chat-message.highroller-message {
-                border-left-color: gold;
-            }
-            
-            .chat-message.staff-message {
-                border-left-color: #ef4444;
-            }
-            
-            .chat-message.tip-message {
-                background: rgba(16, 185, 129, 0.15);
-                border-left-color: var(--success);
-            }
-            
-            .chat-message.rain-message {
-                background: rgba(59, 130, 246, 0.15);
-                border-left-color: var(--primary);
-            }
-            
-            .chat-message.trivia-message {
-                background: rgba(245, 158, 11, 0.15);
-                border-left-color: var(--warning);
-            }
-            
-            .chat-message.race-message {
-                background: rgba(139, 92, 246, 0.15);
-                border-left-color: #8b5cf6;
-            }
-            
-            .chat-message.bot-message {
-                background: rgba(107, 114, 128, 0.15);
-                border-left-color: var(--gray);
-            }
-            
-            .chat-time {
-                color: var(--gray);
-                font-size: 10px;
-                margin-right: 8px;
-            }
-            
-            .chat-icon {
-                margin-right: 6px;
-                font-size: 10px;
-            }
-            
-            .chat-user {
-                font-weight: 600;
-                color: var(--light);
-                margin-right: 4px;
-            }
-            
-            .chat-user.highroller {
-                color: gold;
-            }
-            
-            .chat-content {
-                color: rgba(255, 255, 255, 0.9);
-                word-break: break-word;
-            }
-            
-            .chat-input-area {
-                padding: 12px;
-                background: rgba(30, 41, 59, 0.9);
-                border-top: 1px solid var(--border);
-                display: flex;
-                gap: 8px;
-            }
-            
-            .chat-input-field {
-                flex: 1;
-                background: rgba(15, 23, 42, 0.7);
-                border: 1px solid var(--border);
-                padding: 10px 12px;
-                border-radius: 8px;
-                color: var(--light);
-                font-size: 13px;
-                font-family: 'Inter', sans-serif;
-                resize: none;
-                min-height: 40px;
-                max-height: 100px;
-            }
-            
-            .chat-input-field:focus {
-                outline: none;
-                border-color: var(--primary);
-            }
-            
-            .chat-send-btn {
-                background: linear-gradient(135deg, var(--primary), var(--primary-dark));
-                border: none;
-                color: white;
-                padding: 0 16px;
-                border-radius: 8px;
-                font-size: 13px;
-                font-weight: 600;
-                cursor: pointer;
-                transition: all 0.2s;
-                min-width: 80px;
-            }
-            
-            .chat-send-btn:hover:not(:disabled) {
-                transform: translateY(-1px);
-                box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
-            }
-            
-            .chat-send-btn:disabled {
-                opacity: 0.5;
-                cursor: not-allowed;
-            }
-            
-            .chat-info {
-                padding: 8px 12px;
-                font-size: 10px;
-                color: var(--gray);
-                text-align: center;
-                background: rgba(15, 23, 42, 0.5);
-                border-top: 1px solid var(--border);
             }
             
             /* SMART WAGER INFO PANEL */
@@ -1643,19 +1575,6 @@
                 border-bottom: none;
             }
             
-            .mode-badge {
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                padding: 1px 4px;
-                border-radius: 3px;
-                font-size: 9px;
-                font-weight: 700;
-                margin-right: 6px;
-                flex-shrink: 0;
-                min-width: 15px;
-            }
-            
             /* SETTINGS STYLES */
             .settings-section {
                 background: var(--card-bg);
@@ -1872,10 +1791,6 @@
                     max-height: 500px;
                 }
                 
-                .chat-room {
-                    min-height: 500px;
-                }
-                
                 .logs-container {
                     font-size: 13px;
                 }
@@ -1903,10 +1818,6 @@
                 }
                 
                 .logs-container {
-                    font-size: 11px;
-                }
-                
-                .chat-message {
                     font-size: 11px;
                 }
             }
@@ -1961,7 +1872,7 @@
             <div class="header">
                 <div class="header-top">
                     <div class="app-title">
-                        ORION v8.4
+                        ORION v8.5
                         <span class="license-badge" title="${licenseText}">${licenseStatus}</span>
                         <span class="telegram-status ${CONFIG.telegram.enabled ? 'enabled' : 'disabled'}">
                             ${CONFIG.telegram.enabled ? '📱 TG ON' : '📱 TG OFF'}
@@ -2102,12 +2013,12 @@
                     
                     <div class="speed-control">
                         <div class="speed-label">Speed</div>
-                        <div class="speed-value" id="dashboard-speed">${bot.turboMode ? 'TURBO' : 'NORMAL'}</div>
+                        <div class="speed-value" id="dashboard-speed">0.00 bet/sec</div>
                     </div>
                     
                     <div class="speed-control">
-                        <div class="speed-label">LS/WS</div>
-                        <div class="speed-value" id="dashboard-lsws">LS0</div>
+                        <div class="speed-label">BWS / WLS</div>
+                        <div class="speed-value" id="dashboard-wsls">BWS:0 WLS:0</div>
                     </div>
                     
                     <div class="speed-control" id="martingale-info-container" style="${bot.mode === 'orion' && bot.orionSettings.method === 'martingale' ? 'display: flex;' : 'display: none;'}">
@@ -2165,19 +2076,46 @@
                     
                     <div class="grid-2">
                         <div class="input-group">
-                            <label class="input-label">Recovery Threshold %</label>
-                            <input type="number" id="sw-recovery-threshold" class="input-field" value="0.5" step="0.1" min="0.1" max="10">
+                            <label class="input-label">Recovery Chance %</label>
+                            <input type="number" id="sw-recovery-chance" class="input-field" value="49.5" step="0.1" min="1" max="99">
                         </div>
                         <div class="input-group">
-                            <label class="input-label">Recovery Multiplier</label>
-                            <input type="number" id="sw-recovery-multiplier" class="input-field" value="1.5" step="0.1" min="1.1" max="5">
+                            <label class="input-label">Recovery Threshold %</label>
+                            <input type="number" id="sw-recovery-threshold" class="input-field" value="0.5" step="0.1" min="0.1" max="10">
                         </div>
                     </div>
                     
                     <div class="grid-2">
                         <div class="input-group">
+                            <label class="input-label">Recovery Multiplier</label>
+                            <input type="number" id="sw-recovery-multiplier" class="input-field" value="1.5" step="0.1" min="1.1" max="5">
+                        </div>
+                        <div class="input-group">
                             <label class="input-label">Max Recovery Bets</label>
                             <input type="number" id="sw-max-recovery-bets" class="input-field" value="10" step="1" min="3" max="50">
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="settings-section">
+                    <div class="section-title">Auto Rotate Settings</div>
+                    
+                    <div class="toggle-group">
+                        <span class="toggle-label">Enable Auto Rotate</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="auto-rotate-enable" ${bot.autoRotate.enabled ? 'checked' : ''}>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    
+                    <div class="grid-2">
+                        <div class="input-group">
+                            <label class="input-label">Loss Threshold %</label>
+                            <input id="auto-rotate-threshold" class="input-field" value="5.0" type="number" step="0.1" min="1" max="100">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Min Interval (sec)</label>
+                            <input id="auto-rotate-interval" class="input-field" value="30" type="number" step="1" min="10" max="600">
                         </div>
                     </div>
                 </div>
@@ -2244,7 +2182,7 @@
                 </div>
                 
                 <div class="settings-section">
-                    <div class="section-title">Rotation Settings</div>
+                    <div class="section-title">Bot Settings</div>
                     
                     <div class="grid-2">
                         <div class="input-group">
@@ -2299,6 +2237,14 @@
                             <input id="turbo-ui-update" class="input-field" value="5000" type="number" min="100" max="30000">
                         </div>
                     </div>
+                    
+                    <div class="toggle-group">
+                        <span class="toggle-label">Enable Chat</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="chat-enable" ${bot.stakeChat.enabled ? 'checked' : ''}>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
                 </div>
                 
                 <div class="settings-section">
@@ -2333,7 +2279,7 @@
                         </div>
                     </div>
                     
-                    <button id="telegram-test" class="chat-btn" style="width: 100%; margin-top: 8px;">
+                    <button id="telegram-test" class="control-button btn-start" style="width: 100%; margin-top: 8px;">
                         <span>📱</span> Test Telegram Connection
                     </button>
                 </div>
@@ -2343,25 +2289,25 @@
             <div class="tab-content" id="tab-chat">
                 <div class="chat-room">
                     <div class="chat-header">
-                        <select id="chat-room-select" class="chat-room-select" disabled>
-                            <option value="">Chat module is disabled</option>
+                        <select id="chat-room-select" class="chat-room-select" ${bot.stakeChat.enabled ? '' : 'disabled'}>
+                            <option value="">${bot.stakeChat.enabled ? 'Select chat room...' : 'Chat module is disabled'}</option>
                         </select>
                         <div class="chat-controls">
-                            <button id="chat-refresh" class="chat-btn" disabled>🔄</button>
+                            <button id="chat-refresh" class="chat-btn" ${bot.stakeChat.enabled ? '' : 'disabled'}>🔄</button>
                         </div>
                     </div>
                     
                     <div class="chat-messages" id="chat-messages">
-                        <div class="chat-empty">Chat module is temporarily disabled for better performance. Enable it in settings if needed.</div>
+                        <div class="chat-empty">${bot.stakeChat.enabled ? 'No messages yet. Select a chat room to start.' : 'Chat module is disabled. Enable it in settings.'}</div>
                     </div>
                     
                     <div class="chat-info" id="chat-last-refresh">
-                        Status: Disabled
+                        Status: ${bot.stakeChat.enabled ? 'Ready' : 'Disabled'}
                     </div>
                     
                     <div class="chat-input-area">
-                        <textarea id="chat-input" class="chat-input-field" placeholder="Chat is disabled..." rows="1" disabled></textarea>
-                        <button id="chat-send" class="chat-send-btn" disabled>Send</button>
+                        <textarea id="chat-input" class="chat-input-field" placeholder="${bot.stakeChat.enabled ? 'Type your message...' : 'Chat is disabled...'}" rows="1" ${bot.stakeChat.enabled ? '' : 'disabled'}></textarea>
+                        <button id="chat-send" class="chat-send-btn" ${bot.stakeChat.enabled ? '' : 'disabled'}>Send</button>
                     </div>
                 </div>
             </div>
@@ -2406,12 +2352,14 @@
         // Mode selector
         document.querySelectorAll('.mode-btn').forEach(btn => {
             safeAddEventListener(btn, 'click', () => {
+                if (!bot.isRunning) return;
+                
                 document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 const newMode = btn.dataset.mode;
+                const oldMode = bot.mode;
                 
-                if (bot.isRunning) {
-                    const oldMode = bot.mode;
+                if (oldMode !== newMode) {
                     bot.mode = newMode;
                     
                     if (newMode === 'smartwager') initSmartWager();
@@ -2422,24 +2370,8 @@
                     if (CONFIG.telegram.enabled) {
                         TelegramAPI.sendModeChange(oldMode, newMode, "Manual mode change");
                     }
-                } else {
-                    bot.mode = newMode;
-                }
-                
-                // Show/hide panels
-                const smartWagerPanel = document.getElementById("smartwager-panel");
-                const martingaleContainer = document.getElementById("martingale-info-container");
-                
-                if (smartWagerPanel) {
-                    smartWagerPanel.style.display = bot.mode === 'smartwager' ? 'block' : 'none';
-                }
-                
-                if (martingaleContainer) {
-                    if (bot.mode === 'orion' && bot.orionSettings.method === 'martingale') {
-                        martingaleContainer.style.display = 'flex';
-                    } else {
-                        martingaleContainer.style.display = 'none';
-                    }
+                    
+                    updateModeUI();
                 }
             });
         });
@@ -2468,6 +2400,18 @@
                 if (value >= 1 && value <= 99) {
                     bot.smartWager.baseChance = value;
                     bot.smartWager.currentChance = value;
+                    updateLogs(0, 0, 0, `Smart Wager Base Chance set to ${value}%`, true);
+                }
+            });
+        }
+
+        const swRecoveryChance = document.getElementById('sw-recovery-chance');
+        if (swRecoveryChance) {
+            safeAddEventListener(swRecoveryChance, 'change', (e) => {
+                const value = parseFloat(e.target.value);
+                if (value >= 1 && value <= 99) {
+                    bot.smartWager.recoveryChance = value;
+                    updateLogs(0, 0, 0, `Smart Wager Recovery Chance set to ${value}%`, true);
                 }
             });
         }
@@ -2525,6 +2469,35 @@
                 }
             });
         });
+
+        // Auto Rotate settings
+        const autoRotateEnable = document.getElementById('auto-rotate-enable');
+        if (autoRotateEnable) {
+            safeAddEventListener(autoRotateEnable, 'change', (e) => {
+                bot.autoRotate.enabled = e.target.checked;
+                updateLogs(0, 0, 0, `Auto Rotate ${bot.autoRotate.enabled ? 'ENABLED' : 'DISABLED'}`, true);
+            });
+        }
+
+        const autoRotateThreshold = document.getElementById('auto-rotate-threshold');
+        if (autoRotateThreshold) {
+            safeAddEventListener(autoRotateThreshold, 'change', (e) => {
+                const value = parseFloat(e.target.value);
+                if (value >= 1 && value <= 100) {
+                    bot.autoRotate.lossThreshold = value;
+                }
+            });
+        }
+
+        const autoRotateInterval = document.getElementById('auto-rotate-interval');
+        if (autoRotateInterval) {
+            safeAddEventListener(autoRotateInterval, 'change', (e) => {
+                const value = parseFloat(e.target.value) * 1000;
+                if (value >= 10000 && value <= 600000) {
+                    bot.autoRotate.minRotateInterval = value;
+                }
+            });
+        }
 
         // Orion method radio buttons
         document.querySelectorAll('input[name="orion-method"]').forEach(radio => {
@@ -2584,6 +2557,51 @@
             });
         }
 
+        // Chat enable toggle
+        const chatEnable = document.getElementById('chat-enable');
+        if (chatEnable) {
+            safeAddEventListener(chatEnable, 'change', (e) => {
+                bot.stakeChat.enabled = e.target.checked;
+                
+                // Update chat UI elements
+                const chatRoomSelect = document.getElementById('chat-room-select');
+                const chatRefresh = document.getElementById('chat-refresh');
+                const chatInput = document.getElementById('chat-input');
+                const chatSend = document.getElementById('chat-send');
+                const chatMessages = document.getElementById('chat-messages');
+                const chatInfo = document.getElementById('chat-last-refresh');
+                
+                if (chatRoomSelect) chatRoomSelect.disabled = !bot.stakeChat.enabled;
+                if (chatRefresh) chatRefresh.disabled = !bot.stakeChat.enabled;
+                if (chatInput) chatInput.disabled = !bot.stakeChat.enabled;
+                if (chatSend) chatSend.disabled = !bot.stakeChat.enabled;
+                
+                if (chatInfo) {
+                    chatInfo.textContent = `Status: ${bot.stakeChat.enabled ? 'Ready' : 'Disabled'}`;
+                }
+                
+                if (chatMessages) {
+                    chatMessages.innerHTML = bot.stakeChat.enabled 
+                        ? '<div class="chat-empty">No messages yet. Select a chat room to start.</div>'
+                        : '<div class="chat-empty">Chat module is disabled. Enable it in settings.</div>';
+                }
+                
+                if (chatRoomSelect) {
+                    chatRoomSelect.innerHTML = bot.stakeChat.enabled 
+                        ? '<option value="">Select chat room...</option>'
+                        : '<option value="">Chat module is disabled</option>';
+                }
+                
+                if (chatInput) {
+                    chatInput.placeholder = bot.stakeChat.enabled 
+                        ? 'Type your message...'
+                        : 'Chat is disabled...';
+                }
+                
+                updateLogs(0, 0, 0, `Chat module ${bot.stakeChat.enabled ? 'ENABLED' : 'DISABLED'}`, true);
+            });
+        }
+
         // Telegram Settings
         const telegramEnable = document.getElementById('telegram-enable');
         if (telegramEnable) {
@@ -2594,6 +2612,7 @@
                     telegramStatus.className = `telegram-status ${CONFIG.telegram.enabled ? 'enabled' : 'disabled'}`;
                     telegramStatus.textContent = CONFIG.telegram.enabled ? '📱 TG ON' : '📱 TG OFF';
                 }
+                updateLogs(0, 0, 0, `Telegram ${CONFIG.telegram.enabled ? 'ENABLED' : 'DISABLED'}`, true);
             });
         }
 
@@ -2633,7 +2652,7 @@
                     `══════════════════\n` +
                     `✅ Telegram is working properly!\n` +
                     `👤 User: <code>${bot.stakeUser}</code>\n` +
-                    `🤖 Bot: <code>ORION v8.4</code>\n` +
+                    `🤖 Bot: <code>ORION v8.5</code>\n` +
                     `⏰ Time: ${new Date().toLocaleString()}\n` +
                     `══════════════════\n` +
                     `🎉 If you see this message, Telegram notifications are configured correctly!`;
@@ -2652,6 +2671,7 @@
         if (modeSmartWager) {
             safeAddEventListener(modeSmartWager, 'change', (e) => {
                 bot.enabledModes.smartwager = e.target.checked;
+                updateLogs(0, 0, 0, `Smart Wager mode ${bot.enabledModes.smartwager ? 'ENABLED' : 'DISABLED'}`, true);
             });
         }
 
@@ -2659,6 +2679,7 @@
         if (modeOrion) {
             safeAddEventListener(modeOrion, 'change', (e) => {
                 bot.enabledModes.orion = e.target.checked;
+                updateLogs(0, 0, 0, `Orion mode ${bot.enabledModes.orion ? 'ENABLED' : 'DISABLED'}`, true);
             });
         }
 
@@ -2671,8 +2692,6 @@
                 if (turboSettings) {
                     turboSettings.style.display = e.target.checked ? 'grid' : 'none';
                 }
-                const dashboardSpeed = document.getElementById('dashboard-speed');
-                if (dashboardSpeed) dashboardSpeed.textContent = bot.turboMode ? 'TURBO' : 'NORMAL';
                 updateStatsInterval();
                 updateLogs(0, 0, 0, `Turbo Mode ${bot.turboMode ? 'ENABLED 🚀' : 'DISABLED'}`, true);
             });
@@ -2792,9 +2811,9 @@
                     profit: 0, wagered: 0, startBal: 0, currentBal: 0,
                     bets: 0, wins: 0, loss: 0, startTime: Date.now(),
                     maxDD: 0, maxDDPerc: 0, lastBigWinTime: 0,
-                    currentStreak: 0, maxWinStreak: 0, maxLossStreak: 0,
-                    lastResult: null,
-                    lastBetAmount: 0
+                    currentStreak: 0, bestWinStreak: 0, worstLossStreak: 0,
+                    lastResult: null, lastBetAmount: 0,
+                    betTimes: [], betsPerSecond: 0
                 };
 
                 if (!bot.isDemo) {
@@ -2806,6 +2825,7 @@
                 bot.stats.currentBal = bot.stats.startBal;
                 bot.rotationState.initialBalance = bot.stats.startBal;
                 bot.rotationState.lastSwitchTime = Date.now();
+                bot.autoRotate.lastRotateTime = Date.now();
                 
                 // Set default mode
                 if (bot.enabledModes.smartwager) {
@@ -2815,12 +2835,7 @@
                 }
 
                 // Update mode selector
-                document.querySelectorAll('.mode-btn').forEach(btn => {
-                    btn.classList.remove('active');
-                    if (btn.dataset.mode === bot.mode) {
-                        btn.classList.add('active');
-                    }
-                });
+                updateModeUI();
 
                 const targetPct = document.getElementById("p-target-pct");
                 const stopPct = document.getElementById("p-stop-pct");
@@ -2834,22 +2849,6 @@
                 // Initialize selected mode
                 if (bot.mode === 'smartwager') initSmartWager();
                 else if (bot.mode === 'orion') setNewBaseChance();
-
-                // Show/hide panels
-                const smartWagerPanel = document.getElementById("smartwager-panel");
-                const martingaleContainer = document.getElementById("martingale-info-container");
-                
-                if (smartWagerPanel) {
-                    smartWagerPanel.style.display = bot.mode === 'smartwager' ? 'block' : 'none';
-                }
-                
-                if (martingaleContainer) {
-                    if (bot.mode === 'orion' && bot.orionSettings.method === 'martingale') {
-                        martingaleContainer.style.display = 'flex';
-                    } else {
-                        martingaleContainer.style.display = 'none';
-                    }
-                }
 
                 updateStatsInterval();
                 updateDashboard();
@@ -2919,8 +2918,6 @@
                 if (turboSettings) {
                     turboSettings.style.display = bot.turboMode ? 'grid' : 'none';
                 }
-                const dashboardSpeed = document.getElementById('dashboard-speed');
-                if (dashboardSpeed) dashboardSpeed.textContent = bot.turboMode ? 'TURBO' : 'NORMAL';
                 updateStatsInterval();
                 updateLogs(0, 0, 0, `Turbo Mode ${bot.turboMode ? 'ENABLED 🚀' : 'DISABLED'}`, true);
             };
