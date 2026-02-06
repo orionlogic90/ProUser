@@ -1,7 +1,7 @@
 (function () {
     const CONFIG = {
         get apiUrl() { return window.location.origin + '/_api'; },
-        version: "ORION v8.5",
+        version: "ORION v8.6", // Versi ditingkatkan
         license: {
             type: "PREMIUM",
             expiryDate: new Date("2026-02-26"),
@@ -22,6 +22,9 @@
             sendPeriodic: true,
             sendBigWins: true,
             bigWinThreshold: 0.001
+        },
+        firebase: {
+            enabled: false
         }
     };
 
@@ -61,7 +64,7 @@
         singleChanceLimit: 0,
         targetAbs: 0,
         stopLossAbs: 0,
-        mode: "smartwager",
+        mode: "wager", // Mode default menjadi wager
         turboMode: false,
         turboSettings: {
             betDelay: 1,
@@ -69,37 +72,47 @@
             skipRotationCheck: 5
         },
         enabledModes: {
-            smartwager: true,
-            orion: true
+            wager: true,
+            orion: true,
+            limbo: true
         },
         autoRotate: {
             enabled: true,
-            lossThreshold: 5, // % loss untuk trigger auto rotate
+            lossThreshold: 0.2, // Loss trigger 0.2%
             lastRotateTime: 0,
-            minRotateInterval: 30000 // 30 detik minimal interval rotate
+            minRotateInterval: 30000
         },
-        smartWager: {
+        wagerMode: { // Mode baru: wager (100x bet dengan basebet 0.1% dari balance)
             basebet: 0,
             nextbet: 0,
-            baseChance: 97,
-            currentChance: 97,
-            recoveryChance: 49.5,
-            recoveryThreshold: 0.5,
-            recoveryMultiplier: 1.5,
-            recoveryMode: false,
-            recoveryBets: 0,
-            maxRecoveryBets: 10,
-            consecutiveLosses: 0,
-            profitSinceRecovery: 0,
-            basebetMode: "percentage",
-            basebetPercentage: 1.0,
-            basebetFixed: 0.00000001
+            baseChance: 99, // Default chance 99%
+            currentChance: 99,
+            wagerCounter: 0,
+            maxWagerBets: 100, // 100x bet
+            basebetPercentage: 0.1, // 0.1% dari balance
+            lossTriggerPercent: 0.2, // Trigger 0.2% loss untuk switch ke Orion
+            totalWagered: 0,
+            inWagerPhase: true
         },
         orionSettings: {
             method: "mathematic",
             martingaleMultiplier: 1.12,
             consecutiveLosses: 0,
-            currentMultiplier: 1.0
+            currentMultiplier: 1.0,
+            minChance: 27, // Default min chance 27
+            maxChance: 35, // Default max chance 35
+            margin: 1.05, // Default margin 1.05
+            stopLossPercent: 100 // Default stoploss 100%
+        },
+        limboMode: { // Mode baru: limbo
+            enabled: true,
+            multiplierTarget: 1000000, // Payout 1,000,000x
+            nextbet: 0,
+            basebet: 0,
+            profitToWager: 0,
+            inLimboPhase: false,
+            limboStartProfit: 0,
+            minBetMultiplier: 1.0
         },
         rotationState: {
             initialBalance: 0,
@@ -112,17 +125,20 @@
         minimized: false,
         activeTab: 'dashboard',
         martingaleHistory: [],
-        stakeChat: {
-            enabled: false,
-            currentRoom: null,
-            rooms: [],
-            messages: [],
-            autoRefresh: false,
-            refreshInterval: 5,
-            lastRefresh: 0,
-            unreadCount: 0,
-            showAllTypes: true,
-            soundNotification: false
+        maxChanceSettings: {
+            enabled: true,
+            maxChance: 99.95,
+            currentMaxChance: 99.95,
+            autoReset: true,
+            resetAfterBets: 100,
+            resetCountdown: 0,
+            originalChance: 99.95,
+            notificationSent: false
+        },
+        wagerProgress: {
+            currentBet: 1,
+            totalBets: 100,
+            phaseProfit: 0
         }
     };
 
@@ -334,9 +350,529 @@
                 `⏰ ${new Date().toLocaleString()}`;
 
             return this.sendMessage(message);
+        },
+
+        async sendMaxChanceNotification(currentChance, maxChance) {
+            if (!CONFIG.telegram.enabled) return;
+            
+            const message = `⚠️ <b>MAX CHANCE REACHED</b>\n` +
+                `══════════════════\n` +
+                `👤 User: <code>${bot.stakeUser}</code>\n` +
+                `🎯 Current Chance: <code>${currentChance.toFixed(2)}%</code>\n` +
+                `📊 Max Chance: <code>${maxChance.toFixed(2)}%</code>\n` +
+                `🔄 Reset Countdown: <code>${bot.maxChanceSettings.resetCountdown} bets remaining</code>\n` +
+                `💰 Balance: <code>${bot.stats.currentBal.toFixed(8)}</code>\n` +
+                `🎲 Total Bets: <code>${bot.stats.bets}</code>\n` +
+                `══════════════════\n` +
+                `⏰ ${new Date().toLocaleString()}`;
+
+            return this.sendMessage(message);
+        },
+
+        async sendChanceResetNotification(originalChance) {
+            if (!CONFIG.telegram.enabled) return;
+            
+            const message = `🔄 <b>CHANCE RESET TO DEFAULT</b>\n` +
+                `══════════════════\n` +
+                `👤 User: <code>${bot.stakeUser}</code>\n` +
+                `🎯 Chance Reset to: <code>${originalChance.toFixed(2)}%</code>\n` +
+                `📊 Reason: Max chance limit reached\n` +
+                `💰 Balance: <code>${bot.stats.currentBal.toFixed(8)}</code>\n` +
+                `🎲 Total Bets: <code>${bot.stats.bets}</code>\n` +
+                `✅ Bot continues with default settings\n` +
+                `══════════════════\n` +
+                `⏰ ${new Date().toLocaleString()}`;
+
+            return this.sendMessage(message);
+        },
+
+        async sendLimboWinReport(betAmount, profit, multiplier) {
+            if (!CONFIG.telegram.sendBigWins) return;
+
+            const message = `🎰 <b>LIMBO BIG WIN!</b>\n` +
+                `══════════════════\n` +
+                `👤 User: <code>${bot.stakeUser}</code>\n` +
+                `🎰 Bet Amount: <code>${betAmount.toFixed(8)}</code>\n` +
+                `💰 Profit: <code>+${profit.toFixed(8)} ${bot.selectedCurrency.toUpperCase()}</code>\n` +
+                `🎯 Multiplier: <code>${multiplier.toFixed(2)}x</code>\n` +
+                `⚡ Mode: <b>${bot.mode.toUpperCase()}</b>\n` +
+                `💰 Current Balance: <code>${bot.stats.currentBal.toFixed(8)}</code>\n` +
+                `══════════════════\n` +
+                `⏰ ${new Date().toLocaleString()}`;
+
+            return this.sendMessage(message);
         }
     };
 
+    // =============== WAGER MODE FUNCTIONS ===============
+    function initWagerMode() {
+        // Hitung basebet sebagai 0.1% dari balance
+        bot.wagerMode.basebet = bot.stats.currentBal * (bot.wagerMode.basebetPercentage / 100);
+        bot.wagerMode.nextbet = bot.wagerMode.basebet;
+        bot.wagerMode.currentChance = bot.wagerMode.baseChance;
+        bot.wagerMode.wagerCounter = 0;
+        bot.wagerMode.totalWagered = 0;
+        bot.wagerMode.inWagerPhase = true;
+        
+        // Reset wager progress
+        bot.wagerProgress.currentBet = 1;
+        bot.wagerProgress.totalBets = bot.wagerMode.maxWagerBets;
+        bot.wagerProgress.phaseProfit = 0;
+        
+        updateLogs(0, 0, 0, 
+            `WAGER MODE: Starting 100 bets with basebet ${bot.wagerMode.basebet.toFixed(8)} (${bot.wagerMode.basebetPercentage}% of balance) at ${bot.wagerMode.currentChance}% chance`, 
+            true
+        );
+    }
+
+    function wagerBetLogic(profit) {
+        const wm = bot.wagerMode;
+        
+        // Update wager counter
+        wm.wagerCounter++;
+        wm.totalWagered += bot.stats.lastBetAmount;
+        
+        // Update progress
+        bot.wagerProgress.currentBet = wm.wagerCounter;
+        bot.wagerProgress.phaseProfit += profit;
+        
+        // Check loss trigger (0.2% dari balance awal)
+        const currentLossPercent = Math.abs(bot.stats.profit) / bot.stats.startBal * 100;
+        
+        if (currentLossPercent >= wm.lossTriggerPercent && wm.inWagerPhase) {
+            wm.inWagerPhase = false;
+            
+            updateLogs(0, 0, 0, 
+                `⚠️ WAGER: Loss trigger activated (${currentLossPercent.toFixed(2)}% >= ${wm.lossTriggerPercent}%). Switching to ORION mode...`, 
+                true
+            );
+            
+            // Switch ke Orion mode
+            switchToOrionMode();
+            return null; // Return null untuk menandakan mode switch
+        }
+        
+        // Check jika sudah menyelesaikan 100 bets
+        if (wm.wagerCounter >= wm.maxWagerBets && wm.inWagerPhase) {
+            wm.inWagerPhase = false;
+            
+            if (bot.stats.profit > 0) {
+                // Jika profit positif, switch ke Limbo mode
+                updateLogs(0, 0, 0, 
+                    `✅ WAGER: Completed ${wm.maxWagerBets} bets with profit ${bot.stats.profit.toFixed(8)}. Switching to LIMBO mode...`, 
+                    true
+                );
+                switchToLimboMode();
+                return null;
+            } else {
+                // Jika tidak profit, reset wager
+                updateLogs(0, 0, 0, 
+                    `🔄 WAGER: Completed ${wm.maxWagerBets} bets. Resetting wager phase...`, 
+                    true
+                );
+                initWagerMode();
+            }
+        }
+        
+        // Tetap di wager mode, return bet info
+        return {
+            bet: wm.nextbet,
+            chance: wm.currentChance,
+            mode: 'dice' // Mode dice untuk wager
+        };
+    }
+
+    // =============== ORION MODE FUNCTIONS ===============
+    function initOrionMode() {
+        // Reset orion settings
+        setNewBaseChance();
+        bot.orionSettings.consecutiveLosses = 0;
+        bot.orionSettings.currentMultiplier = 1.0;
+        
+        updateLogs(0, 0, 0, 
+            `ORION MODE: Started with chance range ${bot.orionSettings.minChance}-${bot.orionSettings.maxChance}%, margin ${bot.orionSettings.margin}`, 
+            true
+        );
+    }
+
+    function setNewBaseChance() {
+        const min = bot.orionSettings.minChance;
+        const max = bot.orionSettings.maxChance;
+        bot.baseChance = parseFloat((Math.random() * (max - min) + min).toFixed(1));
+        bot.currentChance = bot.baseChance;
+        bot.singleChanceBets = 0;
+        bot.singleChanceLimit = Math.round(99 / bot.baseChance);
+        bot.tg = bot.perStep;
+        
+        updateLogs(0, 0, 0, `ORION: New base chance ${bot.baseChance}%`, true);
+    }
+
+    function orionBetLogic(profit) {
+        if (profit > 0) {
+            // Check jika sudah break even atau profit
+            if (bot.stats.profit >= 0) {
+                updateLogs(0, 0, 0, 
+                    `✅ ORION: Break even achieved (Profit: ${bot.stats.profit.toFixed(8)}). Switching to WAGER mode...`, 
+                    true
+                );
+                
+                if (bot.stats.profit > 0) {
+                    // Jika profit positif, switch ke Limbo
+                    switchToLimboMode();
+                } else {
+                    // Jika break even, kembali ke Wager
+                    switchToWagerMode();
+                }
+                return null;
+            }
+            
+            // Reset pada win
+            setNewBaseChance();
+            bot.orionSettings.consecutiveLosses = 0;
+            bot.orionSettings.currentMultiplier = 1.0;
+        } else {
+            bot.singleChanceBets++;
+            bot.tg += (bot.stats.lastBetAmount + bot.perStep);
+            bot.orionSettings.consecutiveLosses++;
+        }
+        
+        // Hitung next bet
+        let nextBet = 0;
+        const payout = 99 / bot.currentChance;
+        const baseBet = bot.wagerMode.basebet; // Gunakan basebet dari wager mode
+        
+        if (bot.orionSettings.method === "mathematic") {
+            nextBet = (Math.abs(bot.tg) / (payout - 1)) * bot.orionSettings.margin;
+        } else {
+            const martingaleMult = bot.orionSettings.martingaleMultiplier;
+            bot.orionSettings.currentMultiplier = Math.pow(martingaleMult, bot.orionSettings.consecutiveLosses);
+            nextBet = baseBet * bot.orionSettings.currentMultiplier;
+        }
+        
+        if (bot.tg === bot.perStep) nextBet = baseBet;
+        if (nextBet < bot.globalMinBet) nextBet = bot.globalMinBet;
+        
+        return {
+            bet: nextBet,
+            chance: bot.currentChance,
+            mode: 'dice'
+        };
+    }
+
+    // =============== LIMBO MODE FUNCTIONS ===============
+    function initLimboMode() {
+        bot.limboMode.inLimboPhase = true;
+        bot.limboMode.limboStartProfit = bot.stats.profit;
+        bot.limboMode.profitToWager = bot.stats.profit; // Simpan profit yang akan di-wager
+        bot.limboMode.basebet = bot.globalMinBet; // Gunakan minbet
+        bot.limboMode.nextbet = bot.limboMode.basebet;
+        
+        updateLogs(0, 0, 0, 
+            `LIMBO MODE: Started with profit ${bot.limboMode.profitToWager.toFixed(8)} to wager. Target multiplier: ${bot.limboMode.multiplierTarget}x`, 
+            true
+        );
+    }
+
+    function limboBetLogic(profit) {
+        const lm = bot.limboMode;
+        
+        if (profit > 0) {
+            // Update profit yang tersisa untuk di-wager
+            lm.profitToWager -= profit;
+            
+            // Check jika profit sudah habis atau break even
+            if (lm.profitToWager <= 0 || bot.stats.profit <= lm.limboStartProfit) {
+                updateLogs(0, 0, 0, 
+                    `✅ LIMBO: Profit wagered completed. Switching back to WAGER mode...`, 
+                    true
+                );
+                switchToWagerMode();
+                return null;
+            }
+            
+            // Tetap di limbo dengan bet minimal
+            lm.nextbet = lm.basebet;
+        } else {
+            // Pada loss, tetap dengan bet minimal
+            lm.nextbet = lm.basebet;
+        }
+        
+        return {
+            bet: lm.nextbet,
+            multiplier: lm.multiplierTarget,
+            mode: 'limbo'
+        };
+    }
+
+    // =============== MODE SWITCHING FUNCTIONS ===============
+    function switchToWagerMode() {
+        const oldMode = bot.mode;
+        bot.mode = "wager";
+        initWagerMode();
+        updateModeUI();
+        
+        if (CONFIG.telegram.enabled && oldMode !== bot.mode) {
+            TelegramAPI.sendModeChange(oldMode, bot.mode, "Auto rotation - Returning to Wager");
+        }
+    }
+
+    function switchToOrionMode() {
+        const oldMode = bot.mode;
+        bot.mode = "orion";
+        initOrionMode();
+        updateModeUI();
+        
+        if (CONFIG.telegram.enabled && oldMode !== bot.mode) {
+            TelegramAPI.sendModeChange(oldMode, bot.mode, "Auto rotation - Loss trigger activated");
+        }
+    }
+
+    function switchToLimboMode() {
+        const oldMode = bot.mode;
+        bot.mode = "limbo";
+        initLimboMode();
+        updateModeUI();
+        
+        if (CONFIG.telegram.enabled && oldMode !== bot.mode) {
+            TelegramAPI.sendModeChange(oldMode, bot.mode, "Auto rotation - Profit detected");
+        }
+    }
+
+    // =============== UPDATE STATS FUNCTIONS ===============
+    function updateStats(win) {
+        const now = Date.now();
+        bot.stats.betTimes.push(now);
+        
+        const thirtySecondsAgo = now - 30000;
+        while (bot.stats.betTimes.length > 0 && bot.stats.betTimes[0] < thirtySecondsAgo) {
+            bot.stats.betTimes.shift();
+        }
+        
+        if (bot.stats.betTimes.length > 1) {
+            const timeSpan = (bot.stats.betTimes[bot.stats.betTimes.length - 1] - bot.stats.betTimes[0]) / 1000;
+            bot.stats.betsPerSecond = timeSpan > 0 ? (bot.stats.betTimes.length - 1) / timeSpan : 0;
+        }
+        
+        if (win) {
+            if (bot.stats.currentStreak < 0) {
+                bot.stats.currentStreak = 1;
+            } else {
+                bot.stats.currentStreak++;
+            }
+            bot.stats.lastResult = 'win';
+            
+            if (bot.stats.currentStreak > bot.stats.bestWinStreak) {
+                bot.stats.bestWinStreak = bot.stats.currentStreak;
+            }
+        } else {
+            if (bot.stats.currentStreak > 0) {
+                bot.stats.currentStreak = -1;
+            } else {
+                bot.stats.currentStreak--;
+            }
+            bot.stats.lastResult = 'loss';
+            
+            if (Math.abs(bot.stats.currentStreak) > bot.stats.worstLossStreak) {
+                bot.stats.worstLossStreak = Math.abs(bot.stats.currentStreak);
+            }
+        }
+    }
+
+    // =============== MAIN GAME LOOP ===============
+    async function runLoop() {
+        if (!bot.isRunning || bot.isPaused) return;
+
+        try {
+            // Send periodic report
+            TelegramAPI.sendPeriodicReport();
+
+            let betInfo = null;
+            let nextBet = 0;
+            let chance = 0;
+            let multiplier = 0;
+            let gameMode = 'dice';
+
+            // Determine bet based on current mode
+            if (bot.mode === "wager") {
+                betInfo = wagerBetLogic(0);
+                if (betInfo === null) {
+                    // Mode switched, run loop again
+                    setTimeout(runLoop, 10);
+                    return;
+                }
+                nextBet = betInfo.bet;
+                chance = betInfo.chance;
+                gameMode = betInfo.mode;
+                
+            } else if (bot.mode === "orion") {
+                // Orion mode logic
+                if (bot.singleChanceBets < bot.singleChanceLimit) {
+                    bot.currentChance = bot.baseChance;
+                } else {
+                    bot.currentChance = Math.floor(Math.random() * 11) + (bot.baseChance + 5);
+                }
+                
+                betInfo = orionBetLogic(0);
+                if (betInfo === null) {
+                    // Mode switched, run loop again
+                    setTimeout(runLoop, 10);
+                    return;
+                }
+                nextBet = betInfo.bet;
+                chance = betInfo.chance;
+                gameMode = betInfo.mode;
+                
+            } else if (bot.mode === "limbo") {
+                betInfo = limboBetLogic(0);
+                if (betInfo === null) {
+                    // Mode switched, run loop again
+                    setTimeout(runLoop, 10);
+                    return;
+                }
+                nextBet = betInfo.bet;
+                multiplier = betInfo.multiplier;
+                gameMode = betInfo.mode;
+            }
+
+            // Validate bet amount
+            if (nextBet <= 0) nextBet = bot.globalMinBet;
+            if (nextBet < bot.globalMinBet) nextBet = bot.globalMinBet;
+            
+            if (nextBet > bot.stats.currentBal && bot.stats.currentBal > 0) {
+                nextBet = bot.stats.currentBal;
+                updateLogs(0, 0, 0, `⚠️ Bet capped at balance: ${nextBet.toFixed(8)}`, true);
+            }
+
+            // Place bet based on game mode
+            let res;
+            if (gameMode === 'dice') {
+                res = await API.placeDiceBet(nextBet, chance);
+            } else if (gameMode === 'limbo') {
+                res = await API.placeLimboBet(nextBet, multiplier);
+            }
+
+            let win = false;
+            let pft = 0;
+            let betAmount = nextBet;
+
+            if (res) {
+                if (gameMode === 'dice') {
+                    const d = res?.data?.diceRoll || res?.diceRoll;
+                    if (d) {
+                        win = d.payout > 0;
+                        pft = d.payout - d.amount;
+                        betAmount = d.amount;
+                    }
+                } else if (gameMode === 'limbo') {
+                    const lb = res?.data?.limboBet || res?.limboBet;
+                    if (lb) {
+                        const resultMultiplier = lb.state?.result || 0;
+                        const targetMultiplier = lb.state?.multiplierTarget || multiplier;
+                        win = resultMultiplier >= targetMultiplier;
+                        pft = win ? (lb.amount * (targetMultiplier - 1)) : -lb.amount;
+                        betAmount = lb.amount;
+                        
+                        // Send big win report for limbo
+                        if (win && pft > 0 && CONFIG.telegram.enabled && CONFIG.telegram.sendBigWins) {
+                            const profitPercent = (pft / bot.stats.currentBal * 100);
+                            if (profitPercent >= CONFIG.telegram.bigWinThreshold) {
+                                TelegramAPI.sendLimboWinReport(betAmount, pft, resultMultiplier);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Update stats
+            bot.stats.bets++;
+            bot.stats.wagered += betAmount;
+            bot.stats.profit += pft;
+            bot.stats.currentBal += pft;
+            bot.stats.lastBetAmount = betAmount;
+
+            if (win) {
+                bot.stats.wins++;
+                if (gameMode === 'dice') {
+                    TelegramAPI.sendBigWinReport(betAmount, pft, chance);
+                }
+            } else {
+                bot.stats.loss++;
+            }
+
+            updateStats(win);
+
+            // Update drawdown
+            if (bot.stats.currentBal < bot.stats.startBal) {
+                let dd = bot.stats.startBal - bot.stats.currentBal;
+                let ddPerc = (dd / bot.stats.startBal) * 100;
+                if (dd > bot.stats.maxDD) bot.stats.maxDD = dd;
+                if (ddPerc > bot.stats.maxDDPerc) bot.stats.maxDDPerc = ddPerc;
+            }
+
+            // Update logs
+            let logLine;
+            if (gameMode === 'dice') {
+                logLine = `a:${betAmount.toFixed(8)} c:${chance.toFixed(1)}% p:${pft > 0 ? '+' : ''}${pft.toFixed(8)}`;
+            } else {
+                logLine = `a:${betAmount.toFixed(8)} m:${multiplier}x p:${pft > 0 ? '+' : ''}${pft.toFixed(8)}`;
+            }
+            updateLogs(betAmount, pft, chance, logLine);
+
+            // Process bet logic based on result
+            if (gameMode === 'dice') {
+                if (bot.mode === "wager") {
+                    wagerBetLogic(pft);
+                } else if (bot.mode === "orion") {
+                    orionBetLogic(pft);
+                }
+            } else if (gameMode === 'limbo') {
+                limboBetLogic(pft);
+            }
+
+            // Check targets
+            if (bot.stats.profit >= bot.targetAbs) {
+                bot.isRunning = false;
+                updateLogs(0, 0, 0, "🎯 TARGET SUCCESS!", true);
+                TelegramAPI.sendTargetReached();
+                TelegramAPI.sendStopReport("Target Profit Reached");
+                return;
+            }
+            else if (bot.stats.profit <= -bot.stopLossAbs) {
+                bot.isRunning = false;
+                updateLogs(0, 0, 0, "🛑 STOP LOSS REACHED!", true);
+                TelegramAPI.sendStopLossReached();
+                return;
+            }
+
+            // Check Orion stop loss khusus
+            if (bot.mode === "orion") {
+                const orionStopLossAbs = bot.stats.startBal * (bot.orionSettings.stopLossPercent / 100);
+                if (bot.stats.profit <= -orionStopLossAbs) {
+                    updateLogs(0, 0, 0, "🛑 ORION STOP LOSS REACHED! Switching to WAGER mode...", true);
+                    switchToWagerMode();
+                }
+            }
+
+            updateDashboard();
+
+            // Continue loop
+            if (bot.isRunning && !bot.isPaused) {
+                const delay = bot.turboMode ? bot.turboSettings.betDelay : 10;
+                setTimeout(runLoop, delay);
+            }
+
+        } catch (e) {
+            console.error("Run loop error:", e);
+            updateLogs(0, 0, 0, `⚠️ Error: ${e.message}`, true);
+            
+            if (bot.isRunning && !bot.isPaused) {
+                const delay = bot.turboMode ? 50 : 100;
+                setTimeout(runLoop, delay);
+            }
+        }
+    }
+
+    // =============== API FUNCTIONS ===============
     const API = {
         async syncOnce() {
             bot.token = localStorage.getItem('apitoken') || (document.cookie.match(/session=([^;]+)/) ? document.cookie.match(/session=([^;]+)/)[1] : null);
@@ -408,7 +944,7 @@
             }
         },
 
-        async placeBet(amount, chance) {
+        async placeDiceBet(amount, chance) {
             if (bot.isDemo) {
                 const dly = document.getElementById("turbo-delay")?.value || 0;
                 return new Promise((r) => {
@@ -442,171 +978,183 @@
                 body: JSON.stringify(payload)
             });
             return r.json();
+        },
+
+        async placeLimboBet(amount, multiplierTarget) {
+            if (bot.isDemo) {
+                const dly = document.getElementById("turbo-delay")?.value || 0;
+                return new Promise((r) => {
+                    const win = Math.random() < (1 / multiplierTarget);
+                    setTimeout(() => {
+                        r({
+                            limboBet: {
+                                amount: amount,
+                                state: {
+                                    result: win ? multiplierTarget : (multiplierTarget * Math.random()),
+                                    multiplierTarget: multiplierTarget
+                                }
+                            }
+                        });
+                    }, dly);
+                });
+            }
+
+            const payload = {
+                multiplierTarget: multiplierTarget,
+                identifier: Math.random().toString(36).slice(2) + Date.now(),
+                amount: parseFloat(amount.toFixed(8)),
+                currency: bot.selectedCurrency
+            };
+
+            const r = await fetch(`${CONFIG.apiUrl}/casino/limbo/bet`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "x-access-token": bot.token,
+                    "x-lockdown-token": "s5MNWtjTM5TvCMkAzxov"
+                },
+                body: JSON.stringify(payload)
+            });
+            return r.json();
         }
     };
 
-    // =============== SMART WAGER MODE FUNCTIONS ===============
-    function initSmartWager() {
-        if (bot.smartWager.basebetMode === "percentage") {
-            bot.smartWager.basebet = bot.stats.currentBal * (bot.smartWager.basebetPercentage / 100);
-        } else {
-            bot.smartWager.basebet = bot.smartWager.basebetFixed;
+    // =============== UI UPDATE FUNCTIONS ===============
+    function updateDashboard() {
+        // Update current mode
+        const currentMode = document.getElementById("current-mode");
+        if (currentMode) {
+            currentMode.textContent = bot.mode.toUpperCase();
+            if (bot.mode === 'orion') {
+                currentMode.style.color = '#00ccff';
+            } else if (bot.mode === 'wager') {
+                currentMode.style.color = '#10b981';
+            } else if (bot.mode === 'limbo') {
+                currentMode.style.color = '#ff3366';
+            } else {
+                currentMode.style.color = '#666';
+            }
+            if (bot.isPaused) {
+                currentMode.textContent += " (PAUSED)";
+            }
         }
 
-        bot.smartWager.nextbet = bot.smartWager.basebet;
-        bot.smartWager.currentChance = bot.smartWager.baseChance;
-        bot.smartWager.recoveryMode = false;
-        bot.smartWager.recoveryBets = 0;
-        bot.smartWager.consecutiveLosses = 0;
-        bot.smartWager.profitSinceRecovery = 0;
+        // Update balance
+        const dashboardBalance = document.getElementById("dashboard-balance");
+        if (dashboardBalance) dashboardBalance.innerText = bot.stats.currentBal.toFixed(8);
 
-        updateLogs(0, 0, 0, `SMART WAGER: Base bet ${bot.smartWager.basebet.toFixed(8)}, Chance ${bot.smartWager.baseChance}%`, true);
+        // Update profit
+        const dashboardProfit = document.getElementById("dashboard-profit");
+        if (dashboardProfit) dashboardProfit.innerText = bot.stats.profit.toFixed(8);
+
+        const profitPercent = bot.stats.startBal > 0 ? (bot.stats.profit / bot.stats.startBal * 100) : 0;
+        const dashboardProfitPct = document.getElementById("dashboard-profit-pct");
+        if (dashboardProfitPct) dashboardProfitPct.innerText = profitPercent.toFixed(2) + '%';
+
+        // Update win rate
+        const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100) : 0;
+        const dashboardWinrate = document.getElementById("dashboard-winrate");
+        if (dashboardWinrate) dashboardWinrate.innerText = winRate.toFixed(2) + '%';
+
+        const dashboardWinsLosses = document.getElementById("dashboard-wins-losses");
+        if (dashboardWinsLosses) dashboardWinsLosses.innerText = `${bot.stats.wins}/${bot.stats.loss}`;
+
+        // Update bets
+        const dashboardBets = document.getElementById("dashboard-bets");
+        if (dashboardBets) dashboardBets.innerText = bot.stats.bets;
+
+        const dashboardWins = document.getElementById("dashboard-wins");
+        if (dashboardWins) dashboardWins.innerText = bot.stats.wins;
+
+        const dashboardLosses = document.getElementById("dashboard-losses");
+        if (dashboardLosses) dashboardLosses.innerText = bot.stats.loss;
+
+        // Update wagered
+        const dashboardWagered = document.getElementById("dashboard-wagered");
+        if (dashboardWagered) dashboardWagered.innerText = bot.stats.wagered.toFixed(8);
+
+        // Update runtime
+        const dashboardRuntime = document.getElementById("dashboard-runtime");
+        if (dashboardRuntime && bot.stats.startTime) {
+            const now = new Date();
+            const runtime = Math.floor((now - bot.stats.startTime) / 1000);
+            const hours = Math.floor(runtime / 3600);
+            const minutes = Math.floor((runtime % 3600) / 60);
+            const seconds = runtime % 60;
+            dashboardRuntime.innerText = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+        }
+
+        // Update streaks
+        const dashboardWsLs = document.getElementById("dashboard-wsls");
+        if (dashboardWsLs) {
+            dashboardWsLs.innerText = `BWS:${bot.stats.bestWinStreak} WLS:${bot.stats.worstLossStreak}`;
+        }
+
+        // Update speed
+        const dashboardSpeed = document.getElementById("dashboard-speed");
+        if (dashboardSpeed) {
+            dashboardSpeed.textContent = `${bot.stats.betsPerSecond.toFixed(2)} bet/sec`;
+        }
+        
+        // Update currency
+        const stCurrency = document.getElementById("st-currency");
+        if (stCurrency) stCurrency.textContent = bot.selectedCurrency.toUpperCase();
+
+        // Update account
+        const dashboardAccount = document.getElementById("dashboard-account");
+        if (dashboardAccount) dashboardAccount.textContent = bot.stakeUser;
+
+        // Update wager progress
+        const wagerProgress = document.getElementById("wager-progress");
+        if (wagerProgress) {
+            wagerProgress.textContent = `${bot.wagerProgress.currentBet}/${bot.wagerProgress.totalBets}`;
+        }
+
+        // Update martingale info for Orion
+        if (bot.mode === 'orion' && bot.orionSettings.method === 'martingale') {
+            const martingaleInfo = document.getElementById("martingale-info");
+            if (martingaleInfo) {
+                martingaleInfo.innerHTML = `Losses: ${bot.orionSettings.consecutiveLosses}, Multiplier: ${bot.orionSettings.currentMultiplier.toFixed(4)}`;
+            }
+        }
+        
+        // Update specific mode UIs
+        updateWagerUI();
+        updateLimboUI();
     }
 
-    function smartWagerBetLogic(profit) {
-        const sw = bot.smartWager;
+    function updateWagerUI() {
+        const wm = bot.wagerMode;
         
-        // Update consecutive losses
-        if (profit < 0) {
-            sw.consecutiveLosses++;
+        if (document.getElementById("wager-basebet")) {
+            document.getElementById("wager-basebet").innerText = wm.basebet.toFixed(8);
+            document.getElementById("wager-nextbet").innerText = wm.nextbet.toFixed(8);
+            document.getElementById("wager-chance").innerText = wm.currentChance.toFixed(2) + "%";
+            document.getElementById("wager-counter").innerText = `${wm.wagerCounter}/${wm.maxWagerBets}`;
+            document.getElementById("wager-total-wagered").innerText = wm.totalWagered.toFixed(8);
+            document.getElementById("wager-phase-profit").innerText = bot.wagerProgress.phaseProfit.toFixed(8);
             
-            // Check if we need to enter recovery mode
-            const lossPercent = Math.abs(sw.consecutiveLosses * profit) / bot.stats.currentBal * 100;
-            
-            if (!sw.recoveryMode && lossPercent >= sw.recoveryThreshold) {
-                sw.recoveryMode = true;
-                sw.recoveryBets = 0;
-                sw.profitSinceRecovery = 0;
-                
-                updateLogs(0, 0, 0, 
-                    `🔄 SMART WAGER: Entering recovery mode (Loss: ${lossPercent.toFixed(2)}% >= ${sw.recoveryThreshold}%)`, 
-                    true
-                );
-            }
-            
-            // Check auto rotate condition
-            checkAutoRotate(profit);
-            
-        } else {
-            sw.consecutiveLosses = 0;
-            sw.profitSinceRecovery += profit;
-            
-            // Check if we can exit recovery mode
-            if (sw.recoveryMode && sw.profitSinceRecovery > 0) {
-                sw.recoveryMode = false;
-                sw.nextbet = sw.basebet;
-                sw.currentChance = sw.baseChance;
-                sw.recoveryBets = 0;
-                
-                updateLogs(0, 0, 0, 
-                    `✅ SMART WAGER: Exiting recovery mode (Profit: ${sw.profitSinceRecovery.toFixed(8)})`, 
-                    true
-                );
+            const statusEl = document.getElementById("wager-status");
+            if (statusEl) {
+                statusEl.className = "wager-status " + (wm.inWagerPhase ? "status-active" : "status-inactive");
+                statusEl.innerText = wm.inWagerPhase ? "ACTIVE" : "INACTIVE";
             }
         }
-        
-        // Recovery mode logic
-        if (sw.recoveryMode) {
-            sw.recoveryBets++;
-            
-            // Increase bet in recovery mode
-            sw.nextbet = sw.basebet * Math.pow(sw.recoveryMultiplier, sw.recoveryBets);
-            
-            // Use recovery chance
-            sw.currentChance = sw.recoveryChance;
-            
-            // Check max recovery bets
-            if (sw.recoveryBets >= sw.maxRecoveryBets) {
-                sw.recoveryMode = false;
-                sw.nextbet = sw.basebet;
-                sw.currentChance = sw.baseChance;
-                sw.recoveryBets = 0;
-                
-                updateLogs(0, 0, 0, 
-                    `⚠️ SMART WAGER: Max recovery bets reached, resetting to normal`, 
-                    true
-                );
-            }
-        } else {
-            // Normal mode - reset to base values after win
-            if (profit > 0) {
-                sw.nextbet = sw.basebet;
-                sw.currentChance = sw.baseChance;
-            }
-        }
-        
-        // Apply global min bet
-        if (sw.nextbet < bot.globalMinBet) {
-            sw.nextbet = bot.globalMinBet;
-        }
-        
-        // Update UI
-        updateSmartWagerUI();
-        
-        return {
-            bet: sw.nextbet,
-            chance: sw.currentChance
-        };
     }
 
-    // =============== AUTO ROTATE FUNCTION ===============
-    function checkAutoRotate(profit) {
-        if (!bot.autoRotate.enabled || !bot.isRunning) return;
+    function updateLimboUI() {
+        const lm = bot.limboMode;
         
-        const now = Date.now();
-        const timeSinceLastRotate = now - bot.autoRotate.lastRotateTime;
-        
-        // Check minimum interval
-        if (timeSinceLastRotate < bot.autoRotate.minRotateInterval) return;
-        
-        // Calculate current loss percentage
-        const lossPercent = Math.abs(bot.stats.profit) / bot.stats.startBal * 100;
-        
-        // Check if loss threshold is reached
-        if (lossPercent >= bot.autoRotate.lossThreshold) {
-            // Check if we should rotate from smartwager to orion
-            if (bot.mode === "smartwager" && bot.enabledModes.orion) {
-                const oldMode = bot.mode;
-                bot.mode = "orion";
-                bot.autoRotate.lastRotateTime = now;
-                
-                // Initialize Orion mode
-                setNewBaseChance();
-                
-                updateLogs(0, 0, 0, 
-                    `🔄 AUTO ROTATE: Smart Wager → Orion (Loss: ${lossPercent.toFixed(2)}% >= ${bot.autoRotate.lossThreshold}%)`, 
-                    true
-                );
-                
-                // Update UI
-                updateModeUI();
-                
-                // Send Telegram notification
-                if (CONFIG.telegram.enabled) {
-                    TelegramAPI.sendAutoRotateReport(oldMode, bot.mode, lossPercent);
-                }
-            }
-            // Check if we should rotate from orion to smartwager
-            else if (bot.mode === "orion" && bot.enabledModes.smartwager) {
-                const oldMode = bot.mode;
-                bot.mode = "smartwager";
-                bot.autoRotate.lastRotateTime = now;
-                
-                // Initialize Smart Wager mode
-                initSmartWager();
-                
-                updateLogs(0, 0, 0, 
-                    `🔄 AUTO ROTATE: Orion → Smart Wager (Loss: ${lossPercent.toFixed(2)}% >= ${bot.autoRotate.lossThreshold}%)`, 
-                    true
-                );
-                
-                // Update UI
-                updateModeUI();
-                
-                // Send Telegram notification
-                if (CONFIG.telegram.enabled) {
-                    TelegramAPI.sendAutoRotateReport(oldMode, bot.mode, lossPercent);
-                }
+        if (document.getElementById("limbo-multiplier")) {
+            document.getElementById("limbo-multiplier").innerText = lm.multiplierTarget.toFixed(2) + "x";
+            document.getElementById("limbo-nextbet").innerText = lm.nextbet.toFixed(8);
+            document.getElementById("limbo-profit-to-wager").innerText = lm.profitToWager.toFixed(8);
+            document.getElementById("limbo-start-profit").innerText = lm.limboStartProfit.toFixed(8);
+            
+            const statusEl = document.getElementById("limbo-status");
+            if (statusEl) {
+                statusEl.className = "limbo-status " + (lm.inLimboPhase ? "status-active" : "status-inactive");
+                statusEl.innerText = lm.inLimboPhase ? "ACTIVE" : "INACTIVE";
             }
         }
     }
@@ -624,15 +1172,28 @@
         const currentMode = document.getElementById("current-mode");
         if (currentMode) {
             currentMode.textContent = bot.mode.toUpperCase();
-            currentMode.style.color = getModeColor();
+            if (bot.mode === 'orion') {
+                currentMode.style.color = '#00ccff';
+            } else if (bot.mode === 'wager') {
+                currentMode.style.color = '#10b981';
+            } else if (bot.mode === 'limbo') {
+                currentMode.style.color = '#ff3366';
+            } else {
+                currentMode.style.color = '#666';
+            }
         }
         
         // Show/hide panels
-        const smartWagerPanel = document.getElementById("smartwager-panel");
+        const wagerPanel = document.getElementById("wager-panel");
+        const limboPanel = document.getElementById("limbo-panel");
         const martingaleContainer = document.getElementById("martingale-info-container");
         
-        if (smartWagerPanel) {
-            smartWagerPanel.style.display = bot.mode === 'smartwager' ? 'block' : 'none';
+        if (wagerPanel) {
+            wagerPanel.style.display = bot.mode === 'wager' ? 'block' : 'none';
+        }
+        
+        if (limboPanel) {
+            limboPanel.style.display = bot.mode === 'limbo' ? 'block' : 'none';
         }
         
         if (martingaleContainer) {
@@ -644,212 +1205,6 @@
         }
     }
 
-    // =============== ORION MODE FUNCTIONS ===============
-    function setNewBaseChance() {
-        const min = parseFloat(document.getElementById("p-ch-min")?.value || 5);
-        const max = parseFloat(document.getElementById("p-ch-max")?.value || 12);
-        bot.baseChance = parseFloat((Math.random() * (max - min) + min).toFixed(1));
-        bot.currentChance = bot.baseChance;
-        bot.singleChanceBets = 0;
-        bot.singleChanceLimit = Math.round(99 / bot.baseChance);
-        bot.tg = bot.perStep;
-        
-        bot.orionSettings.consecutiveLosses = 0;
-        bot.orionSettings.currentMultiplier = 1.0;
-        bot.martingaleHistory = [];
-        
-        updateLogs(0, 0, 0, `ORION: New base chance ${bot.baseChance}%, Martingale reset`, true);
-    }
-
-    // =============== UPDATE STATS FUNCTIONS ===============
-    function updateStats(win) {
-        const now = Date.now();
-        bot.stats.betTimes.push(now);
-        
-        // Keep only last 30 seconds of bet times for calculation
-        const thirtySecondsAgo = now - 30000;
-        while (bot.stats.betTimes.length > 0 && bot.stats.betTimes[0] < thirtySecondsAgo) {
-            bot.stats.betTimes.shift();
-        }
-        
-        // Calculate bets per second (average over last 30 seconds)
-        if (bot.stats.betTimes.length > 1) {
-            const timeSpan = (bot.stats.betTimes[bot.stats.betTimes.length - 1] - bot.stats.betTimes[0]) / 1000;
-            bot.stats.betsPerSecond = timeSpan > 0 ? (bot.stats.betTimes.length - 1) / timeSpan : 0;
-        }
-        
-        if (win) {
-            if (bot.stats.currentStreak < 0) {
-                bot.stats.currentStreak = 1;
-            } else {
-                bot.stats.currentStreak++;
-            }
-            bot.stats.lastResult = 'win';
-            
-            // Update best win streak
-            if (bot.stats.currentStreak > bot.stats.bestWinStreak) {
-                bot.stats.bestWinStreak = bot.stats.currentStreak;
-            }
-        } else {
-            if (bot.stats.currentStreak > 0) {
-                bot.stats.currentStreak = -1;
-            } else {
-                bot.stats.currentStreak--;
-            }
-            bot.stats.lastResult = 'loss';
-            
-            // Update worst loss streak
-            if (Math.abs(bot.stats.currentStreak) > bot.stats.worstLossStreak) {
-                bot.stats.worstLossStreak = Math.abs(bot.stats.currentStreak);
-            }
-        }
-        
-        // Check auto rotate on loss
-        if (!win) {
-            checkAutoRotate(-bot.stats.lastBetAmount);
-        }
-    }
-
-    // =============== MAIN GAME LOOP ===============
-    async function runLoop() {
-        if (!bot.isRunning || bot.isPaused) return;
-
-        try {
-            // Check for periodic Telegram report
-            TelegramAPI.sendPeriodicReport();
-
-            let nextBet = 0;
-
-            if (bot.mode === "orion") {
-                if (bot.singleChanceBets < bot.singleChanceLimit) {
-                    bot.currentChance = bot.baseChance;
-                } else {
-                    bot.currentChance = Math.floor(Math.random() * 11) + (bot.baseChance + 5);
-                }
-
-                const payout = 99 / bot.currentChance;
-                const margin = parseFloat(document.getElementById("p-margin")?.value || 1.01);
-                const minBetLimit = bot.globalMinBet;
-                const baseBet = parseFloat(document.getElementById("p-basebet")?.value || 0.00000001);
-
-                if (bot.orionSettings.method === "mathematic") {
-                    nextBet = (Math.abs(bot.tg) / (payout - 1)) * margin;
-                } else {
-                    // MARTINGALE SYSTEM
-                    const martingaleMult = bot.orionSettings.martingaleMultiplier || 1.12;
-                    
-                    if (bot.singleChanceBets === 0) {
-                        nextBet = baseBet;
-                        bot.orionSettings.currentMultiplier = 1.0;
-                    } else {
-                        bot.orionSettings.currentMultiplier = Math.pow(martingaleMult, bot.orionSettings.consecutiveLosses);
-                        nextBet = baseBet * bot.orionSettings.currentMultiplier;
-                    }
-                }
-
-                if (bot.tg === bot.perStep) nextBet = baseBet;
-                if (nextBet < minBetLimit) nextBet = minBetLimit;
-
-            } else if (bot.mode === "smartwager") {
-                const betInfo = smartWagerBetLogic(0);
-                nextBet = betInfo.bet;
-                bot.currentChance = betInfo.chance;
-            }
-
-            if (nextBet <= 0) nextBet = parseFloat(document.getElementById("p-basebet")?.value || 0.00000001);
-            
-            if (nextBet < bot.globalMinBet) {
-                nextBet = bot.globalMinBet;
-            }
-            
-            if (nextBet > bot.stats.currentBal && bot.stats.currentBal > 0) {
-                nextBet = bot.stats.currentBal;
-                updateLogs(0, 0, 0, `⚠️ Bet capped at balance: ${nextBet.toFixed(8)}`, true);
-            }
-
-            const res = await API.placeBet(nextBet, bot.currentChance);
-            const d = res?.data?.diceRoll || res?.diceRoll;
-
-            if (d) {
-                const win = d.payout > 0;
-                const pft = d.payout - d.amount;
-
-                bot.stats.bets++;
-                bot.stats.wagered += d.amount;
-                bot.stats.profit += pft;
-                bot.stats.currentBal += pft;
-                bot.stats.lastBetAmount = d.amount;
-
-                if (win) {
-                    bot.stats.wins++;
-                    TelegramAPI.sendBigWinReport(d.amount, pft, bot.currentChance);
-                } else {
-                    bot.stats.loss++;
-                }
-
-                updateStats(win);
-
-                if (bot.stats.currentBal < bot.stats.startBal) {
-                    let dd = bot.stats.startBal - bot.stats.currentBal;
-                    let ddPerc = (dd / bot.stats.startBal) * 100;
-                    if (dd > bot.stats.maxDD) bot.stats.maxDD = dd;
-                    if (ddPerc > bot.stats.maxDDPerc) bot.stats.maxDDPerc = ddPerc;
-                }
-
-                // Clean log format
-                const logLine = `a:${d.amount.toFixed(8)} c:${bot.currentChance.toFixed(1)}% p:${pft > 0 ? '+' : ''}${pft.toFixed(8)}`;
-                updateLogs(d.amount, pft, bot.currentChance, logLine);
-
-                if (bot.mode === "orion") {
-                    if (win) {
-                        setNewBaseChance();
-                        bot.orionSettings.consecutiveLosses = 0;
-                        bot.orionSettings.currentMultiplier = 1.0;
-                    } else {
-                        bot.singleChanceBets++;
-                        bot.tg += (d.amount + bot.perStep);
-                        bot.orionSettings.consecutiveLosses++;
-                    }
-                } else if (bot.mode === "smartwager") {
-                    smartWagerBetLogic(pft);
-                }
-
-                if (bot.stats.profit >= bot.targetAbs) {
-                    bot.isRunning = false;
-                    updateLogs(0, 0, 0, "🎯 TARGET SUCCESS!", true);
-                    TelegramAPI.sendTargetReached();
-                    TelegramAPI.sendStopReport("Target Profit Reached");
-                }
-                else if (bot.stats.profit <= -bot.stopLossAbs) {
-                    bot.isRunning = false;
-                    updateLogs(0, 0, 0, "🛑 STOP LOSS REACHED!", true);
-                    TelegramAPI.sendStopLossReached();
-                }
-
-                updateDashboard();
-            }
-
-            if (bot.isRunning && !bot.isPaused) {
-                if (!bot.isDemo) {
-                    const delay = bot.turboMode ? bot.turboSettings.betDelay : 10;
-                    setTimeout(runLoop, delay);
-                } else {
-                    runLoop();
-                }
-            }
-
-        } catch (e) {
-            console.error("Run loop error:", e);
-            updateLogs(0, 0, 0, `⚠️ Error: ${e.message}`, true);
-            
-            if (bot.isRunning && !bot.isPaused) {
-                const delay = bot.turboMode ? 50 : 100;
-                setTimeout(runLoop, delay);
-            }
-        }
-    }
-
-    // =============== UI FUNCTIONS ===============
     function updateLogs(amt, pft, ch, customMsg = null, isSystem = false) {
         const logBox = document.getElementById("p-logs");
         if (!logBox) return;
@@ -868,7 +1223,6 @@
         if (customMsg) {
             entry.innerHTML = customMsg;
         } else {
-            // Clean format: a:amount c:chance% p:profit
             entry.innerHTML = `a:${amt.toFixed(8)} c:${ch}% p:${pft > 0 ? '+' : ''}${pft.toFixed(8)}`;
         }
 
@@ -879,159 +1233,13 @@
         }
     }
 
-    function getModeColor() {
-        switch (bot.mode) {
-            case 'orion': return '#00ccff';
-            case 'smartwager': return '#10b981';
-            default: return '#666';
-        }
-    }
-
-    function updateDashboard() {
-        const currentMode = document.getElementById("current-mode");
-        if (currentMode) {
-            currentMode.textContent = bot.mode.toUpperCase();
-            currentMode.style.color = getModeColor();
-            if (bot.isPaused) {
-                currentMode.textContent += " (PAUSED)";
-            }
-        }
-
-        const dashboardBalance = document.getElementById("dashboard-balance");
-        if (dashboardBalance) dashboardBalance.innerText = bot.stats.currentBal.toFixed(8);
-
-        const dashboardProfit = document.getElementById("dashboard-profit");
-        if (dashboardProfit) dashboardProfit.innerText = bot.stats.profit.toFixed(8);
-
-        const profitPercent = bot.stats.startBal > 0 ? (bot.stats.profit / bot.stats.startBal * 100) : 0;
-        const dashboardProfitPct = document.getElementById("dashboard-profit-pct");
-        if (dashboardProfitPct) dashboardProfitPct.innerText = profitPercent.toFixed(2) + '%';
-
-        const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100) : 0;
-        const dashboardWinrate = document.getElementById("dashboard-winrate");
-        if (dashboardWinrate) dashboardWinrate.innerText = winRate.toFixed(2) + '%';
-
-        const dashboardWinsLosses = document.getElementById("dashboard-wins-losses");
-        if (dashboardWinsLosses) dashboardWinsLosses.innerText = `${bot.stats.wins}/${bot.stats.loss}`;
-
-        const dashboardBets = document.getElementById("dashboard-bets");
-        if (dashboardBets) dashboardBets.innerText = bot.stats.bets;
-
-        const dashboardWins = document.getElementById("dashboard-wins");
-        if (dashboardWins) dashboardWins.innerText = bot.stats.wins;
-
-        const dashboardLosses = document.getElementById("dashboard-losses");
-        if (dashboardLosses) dashboardLosses.innerText = bot.stats.loss;
-
-        const dashboardWagered = document.getElementById("dashboard-wagered");
-        if (dashboardWagered) dashboardWagered.innerText = bot.stats.wagered.toFixed(8);
-
-        const dashboardRuntime = document.getElementById("dashboard-runtime");
-        if (dashboardRuntime && bot.stats.startTime) {
-            const now = new Date();
-            const runtime = Math.floor((now - bot.stats.startTime) / 1000);
-            const hours = Math.floor(runtime / 3600);
-            const minutes = Math.floor((runtime % 3600) / 60);
-            const seconds = runtime % 60;
-            dashboardRuntime.innerText = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-        }
-
-        // Changed to Best WS / Worst LS
-        const dashboardWsLs = document.getElementById("dashboard-wsls");
-        if (dashboardWsLs) {
-            dashboardWsLs.innerText = `BWS:${bot.stats.bestWinStreak} WLS:${bot.stats.worstLossStreak}`;
-        }
-
-        const dashboardSpeed = document.getElementById("dashboard-speed");
-        if (dashboardSpeed) {
-            // Display bets per second
-            dashboardSpeed.textContent = `${bot.stats.betsPerSecond.toFixed(2)} bet/sec`;
-        }
-        
-        const stCurrency = document.getElementById("st-currency");
-        if (stCurrency) stCurrency.textContent = bot.selectedCurrency.toUpperCase();
-
-        const dashboardAccount = document.getElementById("dashboard-account");
-        if (dashboardAccount) dashboardAccount.textContent = bot.stakeUser;
-
-        if (bot.mode === 'orion' && bot.orionSettings.method === 'martingale') {
-            const martingaleInfo = document.getElementById("martingale-info");
-            if (martingaleInfo) {
-                martingaleInfo.innerHTML = `Losses: ${bot.orionSettings.consecutiveLosses}, Multiplier: ${bot.orionSettings.currentMultiplier.toFixed(4)}`;
-            }
-        }
-        
-        updateSmartWagerUI();
-    }
-
-    function updateSmartWagerUI() {
-        const sw = bot.smartWager;
-        
-        if (document.getElementById("sw-basebet")) {
-            document.getElementById("sw-basebet").innerText = sw.basebet.toFixed(8);
-            document.getElementById("sw-nextbet").innerText = sw.nextbet.toFixed(8);
-            document.getElementById("sw-chance").innerText = sw.currentChance.toFixed(1) + "%";
-            document.getElementById("sw-recovery-mode").innerText = sw.recoveryMode ? "YES" : "NO";
-            document.getElementById("sw-recovery-bets").innerText = `${sw.recoveryBets}/${sw.maxRecoveryBets}`;
-            document.getElementById("sw-loss-streak").innerText = sw.consecutiveLosses;
-            
-            const lossAmount = sw.consecutiveLosses * (bot.stats.lastBetAmount || 0);
-            const lossPercent = bot.stats.currentBal > 0 ? (lossAmount / bot.stats.currentBal * 100) : 0;
-            if (document.getElementById("sw-loss-percent")) {
-                document.getElementById("sw-loss-percent").innerText = lossPercent.toFixed(2) + "%";
-            }
-            
-            const statusEl = document.getElementById("sw-status");
-            if (statusEl) {
-                statusEl.className = sw.recoveryMode ? "smartwager-status status-recovery" : "smartwager-status status-normal";
-                statusEl.innerText = sw.recoveryMode ? "RECOVERY" : "NORMAL";
-            }
-        }
-    }
-
-    let statsInterval;
-
-    function updateStatsInterval() {
-        if (statsInterval) clearInterval(statsInterval);
-
-        const interval = bot.turboMode ? bot.turboSettings.updateInterval : 1000;
-
-        statsInterval = setInterval(async () => {
-            if (bot.isRunning && !bot.isDemo) {
-                try {
-                    const newBalance = await API.getBalance(bot.selectedCurrency);
-                    bot.stats.currentBal = newBalance;
-                } catch (e) {
-                    console.log("Balance update error:", e);
-                }
-            }
-
-            updateDashboard();
-
-            const headerBalance = document.getElementById("header-balance");
-            if (headerBalance) {
-                headerBalance.innerText = bot.stats.currentBal.toFixed(8);
-            }
-
-            if (!bot.turboMode || bot.stats.bets % 10 === 0) {
-                updateSmartWagerUI();
-            }
-        }, interval);
-    }
-
-    function updateChatUI() {
-        const chatContainer = document.getElementById("chat-messages");
-        if (!chatContainer) return;
-        
-        chatContainer.innerHTML = '<div class="chat-empty">Chat module is temporarily disabled for performance.</div>';
-    }
-
+    // =============== UI CREATION ===============
     function createUI() {
         if (document.getElementById("orion-wrap")) document.getElementById("orion-wrap").remove();
 
         const s = document.createElement("style");
         s.innerHTML = `
-            /* MOBILE-FIRST STYLES */
+            /* GLASSMORPHISM UI STYLES */
             @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
             
             :root {
@@ -1049,15 +1257,19 @@
                 --turbo-dark: #ff6b9d;
                 --telegram: #0088cc;
                 --telegram-dark: #006699;
-                --dark: #0f172a;
-                --darker: #020617;
+                --dark: rgba(15, 23, 42, 0.8);
+                --darker: rgba(2, 6, 23, 0.9);
                 --light: #f8fafc;
-                --gray: #64748b;
-                --border: #334155;
-                --card-bg: rgba(30, 41, 59, 0.95);
+                --gray: #94a3b8;
+                --border: rgba(255, 255, 255, 0.12);
+                --card-bg: rgba(30, 41, 59, 0.7);
+                --card-border: rgba(255, 255, 255, 0.15);
+                --input-bg: rgba(15, 23, 42, 0.5);
                 --license-expired: #ef4444;
                 --license-active: #10b981;
-                --chat-bg: rgba(15, 23, 42, 0.8);
+                --max-chance-warning: #f59e0b;
+                --max-chance-danger: #ef4444;
+                --limbo-color: #ff3366;
             }
             
             * {
@@ -1075,7 +1287,14 @@
                 width: 100%;
                 height: 100%;
                 z-index: 999999;
-                background: var(--darker);
+                background: 
+                    radial-gradient(circle at 20% 80%, rgba(59, 130, 246, 0.15) 0%, transparent 50%),
+                    radial-gradient(circle at 80% 20%, rgba(16, 185, 129, 0.1) 0%, transparent 50%),
+                    radial-gradient(circle at 40% 40%, rgba(239, 68, 68, 0.08) 0%, transparent 50%),
+                    radial-gradient(circle at 60% 60%, rgba(255, 51, 102, 0.08) 0%, transparent 50%),
+                    rgba(2, 6, 23, 0.85);
+                backdrop-filter: blur(20px) saturate(180%);
+                -webkit-backdrop-filter: blur(20px) saturate(180%);
                 color: var(--light);
                 display: flex;
                 flex-direction: column;
@@ -1084,14 +1303,15 @@
             }
             
             .header {
-                background: var(--dark);
+                background: rgba(15, 23, 42, 0.8);
+                backdrop-filter: blur(10px);
+                -webkit-backdrop-filter: blur(10px);
                 border-bottom: 1px solid var(--border);
                 padding: 12px 16px;
                 flex-shrink: 0;
                 position: sticky;
                 top: 0;
                 z-index: 100;
-                backdrop-filter: blur(10px);
             }
             
             .header-top {
@@ -1119,6 +1339,7 @@
                 font-weight: 600;
                 background: ${CONFIG.license.isValid() ? 'var(--license-active)' : 'var(--license-expired)'};
                 color: white;
+                backdrop-filter: blur(10px);
             }
             
             .telegram-status {
@@ -1128,6 +1349,7 @@
                 font-weight: 600;
                 background: ${CONFIG.telegram.enabled ? 'var(--telegram)' : 'var(--gray)'};
                 color: white;
+                backdrop-filter: blur(10px);
             }
             
             .header-controls {
@@ -1148,6 +1370,7 @@
                 font-size: 14px;
                 cursor: pointer;
                 transition: all 0.2s;
+                backdrop-filter: blur(5px);
             }
             
             .control-btn:hover {
@@ -1158,20 +1381,22 @@
                 position: sticky;
                 top: 0;
                 z-index: 90;
-                background: var(--darker);
+                background: rgba(2, 6, 23, 0.7);
                 padding-bottom: 8px;
                 margin-bottom: 8px;
                 border-bottom: 1px solid var(--border);
+                backdrop-filter: blur(10px);
             }
             
             .tabs-container {
                 display: grid;
-                grid-template-columns: repeat(3, 1fr);
+                grid-template-columns: repeat(2, 1fr);
                 background: rgba(30, 41, 59, 0.4);
                 border-radius: 10px;
                 padding: 4px;
                 border: 1px solid var(--border);
                 gap: 4px;
+                backdrop-filter: blur(10px);
             }
             
             .tab {
@@ -1194,22 +1419,12 @@
             
             .tab:hover {
                 color: var(--light);
+                background: rgba(255, 255, 255, 0.05);
             }
             
             .tab.active {
                 background: linear-gradient(135deg, var(--primary), var(--primary-dark));
                 color: white;
-            }
-            
-            .unread-badge {
-                background: var(--danger);
-                color: white;
-                font-size: 10px;
-                padding: 1px 4px;
-                border-radius: 10px;
-                margin-left: 4px;
-                min-width: 18px;
-                text-align: center;
             }
             
             .tab-content {
@@ -1225,29 +1440,34 @@
                 display: flex;
             }
             
-            /* SMART WAGER INFO PANEL */
-            .smartwager-panel {
+            /* WAGER MODE INFO PANEL */
+            .wager-panel {
                 background: var(--card-bg);
+                backdrop-filter: blur(10px) saturate(180%);
+                -webkit-backdrop-filter: blur(10px) saturate(180%);
                 border-radius: 12px;
                 padding: 12px;
                 margin-bottom: 12px;
-                border: 1px solid var(--border);
-                backdrop-filter: blur(10px);
+                border: 1px solid var(--card-border);
+                box-shadow: 
+                    0 4px 6px -1px rgba(0, 0, 0, 0.1),
+                    0 2px 4px -1px rgba(0, 0, 0, 0.06),
+                    inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
             }
             
-            .smartwager-grid {
+            .wager-grid {
                 display: grid;
                 grid-template-columns: repeat(2, 1fr);
                 gap: 8px;
                 margin-bottom: 8px;
             }
             
-            .smartwager-item {
+            .wager-item {
                 display: flex;
                 flex-direction: column;
             }
             
-            .smartwager-label {
+            .wager-label {
                 font-size: 10px;
                 color: var(--gray);
                 text-transform: uppercase;
@@ -1255,30 +1475,88 @@
                 margin-bottom: 2px;
             }
             
-            .smartwager-value {
+            .wager-value {
                 font-size: 13px;
                 font-weight: 600;
                 color: var(--light);
                 font-family: 'Courier New', monospace;
             }
             
-            .smartwager-status {
+            .wager-status {
                 text-align: center;
                 padding: 6px;
                 border-radius: 6px;
                 font-size: 11px;
                 font-weight: 600;
                 margin-top: 4px;
+                backdrop-filter: blur(5px);
             }
             
-            .status-normal {
-                background: rgba(16, 185, 129, 0.15);
+            .status-active {
+                background: rgba(16, 185, 129, 0.2);
                 color: var(--success);
+                border: 1px solid rgba(16, 185, 129, 0.3);
             }
             
-            .status-recovery {
-                background: rgba(245, 158, 11, 0.15);
-                color: var(--warning);
+            .status-inactive {
+                background: rgba(148, 163, 184, 0.2);
+                color: var(--gray);
+                border: 1px solid rgba(148, 163, 184, 0.3);
+            }
+            
+            /* LIMBO MODE INFO PANEL */
+            .limbo-panel {
+                background: var(--card-bg);
+                backdrop-filter: blur(10px) saturate(180%);
+                -webkit-backdrop-filter: blur(10px) saturate(180%);
+                border-radius: 12px;
+                padding: 12px;
+                margin-bottom: 12px;
+                border: 1px solid rgba(255, 51, 102, 0.3);
+                box-shadow: 
+                    0 4px 6px -1px rgba(0, 0, 0, 0.1),
+                    0 2px 4px -1px rgba(0, 0, 0, 0.06),
+                    inset 0 1px 0 0 rgba(255, 51, 102, 0.1);
+            }
+            
+            .limbo-grid {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 8px;
+                margin-bottom: 8px;
+            }
+            
+            .limbo-item {
+                display: flex;
+                flex-direction: column;
+            }
+            
+            .limbo-label {
+                font-size: 10px;
+                color: var(--limbo-color);
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                margin-bottom: 2px;
+            }
+            
+            .limbo-value {
+                font-size: 13px;
+                font-weight: 600;
+                color: var(--light);
+                font-family: 'Courier New', monospace;
+            }
+            
+            .limbo-status {
+                text-align: center;
+                padding: 6px;
+                border-radius: 6px;
+                font-size: 11px;
+                font-weight: 600;
+                margin-top: 4px;
+                backdrop-filter: blur(5px);
+                background: rgba(255, 51, 102, 0.2);
+                border: 1px solid rgba(255, 51, 102, 0.3);
+                color: var(--limbo-color);
             }
             
             /* DASHBOARD STYLES */
@@ -1291,15 +1569,25 @@
             
             .dashboard-card {
                 background: var(--card-bg);
+                backdrop-filter: blur(10px) saturate(180%);
+                -webkit-backdrop-filter: blur(10px) saturate(180%);
                 border-radius: 12px;
                 padding: 16px;
-                border: 1px solid var(--border);
-                backdrop-filter: blur(10px);
-                transition: transform 0.2s;
+                border: 1px solid var(--card-border);
+                transition: all 0.3s ease;
+                box-shadow: 
+                    0 4px 6px -1px rgba(0, 0, 0, 0.1),
+                    0 2px 4px -1px rgba(0, 0, 0, 0.06),
+                    inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
             }
             
             .dashboard-card:hover {
                 transform: translateY(-2px);
+                border-color: rgba(255, 255, 255, 0.2);
+                box-shadow: 
+                    0 8px 12px -2px rgba(0, 0, 0, 0.2),
+                    0 4px 8px -2px rgba(0, 0, 0, 0.1),
+                    inset 0 1px 0 0 rgba(255, 255, 255, 0.1);
             }
             
             .dashboard-card-title {
@@ -1328,11 +1616,16 @@
             
             .account-info {
                 background: var(--card-bg);
+                backdrop-filter: blur(10px) saturate(180%);
+                -webkit-backdrop-filter: blur(10px) saturate(180%);
                 border-radius: 12px;
                 padding: 16px;
                 margin-bottom: 12px;
-                border: 1px solid var(--border);
-                backdrop-filter: blur(10px);
+                border: 1px solid var(--card-border);
+                box-shadow: 
+                    0 4px 6px -1px rgba(0, 0, 0, 0.1),
+                    0 2px 4px -1px rgba(0, 0, 0, 0.06),
+                    inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
             }
             
             .account-row {
@@ -1363,14 +1656,94 @@
                 font-family: 'Courier New', monospace;
             }
             
+            /* GLOBAL SETTINGS */
+            .global-minbet-control {
+                background: var(--card-bg);
+                backdrop-filter: blur(10px) saturate(180%);
+                -webkit-backdrop-filter: blur(10px) saturate(180%);
+                border-radius: 12px;
+                padding: 16px;
+                margin-bottom: 12px;
+                border: 1px solid var(--card-border);
+                box-shadow: 
+                    0 4px 6px -1px rgba(0, 0, 0, 0.1),
+                    0 2px 4px -1px rgba(0, 0, 0, 0.06),
+                    inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
+            }
+            
+            .global-minbet-control .section-title {
+                font-size: 13px;
+                font-weight: 700;
+                color: var(--light);
+                margin-bottom: 16px;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            
+            .global-minbet-control .section-title::before {
+                content: '';
+                width: 4px;
+                height: 16px;
+                background: linear-gradient(to bottom, var(--primary), var(--primary-dark));
+                border-radius: 2px;
+            }
+            
+            .global-minbet-control .grid-2 {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 16px;
+                margin-top: 0;
+            }
+            
+            .global-minbet-control .input-group {
+                margin-bottom: 0;
+            }
+            
+            .global-minbet-control .input-label {
+                display: block;
+                font-size: 11px;
+                font-weight: 600;
+                color: var(--gray);
+                margin-bottom: 6px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+            
+            .global-minbet-input {
+                width: 100%;
+                background: var(--input-bg);
+                backdrop-filter: blur(5px);
+                -webkit-backdrop-filter: blur(5px);
+                border: 1px solid var(--border);
+                padding: 10px 12px;
+                border-radius: 8px;
+                color: var(--light);
+                font-size: 13px;
+                font-family: 'Courier New', monospace;
+                height: 40px;
+                margin-top: 0;
+                transition: all 0.2s;
+            }
+            
+            .global-minbet-input:focus {
+                outline: none;
+                border-color: var(--primary);
+                background: rgba(15, 23, 42, 0.7);
+                box-shadow: 
+                    0 0 0 2px rgba(59, 130, 246, 0.1),
+                    inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
+            }
+            
+            /* MODE SELECTOR */
             .mode-selector {
                 display: flex;
-                background: rgba(15, 23, 42, 0.8);
+                background: rgba(15, 23, 42, 0.5);
+                backdrop-filter: blur(10px);
                 border-radius: 8px;
                 padding: 4px;
                 margin-bottom: 12px;
                 border: 1px solid var(--border);
-                backdrop-filter: blur(10px);
             }
             
             .mode-btn {
@@ -1397,13 +1770,28 @@
                 color: white;
             }
             
+            .mode-btn.wager.active {
+                background: linear-gradient(135deg, var(--success), var(--success-dark));
+            }
+            
+            .mode-btn.limbo.active {
+                background: linear-gradient(135deg, var(--limbo-color), var(--turbo-dark));
+            }
+            
+            /* CONTROL PANEL */
             .control-panel {
                 background: var(--card-bg);
+                backdrop-filter: blur(10px) saturate(180%);
+                -webkit-backdrop-filter: blur(10px) saturate(180%);
                 border-radius: 12px;
                 padding: 16px;
                 margin-bottom: 12px;
-                border: 1px solid var(--border);
-                backdrop-filter: blur(10px);
+                border: 1px solid var(--card-border);
+                position: relative;
+                box-shadow: 
+                    0 4px 6px -1px rgba(0, 0, 0, 0.1),
+                    0 2px 4px -1px rgba(0, 0, 0, 0.06),
+                    inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
             }
             
             .control-buttons {
@@ -1431,12 +1819,31 @@
                 white-space: nowrap;
                 overflow: hidden;
                 text-overflow: ellipsis;
-                transition: all 0.2s;
+                transition: all 0.3s ease;
+                backdrop-filter: blur(5px);
+                position: relative;
+                overflow: hidden;
+            }
+            
+            .control-button::before {
+                content: '';
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background: linear-gradient(rgba(255,255,255,0.1), rgba(255,255,255,0));
+                opacity: 0;
+                transition: opacity 0.3s;
             }
             
             .control-button:hover {
                 transform: translateY(-2px);
                 filter: brightness(1.1);
+            }
+            
+            .control-button:hover::before {
+                opacity: 1;
             }
             
             .btn-start {
@@ -1464,7 +1871,8 @@
                 justify-content: space-between;
                 align-items: center;
                 padding: 10px;
-                background: rgba(15, 23, 42, 0.6);
+                background: rgba(15, 23, 42, 0.4);
+                backdrop-filter: blur(5px);
                 border-radius: 8px;
                 border: 1px solid var(--border);
                 margin-bottom: 8px;
@@ -1487,40 +1895,23 @@
                 font-family: 'Courier New', monospace;
             }
             
-            .global-minbet-control {
-                background: var(--card-bg);
-                border-radius: 12px;
-                padding: 16px;
-                margin-bottom: 12px;
-                border: 1px solid var(--border);
-                backdrop-filter: blur(10px);
-            }
-            
-            .global-minbet-input {
-                width: 100%;
-                background: rgba(15, 23, 42, 0.7);
-                border: 1px solid var(--border);
-                padding: 10px 12px;
-                border-radius: 8px;
-                color: var(--light);
-                font-size: 13px;
-                font-family: 'Courier New', monospace;
-                height: 40px;
-                margin-top: 8px;
-            }
-            
-            /* LIVE LOGS IMPROVEMENTS */
+            /* LIVE LOGS */
             .live-logs {
                 background: var(--card-bg);
+                backdrop-filter: blur(10px) saturate(180%);
+                -webkit-backdrop-filter: blur(10px) saturate(180%);
                 border-radius: 12px;
                 padding: 16px;
-                border: 1px solid var(--border);
+                border: 1px solid var(--card-border);
                 flex: 1;
                 display: flex;
                 flex-direction: column;
                 min-height: 300px;
                 max-height: 400px;
-                backdrop-filter: blur(10px);
+                box-shadow: 
+                    0 4px 6px -1px rgba(0, 0, 0, 0.1),
+                    0 2px 4px -1px rgba(0, 0, 0, 0.06),
+                    inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
             }
             
             .live-logs-header {
@@ -1532,6 +1923,7 @@
             
             .clear-logs-btn {
                 background: rgba(255, 255, 255, 0.1);
+                backdrop-filter: blur(5px);
                 border: 1px solid var(--border);
                 color: var(--light);
                 padding: 4px 8px;
@@ -1548,7 +1940,8 @@
             .logs-container {
                 flex: 1;
                 overflow-y: auto;
-                background: rgba(15, 23, 42, 0.7);
+                background: rgba(15, 23, 42, 0.4);
+                backdrop-filter: blur(5px);
                 border: 1px solid var(--border);
                 border-radius: 8px;
                 padding: 12px;
@@ -1578,11 +1971,16 @@
             /* SETTINGS STYLES */
             .settings-section {
                 background: var(--card-bg);
+                backdrop-filter: blur(10px) saturate(180%);
+                -webkit-backdrop-filter: blur(10px) saturate(180%);
                 border-radius: 12px;
                 padding: 16px;
                 margin-bottom: 12px;
-                border: 1px solid var(--border);
-                backdrop-filter: blur(10px);
+                border: 1px solid var(--card-border);
+                box-shadow: 
+                    0 4px 6px -1px rgba(0, 0, 0, 0.1),
+                    0 2px 4px -1px rgba(0, 0, 0, 0.06),
+                    inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
             }
             
             .section-title {
@@ -1619,7 +2017,9 @@
             
             .input-field {
                 width: 100%;
-                background: rgba(15, 23, 42, 0.7);
+                background: var(--input-bg);
+                backdrop-filter: blur(5px);
+                -webkit-backdrop-filter: blur(5px);
                 border: 1px solid var(--border);
                 padding: 10px 12px;
                 border-radius: 8px;
@@ -1633,12 +2033,17 @@
             .input-field:focus {
                 outline: none;
                 border-color: var(--primary);
-                box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+                background: rgba(15, 23, 42, 0.7);
+                box-shadow: 
+                    0 0 0 2px rgba(59, 130, 246, 0.1),
+                    inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
             }
             
             .select-field {
                 width: 100%;
-                background: rgba(15, 23, 42, 0.7);
+                background: var(--input-bg);
+                backdrop-filter: blur(5px);
+                -webkit-backdrop-filter: blur(5px);
                 border: 1px solid var(--border);
                 padding: 10px 12px;
                 border-radius: 8px;
@@ -1653,7 +2058,10 @@
             .select-field:focus {
                 outline: none;
                 border-color: var(--primary);
-                box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+                background: rgba(15, 23, 42, 0.7);
+                box-shadow: 
+                    0 0 0 2px rgba(59, 130, 246, 0.1),
+                    inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
             }
             
             .toggle-group {
@@ -1692,6 +2100,7 @@
                 background-color: var(--border);
                 border-radius: 34px;
                 transition: .4s;
+                backdrop-filter: blur(5px);
             }
             
             .toggle-slider:before {
@@ -1732,7 +2141,8 @@
                 display: block;
                 padding: 10px;
                 text-align: center;
-                background: rgba(15, 23, 42, 0.6);
+                background: rgba(15, 23, 42, 0.5);
+                backdrop-filter: blur(5px);
                 border: 1px solid var(--border);
                 border-radius: 8px;
                 cursor: pointer;
@@ -1748,7 +2158,8 @@
             
             .radio-label:hover {
                 color: var(--light);
-                background: rgba(255, 255, 255, 0.05);
+                background: rgba(255, 255, 255, 0.1);
+                border-color: rgba(255, 255, 255, 0.2);
             }
             
             .radio-item input[type="radio"]:checked + .radio-label {
@@ -1773,16 +2184,18 @@
                     bottom: 20px;
                     width: calc(100% - 40px);
                     height: calc(100% - 40px);
-                    border-radius: 16px;
+                    border-radius: 20px;
                     border: 1px solid var(--border);
-                    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+                    box-shadow: 
+                        0 25px 50px -12px rgba(0, 0, 0, 0.5),
+                        inset 0 1px 0 0 rgba(255, 255, 255, 0.1);
                 }
                 
                 .dashboard-grid {
                     grid-template-columns: repeat(4, 1fr);
                 }
                 
-                .smartwager-grid {
+                .wager-grid, .limbo-grid {
                     grid-template-columns: repeat(4, 1fr);
                 }
                 
@@ -1805,7 +2218,7 @@
                     grid-template-columns: repeat(2, 1fr);
                 }
                 
-                .smartwager-grid {
+                .wager-grid, .limbo-grid {
                     grid-template-columns: repeat(2, 1fr);
                 }
                 
@@ -1814,6 +2227,10 @@
                 }
                 
                 .grid-2 {
+                    grid-template-columns: 1fr;
+                }
+                
+                .global-minbet-control .grid-2 {
                     grid-template-columns: 1fr;
                 }
                 
@@ -1827,7 +2244,7 @@
                     grid-template-columns: repeat(4, 1fr);
                 }
                 
-                .smartwager-grid {
+                .wager-grid, .limbo-grid {
                     grid-template-columns: repeat(4, 1fr);
                 }
                 
@@ -1872,7 +2289,7 @@
             <div class="header">
                 <div class="header-top">
                     <div class="app-title">
-                        ORION v8.5
+                        ORION v8.6
                         <span class="license-badge" title="${licenseText}">${licenseStatus}</span>
                         <span class="telegram-status ${CONFIG.telegram.enabled ? 'enabled' : 'disabled'}">
                             ${CONFIG.telegram.enabled ? '📱 TG ON' : '📱 TG OFF'}
@@ -1887,7 +2304,6 @@
                     <div class="tabs-container">
                         <div class="tab active" data-tab="dashboard">📊 DASHBOARD</div>
                         <div class="tab" data-tab="settings">⚙️ SETTINGS</div>
-                        <div class="tab" data-tab="chat">📱 CHAT</div>
                     </div>
                 </div>
             </div>
@@ -1940,46 +2356,75 @@
                         <div class="account-label">Wagered</div>
                         <div class="account-value" id="dashboard-wagered">0.00000000</div>
                     </div>
+                    <div class="account-row">
+                        <div class="account-label">Wager Progress</div>
+                        <div class="account-value" id="wager-progress">0/100</div>
+                    </div>
                 </div>
                 
-                <div class="smartwager-panel" id="smartwager-panel" style="${bot.mode === 'smartwager' ? 'display: block;' : 'display: none;'}">
-                    <div class="section-title">Smart Wager Status</div>
-                    <div class="smartwager-grid">
-                        <div class="smartwager-item">
-                            <div class="smartwager-label">Base Bet</div>
-                            <div class="smartwager-value" id="sw-basebet">0.00000000</div>
+                <!-- Wager Mode Panel -->
+                <div class="wager-panel" id="wager-panel" style="${bot.mode === 'wager' ? 'display: block;' : 'display: none;'}">
+                    <div class="section-title">Wager Mode Status</div>
+                    <div class="wager-grid">
+                        <div class="wager-item">
+                            <div class="wager-label">Base Bet</div>
+                            <div class="wager-value" id="wager-basebet">0.00000000</div>
                         </div>
-                        <div class="smartwager-item">
-                            <div class="smartwager-label">Next Bet</div>
-                            <div class="smartwager-value" id="sw-nextbet">0.00000000</div>
+                        <div class="wager-item">
+                            <div class="wager-label">Next Bet</div>
+                            <div class="wager-value" id="wager-nextbet">0.00000000</div>
                         </div>
-                        <div class="smartwager-item">
-                            <div class="smartwager-label">Chance</div>
-                            <div class="smartwager-value" id="sw-chance">97.0%</div>
+                        <div class="wager-item">
+                            <div class="wager-label">Chance</div>
+                            <div class="wager-value" id="wager-chance">99.00%</div>
                         </div>
-                        <div class="smartwager-item">
-                            <div class="smartwager-label">Loss Streak</div>
-                            <div class="smartwager-value" id="sw-loss-streak">0</div>
-                        </div>
-                    </div>
-                    <div class="smartwager-grid">
-                        <div class="smartwager-item">
-                            <div class="smartwager-label">Recovery Mode</div>
-                            <div class="smartwager-value" id="sw-recovery-mode">NO</div>
-                        </div>
-                        <div class="smartwager-item">
-                            <div class="smartwager-label">Recovery Bets</div>
-                            <div class="smartwager-value" id="sw-recovery-bets">0/10</div>
-                        </div>
-                        <div class="smartwager-item">
-                            <div class="smartwager-label">Loss %</div>
-                            <div class="smartwager-value" id="sw-loss-percent">0.00%</div>
-                        </div>
-                        <div class="smartwager-item">
-                            <div class="smartwager-label">Status</div>
-                            <div class="smartwager-status status-normal" id="sw-status">NORMAL</div>
+                        <div class="wager-item">
+                            <div class="wager-label">Bet Counter</div>
+                            <div class="wager-value" id="wager-counter">0/100</div>
                         </div>
                     </div>
+                    <div class="wager-grid">
+                        <div class="wager-item">
+                            <div class="wager-label">Total Wagered</div>
+                            <div class="wager-value" id="wager-total-wagered">0.00000000</div>
+                        </div>
+                        <div class="wager-item">
+                            <div class="wager-label">Phase Profit</div>
+                            <div class="wager-value" id="wager-phase-profit">0.00000000</div>
+                        </div>
+                        <div class="wager-item">
+                            <div class="wager-label">Loss Trigger</div>
+                            <div class="wager-value">${bot.wagerMode.lossTriggerPercent}%</div>
+                        </div>
+                        <div class="wager-item">
+                            <div class="wager-label">Status</div>
+                            <div class="wager-status status-active" id="wager-status">ACTIVE</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Limbo Mode Panel -->
+                <div class="limbo-panel" id="limbo-panel" style="${bot.mode === 'limbo' ? 'display: block;' : 'display: none;'}">
+                    <div class="section-title">Limbo Mode Status</div>
+                    <div class="limbo-grid">
+                        <div class="limbo-item">
+                            <div class="limbo-label">Multiplier</div>
+                            <div class="limbo-value" id="limbo-multiplier">1000000.00x</div>
+                        </div>
+                        <div class="limbo-item">
+                            <div class="limbo-label">Next Bet</div>
+                            <div class="limbo-value" id="limbo-nextbet">0.00000000</div>
+                        </div>
+                        <div class="limbo-item">
+                            <div class="limbo-label">Profit to Wager</div>
+                            <div class="limbo-value" id="limbo-profit-to-wager">0.00000000</div>
+                        </div>
+                        <div class="limbo-item">
+                            <div class="limbo-label">Start Profit</div>
+                            <div class="limbo-value" id="limbo-start-profit">0.00000000</div>
+                        </div>
+                    </div>
+                    <div class="limbo-status status-active" id="limbo-status">ACTIVE</div>
                 </div>
                 
                 <div class="global-minbet-control">
@@ -1999,8 +2444,9 @@
                 </div>
                 
                 <div class="mode-selector">
-                    <button class="mode-btn ${bot.mode === 'smartwager' ? 'active' : ''}" data-mode="smartwager">🎯 SMART WAGER</button>
+                    <button class="mode-btn wager ${bot.mode === 'wager' ? 'active' : ''}" data-mode="wager">🎯 WAGER</button>
                     <button class="mode-btn ${bot.mode === 'orion' ? 'active' : ''}" data-mode="orion">⚡ ORION</button>
+                    <button class="mode-btn limbo ${bot.mode === 'limbo' ? 'active' : ''}" data-mode="limbo">🎰 LIMBO</button>
                 </div>
                 
                 <div class="control-panel">
@@ -2042,122 +2488,64 @@
             
             <!-- SETTINGS TAB -->
             <div class="tab-content" id="tab-settings">
+                <!-- Wager Mode Settings -->
                 <div class="settings-section">
-                    <div class="section-title">Smart Wager Settings</div>
-                    
-                    <div class="input-group">
-                        <label class="input-label">Base Bet Mode</label>
-                        <div class="radio-group">
-                            <div class="radio-item">
-                                <input type="radio" id="basebet-percentage" name="basebet-mode" value="percentage" ${bot.smartWager.basebetMode === 'percentage' ? 'checked' : ''}>
-                                <label for="basebet-percentage" class="radio-label">Percentage</label>
-                            </div>
-                            <div class="radio-item">
-                                <input type="radio" id="basebet-fixed" name="basebet-mode" value="fixed" ${bot.smartWager.basebetMode === 'fixed' ? 'checked' : ''}>
-                                <label for="basebet-fixed" class="radio-label">Fixed Amount</label>
-                            </div>
-                        </div>
-                    </div>
+                    <div class="section-title">Wager Mode Settings</div>
                     
                     <div class="grid-2">
                         <div class="input-group">
-                            <label class="input-label" id="basebet-label">${bot.smartWager.basebetMode === 'percentage' ? 'Percentage %' : 'Amount'}</label>
-                            <input type="number" id="sw-basebet-input" class="input-field" 
-                                value="${bot.smartWager.basebetMode === 'percentage' ? bot.smartWager.basebetPercentage : bot.smartWager.basebetFixed.toFixed(8)}" 
-                                step="${bot.smartWager.basebetMode === 'percentage' ? '0.1' : '0.00000001'}" 
-                                min="${bot.smartWager.basebetMode === 'percentage' ? '0.1' : '0.00000001'}"
-                                max="${bot.smartWager.basebetMode === 'percentage' ? '10' : ''}">
+                            <label class="input-label">Base Bet Percentage %</label>
+                            <input type="number" id="wager-basebet-pct" class="input-field" 
+                                value="${bot.wagerMode.basebetPercentage}" step="0.1" min="0.1" max="10">
                         </div>
                         <div class="input-group">
                             <label class="input-label">Base Chance %</label>
-                            <input type="number" id="sw-base-chance" class="input-field" value="97.0" step="0.1" min="1" max="99">
+                            <input type="number" id="wager-base-chance" class="input-field" 
+                                value="${bot.wagerMode.baseChance}" step="0.1" min="1" max="99.95">
                         </div>
                     </div>
                     
                     <div class="grid-2">
                         <div class="input-group">
-                            <label class="input-label">Recovery Chance %</label>
-                            <input type="number" id="sw-recovery-chance" class="input-field" value="49.5" step="0.1" min="1" max="99">
+                            <label class="input-label">Wager Bets Count</label>
+                            <input type="number" id="wager-bets-count" class="input-field" 
+                                value="${bot.wagerMode.maxWagerBets}" step="10" min="10" max="1000">
                         </div>
                         <div class="input-group">
-                            <label class="input-label">Recovery Threshold %</label>
-                            <input type="number" id="sw-recovery-threshold" class="input-field" value="0.5" step="0.1" min="0.1" max="10">
-                        </div>
-                    </div>
-                    
-                    <div class="grid-2">
-                        <div class="input-group">
-                            <label class="input-label">Recovery Multiplier</label>
-                            <input type="number" id="sw-recovery-multiplier" class="input-field" value="1.5" step="0.1" min="1.1" max="5">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Max Recovery Bets</label>
-                            <input type="number" id="sw-max-recovery-bets" class="input-field" value="10" step="1" min="3" max="50">
+                            <label class="input-label">Loss Trigger %</label>
+                            <input type="number" id="wager-loss-trigger" class="input-field" 
+                                value="${bot.wagerMode.lossTriggerPercent}" step="0.1" min="0.1" max="10">
                         </div>
                     </div>
                 </div>
                 
-                <div class="settings-section">
-                    <div class="section-title">Auto Rotate Settings</div>
-                    
-                    <div class="toggle-group">
-                        <span class="toggle-label">Enable Auto Rotate</span>
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="auto-rotate-enable" ${bot.autoRotate.enabled ? 'checked' : ''}>
-                            <span class="toggle-slider"></span>
-                        </label>
-                    </div>
-                    
-                    <div class="grid-2">
-                        <div class="input-group">
-                            <label class="input-label">Loss Threshold %</label>
-                            <input id="auto-rotate-threshold" class="input-field" value="5.0" type="number" step="0.1" min="1" max="100">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Min Interval (sec)</label>
-                            <input id="auto-rotate-interval" class="input-field" value="30" type="number" step="1" min="10" max="600">
-                        </div>
-                    </div>
-                </div>
-                
+                <!-- Orion Mode Settings -->
                 <div class="settings-section">
                     <div class="section-title">Orion Mode Settings</div>
-                    
-                    <div class="input-group">
-                        <label class="input-label">Base Bet</label>
-                        <input id="p-basebet" class="input-field" value="0.00000001" type="number" step="0.00000001" min="0">
-                    </div>
                     
                     <div class="grid-2">
                         <div class="input-group">
                             <label class="input-label">Chance Min %</label>
-                            <input id="p-ch-min" class="input-field" value="5.0" type="number" step="0.1" min="1" max="99">
+                            <input id="orion-ch-min" class="input-field" 
+                                value="${bot.orionSettings.minChance}" type="number" step="0.1" min="1" max="99">
                         </div>
                         <div class="input-group">
                             <label class="input-label">Chance Max %</label>
-                            <input id="p-ch-max" class="input-field" value="12.0" type="number" step="0.1" min="1" max="99">
+                            <input id="orion-ch-max" class="input-field" 
+                                value="${bot.orionSettings.maxChance}" type="number" step="0.1" min="1" max="99">
                         </div>
                     </div>
                     
                     <div class="grid-2">
                         <div class="input-group">
-                            <label class="input-label">Target %</label>
-                            <input id="p-target-pct" class="input-field" value="10.0" type="number" step="0.1" min="0" max="1000">
+                            <label class="input-label">Margin</label>
+                            <input id="orion-margin" class="input-field" 
+                                value="${bot.orionSettings.margin}" type="number" step="0.01" min="1">
                         </div>
                         <div class="input-group">
                             <label class="input-label">Stop Loss %</label>
-                            <input id="p-stop-pct" class="input-field" value="50.0" type="number" step="0.1" min="0" max="1000">
-                        </div>
-                    </div>
-                    
-                    <div class="grid-2">
-                        <div class="input-group">
-                            <label class="input-label">Steps Limit</label>
-                            <input id="p-steps" class="input-field" value="10000" type="number" step="100" min="100">
-                        </div>
-                        <div class="input-group">
-                            <label class="input-label">Margin</label>
-                            <input id="p-margin" class="input-field" value="1.01" type="number" step="0.01" min="1">
+                            <input id="orion-stoploss" class="input-field" 
+                                value="${bot.orionSettings.stopLossPercent}" type="number" step="1" min="1" max="1000">
                         </div>
                     </div>
                     
@@ -2177,28 +2565,55 @@
                     
                     <div id="martingale-multiplier" class="input-group" style="${bot.orionSettings.method === 'martingale' ? 'display: block;' : 'display: none;'}">
                         <label class="input-label">Martingale Multiplier</label>
-                        <input id="p-martingale-mult" class="input-field" value="1.12" type="number" step="0.01" min="1.01" max="10">
+                        <input id="p-martingale-mult" class="input-field" value="${bot.orionSettings.martingaleMultiplier}" type="number" step="0.01" min="1.01" max="10">
                     </div>
                 </div>
                 
+                <!-- Limbo Mode Settings -->
+                <div class="settings-section">
+                    <div class="section-title">Limbo Mode Settings</div>
+                    
+                    <div class="grid-2">
+                        <div class="input-group">
+                            <label class="input-label">Target Multiplier</label>
+                            <input type="number" id="limbo-multiplier-input" class="input-field" 
+                                value="${bot.limboMode.multiplierTarget}" step="0.1" min="1.01" max="10000000">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label">Min Bet Multiplier</label>
+                            <input type="number" id="limbo-minbet-mult" class="input-field" 
+                                value="${bot.limboMode.minBetMultiplier}" step="0.1" min="1" max="100">
+                        </div>
+                    </div>
+                    
+                    <div class="toggle-group">
+                        <span class="toggle-label">Enable Limbo Mode</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="limbo-enable" ${bot.limboMode.enabled ? 'checked' : ''}>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
+                
+                <!-- Global Bot Settings -->
                 <div class="settings-section">
                     <div class="section-title">Bot Settings</div>
                     
                     <div class="grid-2">
                         <div class="input-group">
-                            <label class="input-label">Step Limit</label>
-                            <input id="s-step-limit" class="input-field" value="10000" type="number" step="100" min="100" max="100000">
+                            <label class="input-label">Target %</label>
+                            <input id="p-target-pct" class="input-field" value="10.0" type="number" step="0.1" min="0" max="1000">
                         </div>
                         <div class="input-group">
-                            <label class="input-label">Min Switch Interval (sec)</label>
-                            <input id="s-switch-interval" class="input-field" value="60" type="number" step="1" min="10" max="600">
+                            <label class="input-label">Stop Loss %</label>
+                            <input id="p-stop-pct" class="input-field" value="50.0" type="number" step="0.1" min="0" max="1000">
                         </div>
                     </div>
                     
                     <div class="toggle-group">
-                        <span class="toggle-label">Smart Wager Mode</span>
+                        <span class="toggle-label">Wager Mode</span>
                         <label class="toggle-switch">
-                            <input type="checkbox" id="mode-smartwager" ${bot.enabledModes.smartwager ? 'checked' : ''}>
+                            <input type="checkbox" id="mode-wager" ${bot.enabledModes.wager ? 'checked' : ''}>
                             <span class="toggle-slider"></span>
                         </label>
                     </div>
@@ -2207,6 +2622,14 @@
                         <span class="toggle-label">Orion Mode</span>
                         <label class="toggle-switch">
                             <input type="checkbox" id="mode-orion" ${bot.enabledModes.orion ? 'checked' : ''}>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    
+                    <div class="toggle-group">
+                        <span class="toggle-label">Limbo Mode</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="mode-limbo" ${bot.enabledModes.limbo ? 'checked' : ''}>
                             <span class="toggle-slider"></span>
                         </label>
                     </div>
@@ -2237,16 +2660,9 @@
                             <input id="turbo-ui-update" class="input-field" value="5000" type="number" min="100" max="30000">
                         </div>
                     </div>
-                    
-                    <div class="toggle-group">
-                        <span class="toggle-label">Enable Chat</span>
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="chat-enable" ${bot.stakeChat.enabled ? 'checked' : ''}>
-                            <span class="toggle-slider"></span>
-                        </label>
-                    </div>
                 </div>
                 
+                <!-- Telegram Settings -->
                 <div class="settings-section">
                     <div class="section-title">Telegram Settings</div>
                     
@@ -2256,16 +2672,6 @@
                             <input type="checkbox" id="telegram-enable" ${CONFIG.telegram.enabled ? 'checked' : ''}>
                             <span class="toggle-slider"></span>
                         </label>
-                    </div>
-                    
-                    <div class="input-group">
-                        <label class="input-label">Bot Token</label>
-                        <input id="telegram-token" class="input-field" type="text" value="${CONFIG.telegram.botToken}" placeholder="Bot Token">
-                    </div>
-                    
-                    <div class="input-group">
-                        <label class="input-label">Chat ID</label>
-                        <input id="telegram-chatid" class="input-field" type="text" value="${CONFIG.telegram.chatId}" placeholder="Chat ID">
                     </div>
                     
                     <div class="grid-2">
@@ -2284,50 +2690,23 @@
                     </button>
                 </div>
             </div>
-            
-            <!-- CHAT ROOM TAB -->
-            <div class="tab-content" id="tab-chat">
-                <div class="chat-room">
-                    <div class="chat-header">
-                        <select id="chat-room-select" class="chat-room-select" ${bot.stakeChat.enabled ? '' : 'disabled'}>
-                            <option value="">${bot.stakeChat.enabled ? 'Select chat room...' : 'Chat module is disabled'}</option>
-                        </select>
-                        <div class="chat-controls">
-                            <button id="chat-refresh" class="chat-btn" ${bot.stakeChat.enabled ? '' : 'disabled'}>🔄</button>
-                        </div>
-                    </div>
-                    
-                    <div class="chat-messages" id="chat-messages">
-                        <div class="chat-empty">${bot.stakeChat.enabled ? 'No messages yet. Select a chat room to start.' : 'Chat module is disabled. Enable it in settings.'}</div>
-                    </div>
-                    
-                    <div class="chat-info" id="chat-last-refresh">
-                        Status: ${bot.stakeChat.enabled ? 'Ready' : 'Disabled'}
-                    </div>
-                    
-                    <div class="chat-input-area">
-                        <textarea id="chat-input" class="chat-input-field" placeholder="${bot.stakeChat.enabled ? 'Type your message...' : 'Chat is disabled...'}" rows="1" ${bot.stakeChat.enabled ? '' : 'disabled'}></textarea>
-                        <button id="chat-send" class="chat-send-btn" ${bot.stakeChat.enabled ? '' : 'disabled'}>Send</button>
-                    </div>
-                </div>
-            </div>
         `;
         document.body.appendChild(d);
 
         // Initialize dashboard
         updateDashboard();
+        updateWagerUI();
+        updateLimboUI();
 
-        // Event listeners
-        function safeAddEventListener(element, event, handler) {
-            if (element && typeof element.addEventListener === 'function') {
-                element.addEventListener(event, handler);
-            }
-        }
+        // Add event listeners
+        setupEventListeners();
+    }
 
+    function setupEventListeners() {
         // Clear logs button
         const clearLogsBtn = document.getElementById('clear-logs');
         if (clearLogsBtn) {
-            safeAddEventListener(clearLogsBtn, 'click', () => {
+            clearLogsBtn.addEventListener('click', () => {
                 const logBox = document.getElementById("p-logs");
                 if (logBox) {
                     logBox.innerHTML = '<div style="color: var(--gray); text-align: center; padding: 40px 0; font-style: italic;">Logs cleared</div>';
@@ -2338,7 +2717,7 @@
 
         // Tab navigation
         document.querySelectorAll('.tab').forEach(tab => {
-            safeAddEventListener(tab, 'click', () => {
+            tab.addEventListener('click', () => {
                 document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
                 document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
                 tab.classList.add('active');
@@ -2351,19 +2730,18 @@
 
         // Mode selector
         document.querySelectorAll('.mode-btn').forEach(btn => {
-            safeAddEventListener(btn, 'click', () => {
+            btn.addEventListener('click', () => {
                 if (!bot.isRunning) return;
                 
-                document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
                 const newMode = btn.dataset.mode;
                 const oldMode = bot.mode;
                 
                 if (oldMode !== newMode) {
                     bot.mode = newMode;
                     
-                    if (newMode === 'smartwager') initSmartWager();
-                    else if (newMode === 'orion') setNewBaseChance();
+                    if (newMode === 'wager') initWagerMode();
+                    else if (newMode === 'orion') initOrionMode();
+                    else if (newMode === 'limbo') initLimboMode();
                     
                     updateLogs(0, 0, 0, `Mode changed from ${oldMode.toUpperCase()} to ${newMode.toUpperCase()}`, true);
                     
@@ -2376,132 +2754,100 @@
             });
         });
 
-        // Smart Wager settings
-        const swBasebetInput = document.getElementById('sw-basebet-input');
-        if (swBasebetInput) {
-            safeAddEventListener(swBasebetInput, 'change', (e) => {
-                const value = parseFloat(e.target.value) || 0;
-                if (bot.smartWager.basebetMode === 'percentage') {
-                    bot.smartWager.basebetPercentage = value;
-                    if (value < 0.1) e.target.value = 0.1;
-                    if (value > 10) e.target.value = 10;
-                } else {
-                    bot.smartWager.basebetFixed = value;
-                    if (value < 0.00000001) e.target.value = 0.00000001;
-                    e.target.value = value.toFixed(8);
-                }
-            });
-        }
-
-        const swBaseChance = document.getElementById('sw-base-chance');
-        if (swBaseChance) {
-            safeAddEventListener(swBaseChance, 'change', (e) => {
-                const value = parseFloat(e.target.value);
-                if (value >= 1 && value <= 99) {
-                    bot.smartWager.baseChance = value;
-                    bot.smartWager.currentChance = value;
-                    updateLogs(0, 0, 0, `Smart Wager Base Chance set to ${value}%`, true);
-                }
-            });
-        }
-
-        const swRecoveryChance = document.getElementById('sw-recovery-chance');
-        if (swRecoveryChance) {
-            safeAddEventListener(swRecoveryChance, 'change', (e) => {
-                const value = parseFloat(e.target.value);
-                if (value >= 1 && value <= 99) {
-                    bot.smartWager.recoveryChance = value;
-                    updateLogs(0, 0, 0, `Smart Wager Recovery Chance set to ${value}%`, true);
-                }
-            });
-        }
-
-        const swRecoveryThreshold = document.getElementById('sw-recovery-threshold');
-        if (swRecoveryThreshold) {
-            safeAddEventListener(swRecoveryThreshold, 'change', (e) => {
+        // Wager settings
+        const wagerBasebetPct = document.getElementById('wager-basebet-pct');
+        if (wagerBasebetPct) {
+            wagerBasebetPct.addEventListener('change', (e) => {
                 const value = parseFloat(e.target.value);
                 if (value >= 0.1 && value <= 10) {
-                    bot.smartWager.recoveryThreshold = value;
+                    bot.wagerMode.basebetPercentage = value;
+                    updateLogs(0, 0, 0, `Wager BaseBet Percentage set to ${value}%`, true);
                 }
             });
         }
 
-        const swRecoveryMultiplier = document.getElementById('sw-recovery-multiplier');
-        if (swRecoveryMultiplier) {
-            safeAddEventListener(swRecoveryMultiplier, 'change', (e) => {
+        const wagerBaseChance = document.getElementById('wager-base-chance');
+        if (wagerBaseChance) {
+            wagerBaseChance.addEventListener('change', (e) => {
                 const value = parseFloat(e.target.value);
-                if (value >= 1.1 && value <= 5) {
-                    bot.smartWager.recoveryMultiplier = value;
+                if (value >= 1 && value <= 99.95) {
+                    bot.wagerMode.baseChance = value;
+                    updateLogs(0, 0, 0, `Wager Base Chance set to ${value}%`, true);
                 }
             });
         }
 
-        const swMaxRecoveryBets = document.getElementById('sw-max-recovery-bets');
-        if (swMaxRecoveryBets) {
-            safeAddEventListener(swMaxRecoveryBets, 'change', (e) => {
+        const wagerBetsCount = document.getElementById('wager-bets-count');
+        if (wagerBetsCount) {
+            wagerBetsCount.addEventListener('change', (e) => {
                 const value = parseInt(e.target.value);
-                if (value >= 3 && value <= 50) {
-                    bot.smartWager.maxRecoveryBets = value;
+                if (value >= 10 && value <= 1000) {
+                    bot.wagerMode.maxWagerBets = value;
+                    updateLogs(0, 0, 0, `Wager Bets Count set to ${value}`, true);
                 }
             });
         }
 
-        // Basebet mode radio buttons
-        document.querySelectorAll('input[name="basebet-mode"]').forEach(radio => {
-            safeAddEventListener(radio, 'change', (e) => {
-                bot.smartWager.basebetMode = e.target.value;
-                const input = document.getElementById('sw-basebet-input');
-                const label = document.getElementById('basebet-label');
-                if (input && label) {
-                    if (e.target.value === 'percentage') {
-                        input.value = bot.smartWager.basebetPercentage;
-                        input.step = '0.1';
-                        input.min = '0.1';
-                        input.max = '10';
-                        label.textContent = 'Percentage %';
-                    } else {
-                        input.value = bot.smartWager.basebetFixed.toFixed(8);
-                        input.step = '0.00000001';
-                        input.min = '0.00000001';
-                        input.max = '';
-                        label.textContent = 'Amount';
-                    }
-                }
-            });
-        });
-
-        // Auto Rotate settings
-        const autoRotateEnable = document.getElementById('auto-rotate-enable');
-        if (autoRotateEnable) {
-            safeAddEventListener(autoRotateEnable, 'change', (e) => {
-                bot.autoRotate.enabled = e.target.checked;
-                updateLogs(0, 0, 0, `Auto Rotate ${bot.autoRotate.enabled ? 'ENABLED' : 'DISABLED'}`, true);
-            });
-        }
-
-        const autoRotateThreshold = document.getElementById('auto-rotate-threshold');
-        if (autoRotateThreshold) {
-            safeAddEventListener(autoRotateThreshold, 'change', (e) => {
+        const wagerLossTrigger = document.getElementById('wager-loss-trigger');
+        if (wagerLossTrigger) {
+            wagerLossTrigger.addEventListener('change', (e) => {
                 const value = parseFloat(e.target.value);
-                if (value >= 1 && value <= 100) {
+                if (value >= 0.1 && value <= 10) {
+                    bot.wagerMode.lossTriggerPercent = value;
                     bot.autoRotate.lossThreshold = value;
+                    updateLogs(0, 0, 0, `Wager Loss Trigger set to ${value}%`, true);
                 }
             });
         }
 
-        const autoRotateInterval = document.getElementById('auto-rotate-interval');
-        if (autoRotateInterval) {
-            safeAddEventListener(autoRotateInterval, 'change', (e) => {
-                const value = parseFloat(e.target.value) * 1000;
-                if (value >= 10000 && value <= 600000) {
-                    bot.autoRotate.minRotateInterval = value;
+        // Orion settings
+        const orionChMin = document.getElementById('orion-ch-min');
+        if (orionChMin) {
+            orionChMin.addEventListener('change', (e) => {
+                const value = parseFloat(e.target.value);
+                if (value >= 1 && value <= 99) {
+                    bot.orionSettings.minChance = value;
+                    updateLogs(0, 0, 0, `Orion Min Chance set to ${value}%`, true);
+                }
+            });
+        }
+
+        const orionChMax = document.getElementById('orion-ch-max');
+        if (orionChMax) {
+            orionChMax.addEventListener('change', (e) => {
+                const value = parseFloat(e.target.value);
+                if (value >= 1 && value <= 99) {
+                    bot.orionSettings.maxChance = value;
+                    updateLogs(0, 0, 0, `Orion Max Chance set to ${value}%`, true);
+                }
+            });
+        }
+
+        const orionMargin = document.getElementById('orion-margin');
+        if (orionMargin) {
+            orionMargin.addEventListener('change', (e) => {
+                const value = parseFloat(e.target.value);
+                if (value >= 1) {
+                    bot.orionSettings.margin = value;
+                    updateLogs(0, 0, 0, `Orion Margin set to ${value}`, true);
+                }
+            });
+        }
+
+        const orionStoploss = document.getElementById('orion-stoploss');
+        if (orionStoploss) {
+            orionStoploss.addEventListener('change', (e) => {
+                const value = parseFloat(e.target.value);
+                if (value >= 1 && value <= 1000) {
+                    bot.orionSettings.stopLossPercent = value;
+                    updateLogs(0, 0, 0, `Orion Stop Loss set to ${value}%`, true);
                 }
             });
         }
 
         // Orion method radio buttons
         document.querySelectorAll('input[name="orion-method"]').forEach(radio => {
-            safeAddEventListener(radio, 'change', (e) => {
+            radio.addEventListener('change', (e) => {
                 bot.orionSettings.method = e.target.value;
                 const martingaleDiv = document.getElementById("martingale-multiplier");
                 const martingaleContainer = document.getElementById("martingale-info-container");
@@ -2519,219 +2865,76 @@
                         }
                     }
                 }
+                updateLogs(0, 0, 0, `Orion Method set to ${e.target.value}`, true);
             });
         });
 
-        // Martingale multiplier input
+        // Martingale multiplier
         const martingaleMult = document.getElementById('p-martingale-mult');
         if (martingaleMult) {
-            safeAddEventListener(martingaleMult, 'change', (e) => {
+            martingaleMult.addEventListener('change', (e) => {
                 const value = parseFloat(e.target.value);
                 if (value >= 1.01 && value <= 10) {
                     bot.orionSettings.martingaleMultiplier = value;
-                } else {
-                    e.target.value = 1.12;
-                    bot.orionSettings.martingaleMultiplier = 1.12;
+                    updateLogs(0, 0, 0, `Martingale Multiplier set to ${value}`, true);
                 }
             });
         }
 
-        // Rotation settings
-        const stepLimit = document.getElementById('s-step-limit');
-        if (stepLimit) {
-            safeAddEventListener(stepLimit, 'change', (e) => {
-                const value = parseInt(e.target.value);
-                if (value >= 100 && value <= 100000) {
-                    bot.rotationState.stepLimit = value;
+        // Limbo settings
+        const limboMultiplier = document.getElementById('limbo-multiplier-input');
+        if (limboMultiplier) {
+            limboMultiplier.addEventListener('change', (e) => {
+                const value = parseFloat(e.target.value);
+                if (value >= 1.01 && value <= 10000000) {
+                    bot.limboMode.multiplierTarget = value;
+                    updateLogs(0, 0, 0, `Limbo Multiplier set to ${value}x`, true);
                 }
             });
         }
 
-        const switchInterval = document.getElementById('s-switch-interval');
-        if (switchInterval) {
-            safeAddEventListener(switchInterval, 'change', (e) => {
-                const value = parseFloat(e.target.value) * 1000;
-                if (value >= 10000 && value <= 600000) {
-                    bot.rotationState.minSwitchInterval = value;
+        const limboMinbetMult = document.getElementById('limbo-minbet-mult');
+        if (limboMinbetMult) {
+            limboMinbetMult.addEventListener('change', (e) => {
+                const value = parseFloat(e.target.value);
+                if (value >= 1 && value <= 100) {
+                    bot.limboMode.minBetMultiplier = value;
+                    updateLogs(0, 0, 0, `Limbo MinBet Multiplier set to ${value}`, true);
                 }
             });
         }
 
-        // Chat enable toggle
-        const chatEnable = document.getElementById('chat-enable');
-        if (chatEnable) {
-            safeAddEventListener(chatEnable, 'change', (e) => {
-                bot.stakeChat.enabled = e.target.checked;
-                
-                // Update chat UI elements
-                const chatRoomSelect = document.getElementById('chat-room-select');
-                const chatRefresh = document.getElementById('chat-refresh');
-                const chatInput = document.getElementById('chat-input');
-                const chatSend = document.getElementById('chat-send');
-                const chatMessages = document.getElementById('chat-messages');
-                const chatInfo = document.getElementById('chat-last-refresh');
-                
-                if (chatRoomSelect) chatRoomSelect.disabled = !bot.stakeChat.enabled;
-                if (chatRefresh) chatRefresh.disabled = !bot.stakeChat.enabled;
-                if (chatInput) chatInput.disabled = !bot.stakeChat.enabled;
-                if (chatSend) chatSend.disabled = !bot.stakeChat.enabled;
-                
-                if (chatInfo) {
-                    chatInfo.textContent = `Status: ${bot.stakeChat.enabled ? 'Ready' : 'Disabled'}`;
-                }
-                
-                if (chatMessages) {
-                    chatMessages.innerHTML = bot.stakeChat.enabled 
-                        ? '<div class="chat-empty">No messages yet. Select a chat room to start.</div>'
-                        : '<div class="chat-empty">Chat module is disabled. Enable it in settings.</div>';
-                }
-                
-                if (chatRoomSelect) {
-                    chatRoomSelect.innerHTML = bot.stakeChat.enabled 
-                        ? '<option value="">Select chat room...</option>'
-                        : '<option value="">Chat module is disabled</option>';
-                }
-                
-                if (chatInput) {
-                    chatInput.placeholder = bot.stakeChat.enabled 
-                        ? 'Type your message...'
-                        : 'Chat is disabled...';
-                }
-                
-                updateLogs(0, 0, 0, `Chat module ${bot.stakeChat.enabled ? 'ENABLED' : 'DISABLED'}`, true);
-            });
-        }
-
-        // Telegram Settings
-        const telegramEnable = document.getElementById('telegram-enable');
-        if (telegramEnable) {
-            safeAddEventListener(telegramEnable, 'change', (e) => {
-                CONFIG.telegram.enabled = e.target.checked;
-                const telegramStatus = document.querySelector('.telegram-status');
-                if (telegramStatus) {
-                    telegramStatus.className = `telegram-status ${CONFIG.telegram.enabled ? 'enabled' : 'disabled'}`;
-                    telegramStatus.textContent = CONFIG.telegram.enabled ? '📱 TG ON' : '📱 TG OFF';
-                }
-                updateLogs(0, 0, 0, `Telegram ${CONFIG.telegram.enabled ? 'ENABLED' : 'DISABLED'}`, true);
-            });
-        }
-
-        const telegramToken = document.getElementById('telegram-token');
-        if (telegramToken) {
-            safeAddEventListener(telegramToken, 'change', (e) => {
-                CONFIG.telegram.botToken = e.target.value;
-            });
-        }
-
-        const telegramChatId = document.getElementById('telegram-chatid');
-        if (telegramChatId) {
-            safeAddEventListener(telegramChatId, 'change', (e) => {
-                CONFIG.telegram.chatId = e.target.value;
-            });
-        }
-
-        const telegramInterval = document.getElementById('telegram-interval');
-        if (telegramInterval) {
-            safeAddEventListener(telegramInterval, 'change', (e) => {
-                CONFIG.telegram.reportInterval = parseInt(e.target.value);
-            });
-        }
-
-        const telegramBigwin = document.getElementById('telegram-bigwin');
-        if (telegramBigwin) {
-            safeAddEventListener(telegramBigwin, 'change', (e) => {
-                CONFIG.telegram.bigWinThreshold = parseFloat(e.target.value) / 100;
-            });
-        }
-
-        // Test Telegram button
-        const telegramTest = document.getElementById('telegram-test');
-        if (telegramTest) {
-            safeAddEventListener(telegramTest, 'click', async () => {
-                const testMessage = `🔔 <b>ORION BOT TEST MESSAGE</b>\n` +
-                    `══════════════════\n` +
-                    `✅ Telegram is working properly!\n` +
-                    `👤 User: <code>${bot.stakeUser}</code>\n` +
-                    `🤖 Bot: <code>ORION v8.5</code>\n` +
-                    `⏰ Time: ${new Date().toLocaleString()}\n` +
-                    `══════════════════\n` +
-                    `🎉 If you see this message, Telegram notifications are configured correctly!`;
-
-                try {
-                    await TelegramAPI.sendMessage(testMessage);
-                    updateLogs(0, 0, 0, "✅ Telegram test message sent successfully!", true);
-                } catch (error) {
-                    updateLogs(0, 0, 0, `❌ Telegram test failed: ${error.message}`, true);
-                }
+        const limboEnable = document.getElementById('limbo-enable');
+        if (limboEnable) {
+            limboEnable.addEventListener('change', (e) => {
+                bot.limboMode.enabled = e.target.checked;
+                bot.enabledModes.limbo = e.target.checked;
+                updateLogs(0, 0, 0, `Limbo Mode ${e.target.checked ? 'ENABLED' : 'DISABLED'}`, true);
             });
         }
 
         // Mode toggles
-        const modeSmartWager = document.getElementById('mode-smartwager');
-        if (modeSmartWager) {
-            safeAddEventListener(modeSmartWager, 'change', (e) => {
-                bot.enabledModes.smartwager = e.target.checked;
-                updateLogs(0, 0, 0, `Smart Wager mode ${bot.enabledModes.smartwager ? 'ENABLED' : 'DISABLED'}`, true);
+        const modeWager = document.getElementById('mode-wager');
+        if (modeWager) {
+            modeWager.addEventListener('change', (e) => {
+                bot.enabledModes.wager = e.target.checked;
+                updateLogs(0, 0, 0, `Wager Mode ${e.target.checked ? 'ENABLED' : 'DISABLED'}`, true);
             });
         }
 
         const modeOrion = document.getElementById('mode-orion');
         if (modeOrion) {
-            safeAddEventListener(modeOrion, 'change', (e) => {
+            modeOrion.addEventListener('change', (e) => {
                 bot.enabledModes.orion = e.target.checked;
-                updateLogs(0, 0, 0, `Orion mode ${bot.enabledModes.orion ? 'ENABLED' : 'DISABLED'}`, true);
+                updateLogs(0, 0, 0, `Orion Mode ${e.target.checked ? 'ENABLED' : 'DISABLED'}`, true);
             });
         }
 
-        // Turbo toggle
-        const turboToggle = document.getElementById('p-turbo-toggle');
-        if (turboToggle) {
-            safeAddEventListener(turboToggle, 'change', (e) => {
-                bot.turboMode = e.target.checked;
-                const turboSettings = document.getElementById('turbo-settings');
-                if (turboSettings) {
-                    turboSettings.style.display = e.target.checked ? 'grid' : 'none';
-                }
-                updateStatsInterval();
-                updateLogs(0, 0, 0, `Turbo Mode ${bot.turboMode ? 'ENABLED 🚀' : 'DISABLED'}`, true);
-            });
-        }
-
-        // Demo mode toggle
-        const demoToggle = document.getElementById('p-demo-toggle');
-        if (demoToggle) {
-            safeAddEventListener(demoToggle, 'change', (e) => {
-                bot.isDemo = e.target.checked;
-                updateLogs(0, 0, 0, `Demo Mode ${bot.isDemo ? 'ENABLED' : 'DISABLED'}`, true);
-            });
-        }
-
-        // Global MinBet input
-        const globalMinBetInput = document.getElementById("global-minbet");
-        if (globalMinBetInput) {
-            safeAddEventListener(globalMinBetInput, 'change', (e) => {
-                const value = parseFloat(e.target.value);
-                if (value >= 0.00000001) {
-                    bot.globalMinBet = value;
-                    updateLogs(0, 0, 0, `Global MinBet set to ${value.toFixed(8)}`, true);
-                }
-            });
-        }
-
-        // Currency dropdown
-        const pCurrency = document.getElementById("p-currency");
-        if (pCurrency) {
-            const savedCurrency = localStorage.getItem('orion_selected_currency');
-            if (savedCurrency) {
-                bot.selectedCurrency = savedCurrency;
-            }
-
-            safeAddEventListener(pCurrency, 'change', (e) => {
-                const newCurrency = e.target.value;
-                bot.selectedCurrency = newCurrency;
-                const stCurrency = document.getElementById("st-currency");
-                if (stCurrency) stCurrency.textContent = newCurrency.toUpperCase();
-                localStorage.setItem('orion_selected_currency', newCurrency);
+        const modeLimbo = document.getElementById('mode-limbo');
+        if (modeLimbo) {
+            modeLimbo.addEventListener('change', (e) => {
+                bot.enabledModes.limbo = e.target.checked;
+                updateLogs(0, 0, 0, `Limbo Mode ${e.target.checked ? 'ENABLED' : 'DISABLED'}`, true);
             });
         }
 
@@ -2826,12 +3029,14 @@
                 bot.rotationState.initialBalance = bot.stats.startBal;
                 bot.rotationState.lastSwitchTime = Date.now();
                 bot.autoRotate.lastRotateTime = Date.now();
-                
+
                 // Set default mode
-                if (bot.enabledModes.smartwager) {
-                    bot.mode = "smartwager";
+                if (bot.enabledModes.wager) {
+                    bot.mode = "wager";
                 } else if (bot.enabledModes.orion) {
                     bot.mode = "orion";
+                } else if (bot.enabledModes.limbo) {
+                    bot.mode = "limbo";
                 }
 
                 // Update mode selector
@@ -2847,8 +3052,9 @@
                 bot.perStep = bot.targetAbs / bot.rotationState.stepLimit;
 
                 // Initialize selected mode
-                if (bot.mode === 'smartwager') initSmartWager();
-                else if (bot.mode === 'orion') setNewBaseChance();
+                if (bot.mode === 'wager') initWagerMode();
+                else if (bot.mode === 'orion') initOrionMode();
+                else if (bot.mode === 'limbo') initLimboMode();
 
                 updateStatsInterval();
                 updateDashboard();
@@ -2923,10 +3129,69 @@
             };
         }
 
+        // Demo mode toggle
+        const demoToggle = document.getElementById('p-demo-toggle');
+        if (demoToggle) {
+            demoToggle.addEventListener('change', (e) => {
+                bot.isDemo = e.target.checked;
+                updateLogs(0, 0, 0, `Demo Mode ${bot.isDemo ? 'ENABLED' : 'DISABLED'}`, true);
+            });
+        }
+
+        // Turbo toggle
+        const turboToggle = document.getElementById('p-turbo-toggle');
+        if (turboToggle) {
+            turboToggle.addEventListener('change', (e) => {
+                bot.turboMode = e.target.checked;
+                const turboSettings = document.getElementById('turbo-settings');
+                if (turboSettings) {
+                    turboSettings.style.display = e.target.checked ? 'grid' : 'none';
+                }
+                updateStatsInterval();
+                updateLogs(0, 0, 0, `Turbo Mode ${bot.turboMode ? 'ENABLED 🚀' : 'DISABLED'}`, true);
+            });
+        }
+
+        // Telegram settings
+        const telegramEnable = document.getElementById('telegram-enable');
+        if (telegramEnable) {
+            telegramEnable.addEventListener('change', (e) => {
+                CONFIG.telegram.enabled = e.target.checked;
+                const telegramStatus = document.querySelector('.telegram-status');
+                if (telegramStatus) {
+                    telegramStatus.className = `telegram-status ${CONFIG.telegram.enabled ? 'enabled' : 'disabled'}`;
+                    telegramStatus.textContent = CONFIG.telegram.enabled ? '📱 TG ON' : '📱 TG OFF';
+                }
+                updateLogs(0, 0, 0, `Telegram ${CONFIG.telegram.enabled ? 'ENABLED' : 'DISABLED'}`, true);
+            });
+        }
+
+        // Test Telegram button
+        const telegramTest = document.getElementById('telegram-test');
+        if (telegramTest) {
+            telegramTest.addEventListener('click', async () => {
+                const testMessage = `🔔 <b>ORION BOT TEST MESSAGE</b>\n` +
+                    `══════════════════\n` +
+                    `✅ Telegram is working properly!\n` +
+                    `👤 User: <code>${bot.stakeUser}</code>\n` +
+                    `🤖 Bot: <code>ORION v8.6</code>\n` +
+                    `⏰ Time: ${new Date().toLocaleString()}\n` +
+                    `══════════════════\n` +
+                    `🎉 If you see this message, Telegram notifications are configured correctly!`;
+
+                try {
+                    await TelegramAPI.sendMessage(testMessage);
+                    updateLogs(0, 0, 0, "✅ Telegram test message sent successfully!", true);
+                } catch (error) {
+                    updateLogs(0, 0, 0, `❌ Telegram test failed: ${error.message}`, true);
+                }
+            });
+        }
+
         // Control buttons
         const minimizeBtn = document.querySelector('.control-btn.minimize');
         if (minimizeBtn) {
-            safeAddEventListener(minimizeBtn, 'click', () => {
+            minimizeBtn.addEventListener('click', () => {
                 bot.minimized = !bot.minimized;
                 const content = document.querySelectorAll('.tab-content');
                 if (bot.minimized) {
@@ -2944,7 +3209,7 @@
 
         const closeBtn = document.querySelector('.control-btn.close');
         if (closeBtn) {
-            safeAddEventListener(closeBtn, 'click', () => {
+            closeBtn.addEventListener('click', () => {
                 if (bot.isRunning) {
                     if (confirm("Bot is still running. Are you sure you want to close?")) {
                         document.getElementById("orion-wrap").remove();
@@ -2955,14 +3220,66 @@
             });
         }
 
-        // Initialize UI
-        updateStatsInterval();
-        setTimeout(() => {
-            API.syncOnce();
-        }, 500);
-        
-        // Initial dashboard update
-        updateDashboard();
+        // Global MinBet input
+        const globalMinBetInput = document.getElementById("global-minbet");
+        if (globalMinBetInput) {
+            globalMinBetInput.addEventListener('change', (e) => {
+                const value = parseFloat(e.target.value);
+                if (value >= 0.00000001) {
+                    bot.globalMinBet = value;
+                    updateLogs(0, 0, 0, `Global MinBet set to ${value.toFixed(8)}`, true);
+                }
+            });
+        }
+
+        // Currency dropdown
+        const pCurrency = document.getElementById("p-currency");
+        if (pCurrency) {
+            const savedCurrency = localStorage.getItem('orion_selected_currency');
+            if (savedCurrency) {
+                bot.selectedCurrency = savedCurrency;
+            }
+
+            pCurrency.addEventListener('change', (e) => {
+                const newCurrency = e.target.value;
+                bot.selectedCurrency = newCurrency;
+                const stCurrency = document.getElementById("st-currency");
+                if (stCurrency) stCurrency.textContent = newCurrency.toUpperCase();
+                localStorage.setItem('orion_selected_currency', newCurrency);
+            });
+        }
+    }
+
+    // Stats update interval
+    let statsInterval;
+
+    function updateStatsInterval() {
+        if (statsInterval) clearInterval(statsInterval);
+
+        const interval = bot.turboMode ? bot.turboSettings.updateInterval : 1000;
+
+        statsInterval = setInterval(async () => {
+            if (bot.isRunning && !bot.isDemo) {
+                try {
+                    const newBalance = await API.getBalance(bot.selectedCurrency);
+                    bot.stats.currentBal = newBalance;
+                } catch (e) {
+                    console.log("Balance update error:", e);
+                }
+            }
+
+            updateDashboard();
+
+            const headerBalance = document.getElementById("header-balance");
+            if (headerBalance) {
+                headerBalance.innerText = bot.stats.currentBal.toFixed(8);
+            }
+
+            if (!bot.turboMode || bot.stats.bets % 10 === 0) {
+                updateWagerUI();
+                updateLimboUI();
+            }
+        }, interval);
     }
 
     // Initialize UI
