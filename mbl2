@@ -76,12 +76,14 @@
         
         recoveryMode: {
             active: false,
-            chance: 95.0,
+            chance: 77.0,
             recoveryStartBalance: 0,
             recoveryLossAmount: 0,
             consecutiveLossesForAggressive: 3,
             betMultiplier: 2.0,
-            maxBetPercent: 50.0
+            maxBetPercent: 50.0,
+            totalLossInStreak: 0,
+            recoveryStreak: []
         }
     };
 
@@ -442,14 +444,17 @@
         bot.recoveryMode.active = true;
         bot.recoveryMode.recoveryStartBalance = bot.wagerMode.startBalance;
         bot.recoveryMode.recoveryLossAmount = bot.wagerMode.startBalance - bot.stats.currentBal;
+        bot.recoveryMode.totalLossInStreak = bot.recoveryMode.recoveryLossAmount;
+        bot.recoveryMode.recoveryStreak = [];
         
         // Reset consecutive losses saat masuk recovery
         bot.stats.consecutiveLosses = 0;
         
         updateLogs(`🔄 ORION AGGRESSIVE RECOVERY STARTED`, true);
-        updateLogs(`💰 Loss to recover: ${bot.recoveryMode.recoveryLossAmount.toFixed(8)}`, true);
+        updateLogs(`💰 Total Loss to recover: ${bot.recoveryMode.totalLossInStreak.toFixed(8)}`, true);
         updateLogs(`🎯 Target: ${bot.recoveryMode.recoveryStartBalance.toFixed(8)}`, true);
         updateLogs(`⚡ Strategy: Bet ×${bot.recoveryMode.betMultiplier} after ${bot.recoveryMode.consecutiveLossesForAggressive} losses`, true);
+        updateLogs(`🎯 Recovery Chance: ${bot.recoveryMode.chance}%`, true);
     }
 
     function recoveryBetLogic() {
@@ -479,36 +484,65 @@
         
         let betAmount = 0;
         const chance = rm.chance;
-        const payoutMultiplier = 99 / chance;
+        const payoutMultiplier = 99 / chance; // Payout untuk chance tertentu
         
-        // AGGRESSIVE RECOVERY: Hanya 2 mode saja
+        // AGGRESSIVE RECOVERY dengan kalkulasi total loss
         
-        // Mode 1: Base bet (1% dari balance)
+        // Mode 1: Conservative bet (berdasarkan total loss dengan safety)
         if (bot.stats.consecutiveLosses < rm.consecutiveLossesForAggressive) {
-            betAmount = bot.stats.currentBal * 0.01; // 1% dari balance
-            updateLogs(`📊 Recovery Base: 1% bet (${bot.stats.consecutiveLosses}/${rm.consecutiveLossesForAggressive} losses)`, true);
+            // Hitung bet untuk recover sebagian loss (misalnya 25% dari total loss)
+            const targetRecovery = rm.totalLossInStreak * 0.25;
+            betAmount = targetRecovery / (payoutMultiplier - 1);
+            
+            updateLogs(`📊 Recovery Conservative: Need ${targetRecovery.toFixed(8)} to recover 25% of total loss`, true);
         }
-        // Mode 2: Aggressive bet (previous bet × multiplier)
+        // Mode 2: Aggressive bet (berdasarkan total loss dengan multiplier)
         else {
-            if (bot.stats.lastBetAmount > 0) {
-                betAmount = bot.stats.lastBetAmount * rm.betMultiplier;
-                updateLogs(`⚡ Recovery Aggressive: ${bot.stats.lastBetAmount.toFixed(8)} × ${rm.betMultiplier} = ${betAmount.toFixed(8)}`, true);
-            } else {
-                betAmount = bot.stats.currentBal * 0.03; // 3% jika tidak ada previous bet
-                updateLogs(`📊 Recovery Start: 3% bet (no previous bet)`, true);
+            // Track losses dalam streak aggressive
+            if (bot.stats.lastResults.length > 0 && !bot.stats.lastResults[0].win) {
+                rm.recoveryStreak.push(Math.abs(bot.stats.lastResults[0].profit));
+                
+                // Update total loss dalam streak aggressive
+                const aggressiveLoss = rm.recoveryStreak.reduce((sum, loss) => sum + loss, 0);
+                rm.totalLossInStreak = rm.recoveryLossAmount + aggressiveLoss;
             }
+            
+            // Hitung bet untuk recover total loss dalam 1 win + buffer 10%
+            const targetRecovery = rm.totalLossInStreak * 1.1;
+            betAmount = targetRecovery / (payoutMultiplier - 1);
+            
+            // Terapkan multiplier jika ada previous bet
+            if (bot.stats.lastBetAmount > 0 && bot.stats.consecutiveLosses > rm.consecutiveLossesForAggressive) {
+                betAmount = Math.max(betAmount, bot.stats.lastBetAmount * rm.betMultiplier);
+            }
+            
+            updateLogs(`⚡ Recovery Aggressive: Need ${targetRecovery.toFixed(8)} to recover total loss (×${rm.betMultiplier} multiplier)`, true);
         }
         
-        // Cap maximum bet
-        const maxBet = bot.stats.currentBal * (rm.maxBetPercent / 100);
-        if (betAmount > maxBet) {
-            betAmount = maxBet;
-            updateLogs(`⚠️ Bet capped at ${rm.maxBetPercent}% of balance`, true);
-        }
+        // Cap maximum bet berdasarkan persentase balance
+        const maxBetByPercent = bot.stats.currentBal * (rm.maxBetPercent / 100);
         
+        // Juga cap berdasarkan apa yang diperlukan untuk recover
+        const maxBetByRecovery = bot.stats.currentBal * 0.8; // Max 80% untuk recovery
+        
+        betAmount = Math.min(betAmount, maxBetByPercent, maxBetByRecovery);
+        
+        // Pastikan bet tidak kurang dari minimum
         if (betAmount < bot.globalMinBet) {
             betAmount = bot.globalMinBet;
+            updateLogs(`⚠️ Bet increased to minimum: ${bot.globalMinBet.toFixed(8)}`, true);
         }
+        
+        // Pastikan bet tidak melebihi balance
+        if (betAmount > bot.stats.currentBal) {
+            betAmount = bot.stats.currentBal * 0.9; // 90% dari balance
+            updateLogs(`⚠️ Bet capped at 90% of current balance`, true);
+        }
+        
+        updateLogs(`📈 Calculated bet: ${betAmount.toFixed(8)} (${((betAmount / bot.stats.currentBal) * 100).toFixed(2)}% of balance)`, true);
+        updateLogs(`🎯 Payout if win: ${(betAmount * payoutMultiplier).toFixed(8)}`, true);
+        updateLogs(`💰 Profit if win: ${(betAmount * (payoutMultiplier - 1)).toFixed(8)}`, true);
+        updateLogs(`📉 Total loss to recover: ${rm.totalLossInStreak.toFixed(8)}`, true);
         
         return {
             bet: betAmount,
@@ -526,6 +560,10 @@
         bot.wagerMode.currentMode = 'dice';
         bot.wagerMode.diceBetCount = 0;
         bot.wagerMode.limboBetCount = 0;
+        
+        // Reset recovery data
+        bot.recoveryMode.totalLossInStreak = 0;
+        bot.recoveryMode.recoveryStreak = [];
         
         // Reset consecutive losses saat kembali ke wager
         bot.stats.consecutiveLosses = 0;
@@ -818,7 +856,20 @@
                 bot.stats.consecutiveWins++;
                 bot.stats.consecutiveLosses = 0;
                 
-                // Reset jika win dalam recovery mode
+                // Reset recovery streak jika win
+                if (bot.recoveryMode.active) {
+                    bot.recoveryMode.recoveryStreak = [];
+                    
+                    // Update total loss setelah win
+                    const newLossAmount = bot.recoveryMode.recoveryStartBalance - bot.stats.currentBal;
+                    if (newLossAmount > 0) {
+                        bot.recoveryMode.totalLossInStreak = newLossAmount;
+                    } else {
+                        bot.recoveryMode.totalLossInStreak = 0;
+                    }
+                }
+                
+                // Jika win dan balance sudah mencapai target, keluar recovery
                 if (bot.recoveryMode.active && bot.stats.currentBal >= bot.recoveryMode.recoveryStartBalance) {
                     setTimeout(() => {
                         switchToWagerMode();
@@ -833,6 +884,11 @@
                 }
                 bot.stats.consecutiveLosses++;
                 bot.stats.consecutiveWins = 0;
+                
+                // Update total loss dalam recovery mode
+                if (bot.recoveryMode.active && pft < 0) {
+                    bot.recoveryMode.totalLossInStreak += Math.abs(pft);
+                }
             }
 
             if (!bot.isDemo) {
@@ -887,6 +943,7 @@
                 if (bot.stats.consecutiveLosses >= bot.recoveryMode.consecutiveLossesForAggressive) {
                     logLine += ` [AGGRESSIVE ×${bot.recoveryMode.betMultiplier}]`;
                 }
+                logLine += ` | Total Loss: ${bot.recoveryMode.totalLossInStreak.toFixed(8)}`;
             }
             
             if (bot.stats.consecutiveLosses > 0) {
@@ -1027,19 +1084,34 @@
         let html = "";
         
         if (bot.recoveryMode.active) {
+            const payoutMultiplier = 99 / bot.recoveryMode.chance;
+            const requiredWinProfit = bot.recoveryMode.totalLossInStreak;
+            const requiredBet = requiredWinProfit / (payoutMultiplier - 1);
+            const betPercent = bot.stats.currentBal > 0 ? (requiredBet / bot.stats.currentBal * 100) : 0;
+            
             html += `
-                <div style="color:#f59e0b;text-align:center;padding:4px;background:rgba(245,158,11,0.1);margin-bottom:6px;border-radius:3px;font-size:10px;font-weight:bold;">
-                    ⚡ AGGRESSIVE RECOVERY | Loss: ${bot.recoveryMode.recoveryLossAmount.toFixed(8)} | Strategy: ×${bot.recoveryMode.betMultiplier} after ${bot.recoveryMode.consecutiveLossesForAggressive} losses
+                <div style="color:#f59e0b;text-align:center;padding:6px;background:rgba(245,158,11,0.15);margin-bottom:8px;border-radius:4px;font-size:11px;font-weight:bold;border:1px solid rgba(245,158,11,0.3);">
+                    ⚡ AGGRESSIVE RECOVERY ACTIVE
+                    <div style="font-size:10px;color:#fbbf24;margin-top:3px;">
+                        Total Loss: ${bot.recoveryMode.totalLossInStreak.toFixed(8)} | 
+                        Required Bet: ${requiredBet.toFixed(8)} (${betPercent.toFixed(1)}%) | 
+                        Strategy: ×${bot.recoveryMode.betMultiplier} after ${bot.recoveryMode.consecutiveLossesForAggressive} losses
+                    </div>
                 </div>`;
         } else if (bot.wagerMode.active) {
             html += `
-                <div style="color:#10b981;text-align:center;padding:4px;background:rgba(16,185,129,0.1);margin-bottom:6px;border-radius:3px;font-size:10px;font-weight:bold;">
-                    🎯 ORION ${bot.wagerMode.currentMode.toUpperCase()} MODE | Stop Loss: ${bot.wagerMode.stopLossPercent}%
+                <div style="color:#10b981;text-align:center;padding:6px;background:rgba(16,185,129,0.15);margin-bottom:8px;border-radius:4px;font-size:11px;font-weight:bold;border:1px solid rgba(16,185,129,0.3);">
+                    🎯 ORION ${bot.wagerMode.currentMode.toUpperCase()} MODE
+                    <div style="font-size:10px;color:#34d399;margin-top:3px;">
+                        Stop Loss: ${bot.wagerMode.stopLossPercent}% | 
+                        Dice: ${bot.wagerMode.diceBetPercent}% @ ${bot.wagerMode.diceChance}% | 
+                        Limbo: ${bot.wagerMode.limboBetPercent}% @ ${bot.wagerMode.limboMultiplier}x
+                    </div>
                 </div>`;
         }
         
         if (bot.stats.lastResults.length === 0) {
-            html += '<div style="color: #94a3b8; text-align: center; padding: 10px; font-size: 10px;">No bets yet</div>';
+            html += '<div style="color: #94a3b8; text-align: center; padding: 15px; font-size: 11px;">No bets yet</div>';
         } else {
             bot.stats.lastResults.forEach(result => {
                 let color = result.win ? "#10b981" : "#ef4444";
@@ -1053,25 +1125,25 @@
                 const winLoss = result.win ? "WIN" : "LOSS";
                 const modeIcon = result.mode === 'dice' ? '🎲' : '📈';
                 
-                const betPercent = (result.betAmount / bot.stats.currentBal) * 100;
+                const betPercent = bot.stats.currentBal > 0 ? (result.betAmount / bot.stats.currentBal * 100) : 0;
                 
                 html += `
-                    <div class="log-entry" style="color: ${color}; background: ${bgColor}; padding: 6px; margin-bottom: 4px; border-radius: 4px; font-size: 11px; border-left: 3px solid ${color};">
+                    <div class="log-entry" style="color: ${color}; background: ${bgColor}; padding: 8px; margin-bottom: 6px; border-radius: 5px; font-size: 12px; border-left: 4px solid ${color};">
                         <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <div style="font-size: 9px; color: #94a3b8;">${result.time}</div>
-                            <div style="font-weight: bold; color: ${color};">${winLoss}</div>
+                            <div style="font-size: 10px; color: #94a3b8;">${result.time}</div>
+                            <div style="font-weight: bold; color: ${color}; font-size: 11px;">${winLoss}</div>
                         </div>
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px;">
                             <div>
                                 <span>${modeIcon} ${result.betAmount.toFixed(8)}</span>
-                                <span style="font-size: 9px; color: #94a3b8; margin-left: 4px;">(${betPercent.toFixed(2)}%)</span>
+                                <span style="font-size: 10px; color: #94a3b8; margin-left: 5px;">(${betPercent.toFixed(2)}%)</span>
                             </div>
-                            <div style="color: ${result.profit > 0 ? '#10b981' : '#ef4444'}; font-weight: bold;">
+                            <div style="color: ${result.profit > 0 ? '#10b981' : '#ef4444'}; font-weight: bold; font-size: 11px;">
                                 ${result.profit > 0 ? '+' : ''}${result.profit.toFixed(8)}
                             </div>
                         </div>
                         ${bot.recoveryMode.active && bot.stats.consecutiveLosses >= bot.recoveryMode.consecutiveLossesForAggressive ? 
-                            `<div style="font-size: 9px; color: #f59e0b; text-align: center; margin-top: 2px;">
+                            `<div style="font-size: 10px; color: #f59e0b; text-align: center; margin-top: 4px; padding: 2px; background: rgba(245,158,11,0.1); border-radius: 3px;">
                                 Aggressive Mode: ×${bot.recoveryMode.betMultiplier}
                             </div>` : ''}
                     </div>
@@ -1162,7 +1234,7 @@
                 position: fixed;
                 top: 10px;
                 right: 10px;
-                width: 450px;
+                width: 460px;
                 max-width: calc(100vw - 20px);
                 max-height: calc(100vh - 20px);
                 background: linear-gradient(135deg, rgba(15, 23, 42, 0.98), rgba(30, 41, 59, 0.98));
@@ -1565,7 +1637,7 @@
                 background: rgba(15, 23, 42, 0.9);
                 border-radius: 8px;
                 padding: 12px;
-                height: 150px;
+                height: 160px;
                 overflow-y: auto;
                 font-family: 'Courier New', monospace;
                 font-size: 11px;
@@ -1637,7 +1709,7 @@
             <div class="orion-header">
                 <div>
                     <div class="app-title">🚀 ORION WAGER BOT</div>
-                    <div class="app-subtitle">Aggressive Recovery System v2.0</div>
+                    <div class="app-subtitle">Smart Recovery System v2.0</div>
                 </div>
                 <div class="header-info">
                     <span id="account-name">${bot.stakeUser}</span>
@@ -1776,7 +1848,7 @@
                 </div>
                 
                 <div class="settings-section">
-                    <div class="section-title">⚡ Aggressive Recovery</div>
+                    <div class="section-title">⚡ Smart Recovery</div>
                     <div class="input-row">
                         <span class="input-label">Recovery Chance</span>
                         <div class="input-wrapper">
@@ -1799,7 +1871,7 @@
                         </div>
                     </div>
                     <div class="input-row">
-                        <span class="input-label">Trigger After Losses</span>
+                        <span class="input-label">Aggressive After</span>
                         <div class="input-wrapper">
                             <input type="number" id="agg-losses" class="input-field" value="${bot.recoveryMode.consecutiveLossesForAggressive}" step="1" min="1" max="20">
                             <span class="unit">losses</span>
@@ -1897,7 +1969,7 @@
                 if (content.style.display === 'none') {
                     content.style.display = 'block';
                     minimizeBtn.textContent = '_';
-                    wrap.style.width = '450px';
+                    wrap.style.width = '460px';
                 } else {
                     content.style.display = 'none';
                     minimizeBtn.textContent = '□';
