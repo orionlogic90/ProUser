@@ -16,4 +16,2809 @@
             sendOnStart: true,
             sendOnStop: true,
             sendOnRecovery: false,
-            sendReportInterval
+            sendReportInterval: 5
+        }
+    };
+
+    const bot = {
+        isRunning: false,
+        isPaused: false,
+        isDemo: false,
+        demoBalance: 1000.0,
+        token: null,
+        stakeUser: "Loading...",
+        selectedCurrency: "doge",
+        globalMinBet: 0.00000001,
+        realBalance: 0,
+        availableCurrencies: [],
+        
+        stats: {
+            profit: 0,
+            wagered: 0,
+            startBal: 0,
+            currentBal: 0,
+            peakBalance: 0,
+            maxDrawdown: 0,
+            drawdownPercentage: 0,
+            bets: 0,
+            wins: 0,
+            loss: 0,
+            startTime: null,
+            lastBetAmount: 0,
+            lastResults: [],
+            winStreak: 0,
+            lossStreak: 0,
+            maxWinStreak: 0,
+            maxLossStreak: 0,
+            consecutiveLosses: 0,
+            consecutiveWins: 0,
+            winRate: 0,
+            wageredPercent: 0,
+            avgBetSize: 0,
+            lastReportTime: null,
+            totalProfitSinceStart: 0,
+            sessionHigh: 0,
+            sessionLow: 0
+        },
+        
+        wagerMode: {
+            active: true,
+            diceBetPercent: 1.0,
+            diceChance: 99.5,
+            dicePayout: 0,
+            limboBetPercent: 0.5,
+            limboMultiplier: 1.0001,
+            limboPayout: 1.0001,
+            diceBetsPerCycle: 10,
+            limboBetsPerCycle: 50,
+            currentMode: 'dice',
+            diceBetCount: 0,
+            limboBetCount: 0,
+            stopLossPercent: 2.0,
+            startBalance: 0,
+            lossTriggered: false,
+            lossAmount: 0
+        },
+        
+        recoveryMode: {
+            active: false,
+            mode: 'manual', // 'manual' atau 'smart'
+            
+            // Manual Mode Settings
+            manualChance: 49.5,
+            manualMultiplier: 1.5,
+            
+            // Smart AI Mode Settings
+            smartMinChance: 49.5,
+            smartMaxChance: 66.66,
+            smartCurrentChance: 49.5,
+            smartMultiplier: 1.5,
+            
+            // Common settings
+            winsToBEP: 3,
+            recoveryStartBalance: 0,
+            recoveryLossAmount: 0,
+            consecutiveLossesForAggressive: 3,
+            maxBetPercent: 50.0,
+            totalLossInStreak: 0,
+            recoveryStreak: [],
+            currentRecoveryWins: 0,
+            recoveryProgress: [],
+            remainingWinsNeeded: 3,
+            avgProfitNeededPerWin: 0,
+            lastWinProfit: 0,
+            recoveryStage: 1,
+            stageMultipliers: [1.0, 1.5, 2.0],
+            maxConsecutiveLossesInStage: 3,
+            
+            // AI Learning
+            winHistory: [],
+            lossHistory: [],
+            chanceAdjustment: 0,
+            performanceScore: 0,
+            lastPattern: null,
+            adaptiveCounter: 0,
+            lastBalance: 0
+        }
+    };
+
+    // =============== TELEGRAM FUNCTIONS (HAPUS KETERANGAN DEMO) ===============
+    const TelegramAPI = {
+        async sendMessage(text, parse_mode = "HTML") {
+            if (!CONFIG.telegram?.enabled || bot.isDemo) return; // SKIP JIKA DEMO MODE
+            try {
+                const url = `https://api.telegram.org/bot${CONFIG.telegram.botToken}/sendMessage`;
+                const params = {
+                    chat_id: CONFIG.telegram.chatId,
+                    text: text,
+                    parse_mode: parse_mode,
+                    disable_web_page_preview: true
+                };
+                await fetch(url, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(params)
+                });
+            } catch (error) {
+                console.error("Telegram error:", error);
+            }
+        },
+
+        async sendStartReport() {
+            if (!CONFIG.telegram.sendOnStart || bot.isDemo) return; // SKIP JIKA DEMO
+            const currencyInfo = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
+            const currencyName = currencyInfo ? currencyInfo.name : bot.selectedCurrency.toUpperCase();
+            
+            // HAPUS KETERANGAN MODE DARI LAPORAN
+            const message = `🚀 <b>ORION WAGER BOT STARTED</b>\n` +
+                `👤 User: <code>${bot.stakeUser}</code>\n` +
+                `💰 Currency: <code>${currencyName}</code>\n` +
+                `💰 Balance: <code>${bot.stats.startBal.toFixed(8)} ${currencyName}</code>\n` +
+                `⚡ Min Bet: <code>${bot.globalMinBet.toFixed(8)}</code>\n` +
+                `⏰ ${new Date().toLocaleString()}`;
+            await this.sendMessage(message);
+        },
+
+        async sendStopReport(reason = "Manual Stop") {
+            if (!CONFIG.telegram.sendOnStop || bot.isDemo) return; // SKIP JIKA DEMO
+            const currencyInfo = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
+            const currencyName = currencyInfo ? currencyInfo.name : bot.selectedCurrency.toUpperCase();
+            const runtime = bot.stats.startTime ? Math.floor((Date.now() - bot.stats.startTime) / 1000) : 0;
+            const hours = Math.floor(runtime / 3600);
+            const minutes = Math.floor((runtime % 3600) / 60);
+            
+            const profitPercent = bot.stats.startBal > 0 
+                ? ((bot.stats.profit / bot.stats.startBal) * 100) 
+                : 0;
+            
+            const winRate = bot.stats.bets > 0 
+                ? ((bot.stats.wins / bot.stats.bets) * 100) 
+                : 0;
+            
+            const wageredPercent = bot.stats.startBal > 0
+                ? ((bot.stats.wagered / bot.stats.startBal) * 100)
+                : 0;
+            
+            const drawdown = bot.stats.peakBalance - bot.stats.currentBal;
+            const drawdownPercent = bot.stats.peakBalance > 0 ? (drawdown / bot.stats.peakBalance * 100) : 0;
+            
+            // HAPUS KETERANGAN MODE DARI LAPORAN
+            const message = `🛑 <b>ORION BOT STOPPED</b>\n` +
+                `📝 Reason: <b>${reason}</b>\n` +
+                `👤 User: <code>${bot.stakeUser}</code>\n` +
+                `💰 Currency: <code>${currencyName}</code>\n` +
+                `⏱️ Runtime: <code>${hours}h ${minutes}m</code>\n` +
+                `🎯 Bets: <code>${bot.stats.bets}</code>\n` +
+                `📈 Win Rate: <code>${winRate.toFixed(2)}%</code>\n` +
+                `💰 Start: <code>${bot.stats.startBal.toFixed(8)} ${currencyName}</code>\n` +
+                `💰 End: <code>${bot.stats.currentBal.toFixed(8)} ${currencyName}</code>\n` +
+                `📈 Profit: <code>${bot.stats.profit > 0 ? '+' : ''}${bot.stats.profit.toFixed(8)} ${currencyName}</code>\n` +
+                `📈 %: <code>${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}%</code>\n` +
+                `💸 Wagered: <code>${bot.stats.wagered.toFixed(8)} ${currencyName}</code>\n` +
+                `📊 Wagered %: <code>${wageredPercent.toFixed(2)}%</code>\n` +
+                `📉 Drawdown: <code>${drawdown.toFixed(8)} (${drawdownPercent.toFixed(2)}%)</code>\n` +
+                `⏰ ${new Date().toLocaleString()}`;
+            await this.sendMessage(message);
+        },
+
+        async sendPeriodicReport() {
+            if (!CONFIG.telegram.enabled || !CONFIG.telegram.sendReportInterval || bot.isDemo) return;
+            
+            const now = Date.now();
+            if (bot.stats.lastReportTime && (now - bot.stats.lastReportTime) < (CONFIG.telegram.sendReportInterval * 60 * 1000)) {
+                return;
+            }
+            
+            if (!bot.isRunning) return;
+            
+            bot.stats.lastReportTime = now;
+            
+            const currencyInfo = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
+            const currencyName = currencyInfo ? currencyInfo.name : bot.selectedCurrency.toUpperCase();
+            
+            const runtime = bot.stats.startTime ? Math.floor((Date.now() - bot.stats.startTime) / 1000) : 0;
+            const hours = Math.floor(runtime / 3600);
+            const minutes = Math.floor((runtime % 3600) / 60);
+            
+            const winRate = bot.stats.bets > 0 
+                ? ((bot.stats.wins / bot.stats.bets) * 100) 
+                : 0;
+            
+            const wageredPercent = bot.stats.startBal > 0
+                ? ((bot.stats.wagered / bot.stats.startBal) * 100)
+                : 0;
+            
+            const profitPercent = bot.stats.startBal > 0 
+                ? ((bot.stats.profit / bot.stats.startBal) * 100) 
+                : 0;
+            
+            const currentDrawdown = bot.stats.peakBalance - bot.stats.currentBal;
+            const drawdownPercent = bot.stats.peakBalance > 0 ? (currentDrawdown / bot.stats.peakBalance * 100) : 0;
+            
+            const currentMode = bot.wagerMode.active ? 'WAGER' : 'RECOVERY';
+            
+            // HAPUS KETERANGAN MODE DARI LAPORAN
+            const message = `<b>🎯 ORION WAGER BOOSTER</b>\n` +
+                `*jasa ticketing , 10 ticket $75*\n` +
+                `-----orionlogic.id-----\n` +
+                `⏰ Time: <code>${new Date().toLocaleString()}</code>\n` +
+                `👤 Username: <code>${bot.stakeUser}</code>\n` +
+                `💰 Currency: <code>${currencyName}</code>\n` +
+                `💰 Balance Start: <code>${bot.stats.startBal.toFixed(8)} ${currencyName}</code>\n` +
+                `💰 Balance End: <code>${bot.stats.currentBal.toFixed(8)} ${currencyName}</code>\n` +
+                `📈 Profit: <code>${bot.stats.profit > 0 ? '+' : ''}${bot.stats.profit.toFixed(8)} ${currencyName}</code>\n` +
+                `💸 Wagered: <code>${bot.stats.wagered.toFixed(8)} ${currencyName}</code>\n` +
+                `\n📊 <b>STATISTICS:</b>\n` +
+                `🎯 Bets: <code>${bot.stats.bets}</code>\n` +
+                `📈 Win Rate: <code>${winRate.toFixed(2)}%</code>\n` +
+                `📊 Profit %: <code>${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}%</code>\n` +
+                `📊 Wagered %: <code>${wageredPercent.toFixed(2)}%</code>\n` +
+                `📉 Drawdown: <code>${currentDrawdown.toFixed(8)} (${drawdownPercent.toFixed(2)}%)</code>\n` +
+                `⏱️ Runtime: <code>${hours}h ${minutes}m</code>\n` +
+                `🔄 Mode: <code>${currentMode}</code>\n` +
+                `\n👨‍💻 Owner: t.me/orionlogic`;
+            
+            await this.sendMessage(message);
+        }
+    };
+
+    // =============== SMART AI CHANCE CALCULATOR ===============
+    function calculateSmartChance() {
+        const rm = bot.recoveryMode;
+        
+        if (rm.mode !== 'smart') return rm.manualChance;
+        
+        // Base chance
+        let baseChance = 49.5;
+        
+        // Analisis pola terakhir
+        const recentBets = bot.stats.lastResults.slice(0, 5);
+        const recentWins = recentBets.filter(b => b.win).length;
+        const recentLosses = recentBets.filter(b => !b.win).length;
+        
+        // 1. Jika dalam losing streak, naikkan chance (lebih konservatif)
+        if (bot.stats.consecutiveLosses >= 3) {
+            baseChance += 5 + (bot.stats.consecutiveLosses * 2);
+            updateLogs(`🤖 AI: Losing streak detected, increasing chance`, true);
+        }
+        
+        // 2. Jika dalam winning streak, turunkan chance (lebih agresif)
+        if (bot.stats.consecutiveWins >= 2) {
+            baseChance -= 3 + (bot.stats.consecutiveWins * 1);
+            updateLogs(`🤖 AI: Winning streak detected, decreasing chance for higher payout`, true);
+        }
+        
+        // 3. Adjust berdasarkan distance to BEP
+        const currentLoss = rm.recoveryStartBalance - bot.stats.currentBal;
+        const lossPercentage = (currentLoss / rm.recoveryLossAmount) * 100;
+        
+        if (lossPercentage > 70) {
+            // Jauh dari BEP, chance lebih tinggi untuk consistency
+            baseChance += 8;
+        } else if (lossPercentage < 30) {
+            // Dekat BEP, chance lebih rendah untuk speed
+            baseChance -= 5;
+        }
+        
+        // 4. Adjust berdasarkan balance safety
+        const balanceRisk = (bot.stats.currentBal / rm.recoveryStartBalance) * 100;
+        if (balanceRisk < 80) {
+            baseChance += 3; // Balance rendah, lebih konservatif
+        } else if (balanceRisk > 120) {
+            baseChance -= 4; // Balance tinggi, bisa lebih agresif
+        }
+        
+        // 5. Pattern detection untuk menghindari robekan beruntun
+        if (rm.lastPattern === 'alternating') {
+            baseChance += 2; // Stabilkan jika pola alternating
+        } else if (rm.lastPattern === 'streaky') {
+            baseChance -= 3; // Break streak dengan chance berbeda
+        }
+        
+        // Clamp antara 49.5 - 66.66
+        let finalChance = Math.max(rm.smartMinChance, Math.min(rm.smartMaxChance, baseChance));
+        
+        // Bulatkan ke .01 terdekat
+        finalChance = Math.round(finalChance * 100) / 100;
+        
+        // Update AI learning
+        rm.smartCurrentChance = finalChance;
+        rm.adaptiveCounter++;
+        
+        // Reset adaptive counter setiap 10 bets
+        if (rm.adaptiveCounter >= 10) {
+            rm.adaptiveCounter = 0;
+            rm.winHistory = rm.winHistory.slice(-20);
+            rm.lossHistory = rm.lossHistory.slice(-20);
+        }
+        
+        return finalChance;
+    }
+
+    // Function untuk detect pola
+    function detectPattern() {
+        const rm = bot.recoveryMode;
+        const last5 = bot.stats.lastResults.slice(0, 5).map(r => r.win);
+        
+        if (last5.length < 3) return null;
+        
+        // Cek alternating pattern (W L W L W)
+        let isAlternating = true;
+        for (let i = 1; i < last5.length; i++) {
+            if (last5[i] === last5[i-1]) {
+                isAlternating = false;
+                break;
+            }
+        }
+        
+        // Cek streak pattern
+        let isStreaky = false;
+        const winsInRow = bot.stats.consecutiveWins;
+        const lossesInRow = bot.stats.consecutiveLosses;
+        
+        if (winsInRow >= 3 || lossesInRow >= 3) {
+            isStreaky = true;
+        }
+        
+        if (isAlternating) {
+            rm.lastPattern = 'alternating';
+            return 'alternating';
+        } else if (isStreaky) {
+            rm.lastPattern = 'streaky';
+            return 'streaky';
+        } else {
+            rm.lastPattern = 'random';
+            return 'random';
+        }
+    }
+
+    // Helper function for stage names
+    function getStageName(stage) {
+        switch(stage) {
+            case 1: return "Conservative";
+            case 2: return "Moderate";
+            case 3: return "Aggressive";
+            default: return "Unknown";
+        }
+    }
+
+    // =============== CURRENCY FUNCTIONS ===============
+    async function syncCurrenciesFromServer() {
+        try {
+            if (!bot.token) {
+                return getDefaultCurrencies();
+            }
+            
+            const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${bot.token}`,
+                    "x-access-token": bot.token,
+                    "x-csrf-token": bot.token
+                },
+                body: JSON.stringify({
+                    query: `query {
+                        user {
+                            balances {
+                                available {
+                                    amount
+                                    currency
+                                }
+                            }
+                        }
+                    }`
+                })
+            });
+            
+            if (!res.ok) {
+                return getDefaultCurrencies();
+            }
+            
+            const json = await res.json();
+            
+            if (json?.errors) {
+                return getDefaultCurrencies();
+            }
+            
+            if (!json?.data?.user?.balances) {
+                return getDefaultCurrencies();
+            }
+            
+            const currenciesSet = new Set();
+            const currencies = [];
+            
+            json.data.user.balances.forEach(balance => {
+                if (balance.available && balance.available.currency) {
+                    const currencyCode = balance.available.currency.toLowerCase();
+                    if (!currenciesSet.has(currencyCode)) {
+                        currenciesSet.add(currencyCode);
+                        
+                        currencies.push({
+                            code: currencyCode,
+                            name: balance.available.currency.toUpperCase(),
+                            icon: getCurrencyIcon(currencyCode),
+                            balance: parseFloat(balance.available.amount) || 0
+                        });
+                    }
+                }
+            });
+            
+            if (currencies.length === 0) {
+                return getDefaultCurrencies();
+            }
+            
+            bot.availableCurrencies = currencies;
+            
+            if (!currencies.find(c => c.code === bot.selectedCurrency)) {
+                const currencyWithBalance = currencies.find(c => c.balance > 0) || currencies[0];
+                bot.selectedCurrency = currencyWithBalance.code;
+            }
+            
+            return currencies;
+            
+        } catch (e) {
+            return getDefaultCurrencies();
+        }
+    }
+
+    function getDefaultCurrencies() {
+        return [
+            { code: "doge", name: "DOGE", icon: "🐕", balance: 0 },
+            { code: "btc", name: "BTC", icon: "₿", balance: 0 },
+            { code: "eth", name: "ETH", icon: "Ξ", balance: 0 },
+            { code: "ltc", name: "LTC", icon: "Ł", balance: 0 },
+            { code: "xrp", name: "XRP", icon: "✕", balance: 0 },
+            { code: "ada", name: "ADA", icon: "A", balance: 0 },
+            { code: "trx", name: "TRX", icon: "T", balance: 0 },
+            { code: "usdt", name: "USDT", icon: "💵", balance: 0 },
+            { code: "usdc", name: "USDC", icon: "💲", balance: 0 },
+            { code: "sol", name: "SOL", icon: "◎", balance: 0 },
+            { code: "matic", name: "MATIC", icon: "⬡", balance: 0 },
+            { code: "bnb", name: "BNB", icon: "⛓️", balance: 0 },
+            { code: "shib", name: "SHIB", icon: "🐕", balance: 0 }
+        ];
+    }
+
+    function getCurrencyIcon(currencyCode) {
+        const icons = {
+            'doge': '🐕', 'btc': '₿', 'eth': 'Ξ', 'ltc': 'Ł', 'xrp': '✕', 'ada': 'A',
+            'trx': 'T', 'usdt': '💵', 'usdc': '💲', 'sol': '◎', 'matic': '⬡',
+            'bnb': '⛓️', 'shib': '🐕', 'xlm': '★', 'algo': 'Α', 'dot': '●',
+            'avax': '❄️', 'link': '🔗', 'uni': '🦄', 'aave': '👻', 'comp': '🦄',
+            'yfi': '🏦', 'snx': '⚡', 'mkr': '🏭', 'bat': '🦇', 'zrx': '0x'
+        };
+        
+        return icons[currencyCode] || '💰';
+    }
+
+    // =============== WAGER MODE LOGIC ===============
+    function initWagerMode() {
+        const diceBetPercentInput = document.getElementById("dice-bet-percent");
+        const diceChanceInput = document.getElementById("dice-chance");
+        const limboBetPercentInput = document.getElementById("limbo-bet-percent");
+        const limboMultiplierInput = document.getElementById("limbo-multiplier");
+        const diceBetsInput = document.getElementById("dice-bets");
+        const limboBetsInput = document.getElementById("limbo-bets");
+        const stopLossInput = document.getElementById("wager-stop-loss");
+        
+        if (diceBetPercentInput && diceBetPercentInput.value) {
+            bot.wagerMode.diceBetPercent = parseFloat(diceBetPercentInput.value);
+        }
+        if (diceChanceInput && diceChanceInput.value) {
+            bot.wagerMode.diceChance = parseFloat(diceChanceInput.value);
+        }
+        if (limboBetPercentInput && limboBetPercentInput.value) {
+            bot.wagerMode.limboBetPercent = parseFloat(limboBetPercentInput.value);
+        }
+        if (limboMultiplierInput && limboMultiplierInput.value) {
+            bot.wagerMode.limboMultiplier = parseFloat(limboMultiplierInput.value);
+        } else {
+            bot.wagerMode.limboMultiplier = 1.0001;
+        }
+        if (diceBetsInput && diceBetsInput.value) {
+            bot.wagerMode.diceBetsPerCycle = parseInt(diceBetsInput.value);
+        }
+        if (limboBetsInput && limboBetsInput.value) {
+            bot.wagerMode.limboBetsPerCycle = parseInt(limboBetsInput.value);
+        }
+        if (stopLossInput && stopLossInput.value) {
+            bot.wagerMode.stopLossPercent = parseFloat(stopLossInput.value);
+        }
+        
+        bot.wagerMode.active = true;
+        bot.recoveryMode.active = false;
+        bot.wagerMode.startBalance = bot.stats.currentBal;
+        bot.wagerMode.currentMode = 'dice';
+        bot.wagerMode.diceBetCount = 0;
+        bot.wagerMode.limboBetCount = 0;
+        bot.wagerMode.lossTriggered = false;
+        bot.wagerMode.lossAmount = 0;
+        
+        bot.wagerMode.dicePayout = 99 / bot.wagerMode.diceChance;
+        bot.wagerMode.limboPayout = bot.wagerMode.limboMultiplier;
+        
+        updateLogs(`🎯 ORION WAGER MODE STARTED`, true);
+        updateLogs(`💰 Start Balance: ${bot.wagerMode.startBalance.toFixed(8)}`, true);
+        updateLogs(`🎲 Dice: ${bot.wagerMode.diceBetPercent}% | Limbo: ${bot.wagerMode.limboBetPercent}%`, true);
+    }
+
+    function wagerBetLogic() {
+        const wm = bot.wagerMode;
+        const profitFromStart = bot.stats.currentBal - wm.startBalance;
+        const stopLossAmount = wm.startBalance * (wm.stopLossPercent / 100);
+        
+        if (profitFromStart < -stopLossAmount && !wm.lossTriggered) {
+            const lossAmount = Math.abs(profitFromStart);
+            const lossPercent = (lossAmount / wm.startBalance) * 100;
+            
+            wm.lossTriggered = true;
+            wm.lossAmount = lossAmount;
+            
+            updateLogs(`⚠️ Stop loss triggered: ${lossAmount.toFixed(8)} (${lossPercent.toFixed(2)}%)`, true);
+            updateLogs(`🔄 Switching to Recovery Mode`, true);
+            
+            setTimeout(() => {
+                switchToRecoveryMode();
+            }, 1000);
+            return null;
+        }
+        
+        if (wm.currentMode === 'dice') {
+            wm.diceBetCount++;
+            if (wm.diceBetCount >= wm.diceBetsPerCycle) {
+                wm.currentMode = 'limbo';
+                wm.diceBetCount = 0;
+            }
+        } else {
+            wm.limboBetCount++;
+            if (wm.limboBetCount >= wm.limboBetsPerCycle) {
+                wm.currentMode = 'dice';
+                wm.limboBetCount = 0;
+            }
+        }
+        
+        let baseBetPercent = wm.currentMode === 'dice' ? wm.diceBetPercent : wm.limboBetPercent;
+        let baseBet = bot.stats.currentBal * (baseBetPercent / 100);
+        
+        const maxBet = bot.stats.currentBal * 0.8;
+        if (baseBet > maxBet) baseBet = maxBet;
+        if (baseBet < bot.globalMinBet) baseBet = bot.globalMinBet;
+        
+        if (wm.currentMode === 'dice') {
+            return {
+                bet: baseBet,
+                chance: wm.diceChance,
+                mode: 'dice'
+            };
+        } else {
+            return {
+                bet: baseBet,
+                multiplier: 1.0001,
+                mode: 'limbo'
+            };
+        }
+    }
+
+    // =============== DUAL MODE RECOVERY SYSTEM ===============
+    function initRecoveryMode() {
+        const recoveryModeSelect = document.querySelector('input[name="recovery-mode"]:checked');
+        const recoveryChanceInput = document.getElementById("recovery-chance");
+        const betMultiplierInput = document.getElementById("bet-multiplier");
+        const maxBetPercentInput = document.getElementById("max-bet-percent");
+        const aggLossesInput = document.getElementById("agg-losses");
+        const winsToBEPInput = document.getElementById("wins-to-bep");
+        
+        // Tentukan mode
+        if (recoveryModeSelect) {
+            bot.recoveryMode.mode = recoveryModeSelect.value;
+        }
+        
+        if (recoveryChanceInput && recoveryChanceInput.value) {
+            if (bot.recoveryMode.mode === 'manual') {
+                bot.recoveryMode.manualChance = parseFloat(recoveryChanceInput.value);
+            } else {
+                const chance = parseFloat(recoveryChanceInput.value);
+                bot.recoveryMode.smartMinChance = Math.min(49.5, chance);
+                bot.recoveryMode.smartMaxChance = Math.max(chance, 66.66);
+                bot.recoveryMode.smartCurrentChance = chance;
+            }
+        }
+        
+        if (betMultiplierInput && betMultiplierInput.value) {
+            if (bot.recoveryMode.mode === 'manual') {
+                bot.recoveryMode.manualMultiplier = parseFloat(betMultiplierInput.value);
+            } else {
+                bot.recoveryMode.smartMultiplier = parseFloat(betMultiplierInput.value);
+            }
+        }
+        
+        if (maxBetPercentInput && maxBetPercentInput.value) {
+            bot.recoveryMode.maxBetPercent = parseFloat(maxBetPercentInput.value);
+        }
+        
+        if (aggLossesInput && aggLossesInput.value) {
+            bot.recoveryMode.consecutiveLossesForAggressive = parseInt(aggLossesInput.value);
+        }
+        
+        if (winsToBEPInput && winsToBEPInput.value) {
+            bot.recoveryMode.winsToBEP = parseInt(winsToBEPInput.value);
+        }
+        
+        bot.wagerMode.active = false;
+        bot.recoveryMode.active = true;
+        bot.recoveryMode.recoveryStartBalance = bot.stats.currentBal + bot.wagerMode.lossAmount;
+        bot.recoveryMode.recoveryLossAmount = bot.wagerMode.lossAmount;
+        bot.recoveryMode.totalLossInStreak = bot.recoveryMode.recoveryLossAmount;
+        bot.recoveryMode.recoveryStreak = [];
+        bot.recoveryMode.currentRecoveryWins = 0;
+        bot.recoveryMode.remainingWinsNeeded = bot.recoveryMode.winsToBEP;
+        bot.recoveryMode.lastWinProfit = 0;
+        bot.recoveryMode.recoveryStage = 1;
+        
+        // Reset AI learning
+        bot.recoveryMode.winHistory = [];
+        bot.recoveryMode.lossHistory = [];
+        bot.recoveryMode.chanceAdjustment = 0;
+        bot.recoveryMode.performanceScore = 0;
+        bot.recoveryMode.lastPattern = null;
+        bot.recoveryMode.adaptiveCounter = 0;
+        
+        updateLogs(`⚡ ORION SRL RECOVERY STARTED`, true);
+        updateLogs(`🎯 Mode: ${bot.recoveryMode.mode.toUpperCase()}`, true);
+        updateLogs(`💰 Target Balance: ${bot.recoveryMode.recoveryStartBalance.toFixed(8)}`, true);
+        updateLogs(`📉 Loss to recover: ${bot.recoveryMode.recoveryLossAmount.toFixed(8)}`, true);
+        
+        if (bot.recoveryMode.mode === 'manual') {
+            updateLogs(`📊 Manual Settings: Chance ${bot.recoveryMode.manualChance}% | Multiplier ${bot.recoveryMode.manualMultiplier}x`, true);
+        } else {
+            updateLogs(`🤖 Smart AI: Chance ${bot.recoveryMode.smartMinChance}-${bot.recoveryMode.smartMaxChance}% | Auto-adjust enabled`, true);
+        }
+    }
+
+    function updateRecoveryStage() {
+        const rm = bot.recoveryMode;
+        
+        if (bot.stats.consecutiveLosses >= rm.consecutiveLossesForAggressive + 3) {
+            if (rm.recoveryStage < 3) {
+                rm.recoveryStage = 3;
+                updateLogs(`⚡⚡⚡ SRL: Stage 3 (AGGRESSIVE) - ${bot.stats.consecutiveLosses} consecutive losses`, true);
+            }
+        } else if (bot.stats.consecutiveLosses >= rm.consecutiveLossesForAggressive + 1) {
+            if (rm.recoveryStage < 2) {
+                rm.recoveryStage = 2;
+                updateLogs(`⚡⚡ SRL: Stage 2 (MODERATE) - ${bot.stats.consecutiveLosses} consecutive losses`, true);
+            }
+        } else if (bot.stats.consecutiveLosses >= 2) {
+            if (rm.recoveryStage !== 1) {
+                rm.recoveryStage = 1;
+                updateLogs(`⚡ SRL: Stage 1 (CONSERVATIVE)`, true);
+            }
+        }
+        
+        // Reset stage jika menang
+        if (bot.stats.consecutiveWins >= 2) {
+            rm.recoveryStage = 1;
+        }
+    }
+
+    function recoveryBetLogic() {
+        const rm = bot.recoveryMode;
+        
+        updateRecoveryStage();
+        detectPattern();
+        
+        // Cek apakah sudah BEP
+        if (bot.stats.currentBal >= rm.recoveryStartBalance) {
+            const profit = bot.stats.currentBal - rm.recoveryStartBalance + rm.recoveryLossAmount;
+            updateLogs(`✅✅✅ ORION SRL RECOVERY COMPLETE! Profit: ${profit.toFixed(8)}`, true);
+            updateLogs(`🔄 Returning to Wager Mode`, true);
+            
+            setTimeout(() => {
+                switchToWagerMode();
+            }, 1000);
+            return null;
+        }
+        
+        if (bot.stats.currentBal < bot.globalMinBet) {
+            updateLogs(`⚠️ Balance too low for recovery`, true);
+            bot.isRunning = false;
+            if (!bot.isDemo) {
+                TelegramAPI.sendStopReport("Balance too low for recovery");
+            }
+            return null;
+        }
+        
+        // Anti-stuck mechanism
+        if (rm.lastBalance) {
+            const balanceChange = Math.abs(bot.stats.currentBal - rm.lastBalance);
+            if (balanceChange < bot.globalMinBet * 10) {
+                rm.adaptiveCounter++;
+                if (rm.adaptiveCounter >= 5) {
+                    updateLogs(`🔄 ANTI-STUCK: Increasing aggressiveness`, true);
+                    if (rm.mode === 'manual') {
+                        rm.manualMultiplier = Math.min(3.0, rm.manualMultiplier * 1.2);
+                    } else {
+                        rm.smartMultiplier = Math.min(3.0, rm.smartMultiplier * 1.2);
+                    }
+                    rm.recoveryStage = Math.min(3, rm.recoveryStage + 1);
+                    rm.adaptiveCounter = 0;
+                }
+            } else {
+                rm.adaptiveCounter = 0;
+            }
+        }
+        rm.lastBalance = bot.stats.currentBal;
+        
+        // Tentukan chance berdasarkan mode
+        let chance;
+        let multiplier;
+        
+        if (rm.mode === 'manual') {
+            // MANUAL MODE: Fixed settings
+            chance = rm.manualChance;
+            multiplier = rm.manualMultiplier;
+        } else {
+            // SMART AI MODE: Adaptive settings
+            chance = calculateSmartChance();
+            multiplier = rm.smartMultiplier;
+        }
+        
+        const payoutMultiplier = 99 / chance;
+        
+        // Hitung bet amount
+        const currentLoss = rm.recoveryStartBalance - bot.stats.currentBal;
+        const targetProfitPerWin = rm.recoveryLossAmount / rm.winsToBEP;
+        let baseBet = targetProfitPerWin / (payoutMultiplier - 1);
+        
+        // Stage adjustment
+        let stageFactor;
+        switch(rm.recoveryStage) {
+            case 1: stageFactor = 0.4; break;
+            case 2: stageFactor = 0.6; break;  
+            case 3: stageFactor = 0.8; break;
+            default: stageFactor = 0.5;
+        }
+        
+        baseBet *= stageFactor * multiplier;
+        
+        // Safety limits
+        const maxBetByPercent = bot.stats.currentBal * (rm.maxBetPercent / 100);
+        const safeMaxBet = bot.stats.currentBal * 0.7;
+        
+        let betAmount = Math.min(baseBet, maxBetByPercent, safeMaxBet);
+        
+        // Minimum bet
+        if (betAmount < bot.globalMinBet) {
+            betAmount = bot.globalMinBet;
+        }
+        
+        // Maximum bet safety
+        if (betAmount > bot.stats.currentBal * 0.9) {
+            betAmount = bot.stats.currentBal * 0.9;
+        }
+        
+        const potentialProfit = betAmount * (payoutMultiplier - 1);
+        const betPercentOfBalance = (betAmount / bot.stats.currentBal) * 100;
+        
+        // Log info sesuai mode
+        if (rm.mode === 'manual') {
+            updateLogs(`📊 MANUAL RECOVERY: Stage ${rm.recoveryStage}`, true);
+        } else {
+            updateLogs(`🤖 SMART AI RECOVERY: Stage ${rm.recoveryStage} | Chance: ${chance.toFixed(2)}%`, true);
+        }
+        
+        updateLogs(`💰 Bet: ${betAmount.toFixed(8)} (${betPercentOfBalance.toFixed(2)}%) | Potential: ${potentialProfit.toFixed(8)}`, true);
+        
+        return {
+            bet: betAmount,
+            chance: chance,
+            mode: 'dice'
+        };
+    }
+
+    // =============== MODE SWITCHING ===============
+    function switchToWagerMode() {
+        bot.recoveryMode.active = false;
+        bot.wagerMode.active = true;
+        bot.wagerMode.startBalance = bot.stats.currentBal;
+        bot.wagerMode.lossTriggered = false;
+        bot.wagerMode.lossAmount = 0;
+        bot.wagerMode.currentMode = 'dice';
+        bot.wagerMode.diceBetCount = 0;
+        bot.wagerMode.limboBetCount = 0;
+        
+        bot.recoveryMode.totalLossInStreak = 0;
+        bot.recoveryMode.recoveryStreak = [];
+        bot.recoveryMode.currentRecoveryWins = 0;
+        bot.recoveryMode.remainingWinsNeeded = bot.recoveryMode.winsToBEP;
+        bot.recoveryMode.avgProfitNeededPerWin = 0;
+        bot.recoveryMode.lastWinProfit = 0;
+        bot.recoveryMode.recoveryStage = 1;
+        
+        bot.stats.consecutiveLosses = 0;
+        bot.stats.consecutiveWins = 0;
+        
+        updateLogs(`🎯 ORION RETURNING TO WAGER MODE`, true);
+        updateUI();
+    }
+
+    function switchToRecoveryMode() {
+        initRecoveryMode();
+        updateUI();
+    }
+
+    // =============== API FUNCTIONS ===============
+    const API = {
+        async syncOnce() {
+            try {
+                bot.token = localStorage.getItem('apitoken') || 
+                           localStorage.getItem('token') ||
+                           sessionStorage.getItem('token') ||
+                           (document.cookie.match(/session=([^;]+)/) ? document.cookie.match(/session=([^;]+)/)[1] : null);
+                
+                if (!bot.token) {
+                    bot.stakeUser = "Not logged in";
+                    bot.availableCurrencies = getDefaultCurrencies();
+                    updateLogs("⚠️ Please login to Stake first", true);
+                    return;
+                }
+
+                const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": `Bearer ${bot.token}`,
+                        "x-access-token": bot.token,
+                        "x-csrf-token": bot.token
+                    },
+                    body: JSON.stringify({
+                        query: `query{user{name balances{available{amount currency}}}}`
+                    })
+                });
+                
+                if (!res.ok) {
+                    bot.stakeUser = "API Error";
+                    bot.availableCurrencies = getDefaultCurrencies();
+                    return;
+                }
+                
+                const json = await res.json();
+                
+                if (json?.data?.user) {
+                    bot.stakeUser = json.data.user.name;
+                    
+                    await syncCurrenciesFromServer();
+                    
+                    const bals = json.data.user.balances || [];
+                    const selectedBal = bals.find(b => 
+                        b.available && b.available.currency && 
+                        b.available.currency.toLowerCase() === bot.selectedCurrency.toLowerCase()
+                    );
+                    
+                    if (selectedBal) {
+                        bot.realBalance = parseFloat(selectedBal.available.amount);
+                    }
+                    
+                    updateLogs(`✅ ORION Synced: ${bot.stakeUser}`, true);
+                    
+                } else {
+                    bot.stakeUser = "API Error";
+                    bot.availableCurrencies = getDefaultCurrencies();
+                }
+                
+            } catch (e) {
+                bot.stakeUser = "Connection Error";
+                bot.availableCurrencies = getDefaultCurrencies();
+            }
+        },
+
+        async getBalance(coin) {
+            if (bot.isDemo) return bot.stats.currentBal;
+            
+            try {
+                if (!bot.token) await this.syncOnce();
+                
+                const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "x-access-token": bot.token
+                    },
+                    body: JSON.stringify({
+                        query: `query{user{balances{available{amount currency}}}}`
+                    })
+                });
+                const json = await res.json();
+                const active = json.data.user.balances.find(b =>
+                    b.available.currency.toLowerCase() === coin.toLowerCase()
+                );
+                const balance = active ? parseFloat(active.available.amount) : 0;
+                bot.realBalance = balance;
+                return balance;
+            } catch (e) {
+                return 0;
+            }
+        },
+
+        async placeDiceBet(amount, chance) {
+            if (bot.isDemo) {
+                return new Promise((r) => {
+                    const win = Math.random() * 100 < chance;
+                    setTimeout(() => {
+                        r({
+                            diceRoll: {
+                                amount: amount,
+                                payout: win ? (amount * (99 / chance)) : 0
+                            }
+                        });
+                    }, 50);
+                });
+            }
+
+            const payload = {
+                amount: parseFloat(amount.toFixed(8)),
+                currency: bot.selectedCurrency,
+                target: parseFloat((100 - chance).toFixed(2)),
+                condition: "above",
+                identifier: Math.random().toString(36).slice(2) + Date.now()
+            };
+
+            try {
+                const r = await fetch(`${CONFIG.apiUrl}/casino/dice/roll`, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": `Bearer ${bot.token}`,
+                        "x-access-token": bot.token,
+                        "x-csrf-token": bot.token
+                    },
+                    body: JSON.stringify(payload)
+                });
+                
+                if (!r.ok) throw new Error(`Bet failed: ${r.status}`);
+                return r.json();
+            } catch (error) {
+                throw error;
+            }
+        },
+
+        async placeLimboBet(amount, multiplierTarget) {
+            if (bot.isDemo) {
+                return new Promise((r) => {
+                    const win = Math.random() < (1 / multiplierTarget);
+                    setTimeout(() => {
+                        r({
+                            limboBet: {
+                                amount: amount,
+                                payout: win ? (amount * multiplierTarget) : 0,
+                                state: {
+                                    result: win ? multiplierTarget : (multiplierTarget * Math.random()),
+                                    multiplierTarget: multiplierTarget
+                                }
+                            }
+                        });
+                    }, 50);
+                });
+            }
+
+            const payload = {
+                multiplierTarget: multiplierTarget,
+                identifier: Math.random().toString(36).slice(2) + Date.now(),
+                amount: parseFloat(amount.toFixed(8)),
+                currency: bot.selectedCurrency
+            };
+
+            try {
+                const r = await fetch(`${CONFIG.apiUrl}/casino/limbo/bet`, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": `Bearer ${bot.token}`,
+                        "x-access-token": bot.token,
+                        "x-csrf-token": bot.token
+                    },
+                    body: JSON.stringify(payload)
+                });
+                
+                if (!r.ok) throw new Error(`Limbo bet failed: ${r.status}`);
+                return r.json();
+            } catch (error) {
+                throw error;
+            }
+        }
+    };
+
+    // =============== MAIN GAME LOOP ===============
+    async function runLoop() {
+        if (!bot.isRunning || bot.isPaused) return;
+
+        try {
+            // Periodic report (skip jika demo mode)
+            if (CONFIG.telegram.enabled && !bot.isDemo) {
+                TelegramAPI.sendPeriodicReport();
+            }
+
+            if (!bot.isDemo && bot.stats.bets % 10 === 0) {
+                const realBal = await API.getBalance(bot.selectedCurrency);
+                bot.realBalance = realBal;
+            }
+
+            let betInfo = null;
+            
+            if (bot.wagerMode.active) {
+                betInfo = wagerBetLogic();
+            } else if (bot.recoveryMode.active) {
+                betInfo = recoveryBetLogic();
+            }
+            
+            if (betInfo === null) {
+                setTimeout(runLoop, 100);
+                return;
+            }
+
+            let nextBet = betInfo.bet;
+            let chance = betInfo.chance;
+            let multiplier = betInfo.multiplier;
+            let gameMode = betInfo.mode;
+
+            if (nextBet <= 0) nextBet = bot.globalMinBet;
+            if (nextBet < bot.globalMinBet) nextBet = bot.globalMinBet;
+            
+            if (!bot.isDemo) {
+                if (nextBet > bot.realBalance && bot.realBalance > 0) {
+                    nextBet = bot.realBalance;
+                }
+                
+                if (nextBet > bot.stats.currentBal && bot.stats.currentBal > 0) {
+                    nextBet = bot.stats.currentBal;
+                }
+            } else {
+                if (nextBet > bot.stats.currentBal && bot.stats.currentBal > 0) {
+                    nextBet = bot.stats.currentBal;
+                }
+            }
+
+            let res;
+            if (gameMode === 'dice') {
+                res = await API.placeDiceBet(nextBet, chance);
+            } else if (gameMode === 'limbo') {
+                res = await API.placeLimboBet(nextBet, 1.0001);
+            }
+
+            let win = false;
+            let pft = 0;
+            let betAmount = nextBet;
+
+            if (res) {
+                if (gameMode === 'dice') {
+                    const d = res?.data?.diceRoll || res?.diceRoll;
+                    if (d) {
+                        win = d.payout > 0;
+                        pft = d.payout - d.amount;
+                        betAmount = d.amount;
+                    }
+                } else if (gameMode === 'limbo') {
+                    const lb = res?.data?.limboBet || res?.limboBet;
+                    if (lb) {
+                        const resultMultiplier = lb.state?.result || 0;
+                        const targetMultiplier = lb.state?.multiplierTarget || 1.0001;
+                        win = resultMultiplier >= targetMultiplier;
+                        pft = win ? (lb.amount * (targetMultiplier - 1)) : -lb.amount;
+                        betAmount = lb.amount;
+                    }
+                }
+            }
+
+            bot.stats.bets++;
+            bot.stats.wagered += betAmount;
+            bot.stats.profit += pft;
+            bot.stats.currentBal += pft;
+            bot.stats.lastBetAmount = betAmount;
+            
+            if (bot.stats.currentBal > bot.stats.sessionHigh) {
+                bot.stats.sessionHigh = bot.stats.currentBal;
+            }
+            if (bot.stats.currentBal < bot.stats.sessionLow || bot.stats.sessionLow === 0) {
+                bot.stats.sessionLow = bot.stats.currentBal;
+            }
+            
+            bot.stats.winRate = bot.stats.bets > 0 ? (bot.stats.wins / bot.stats.bets * 100) : 0;
+            bot.stats.wageredPercent = bot.stats.startBal > 0 ? (bot.stats.wagered / bot.stats.startBal * 100) : 0;
+            bot.stats.avgBetSize = bot.stats.bets > 0 ? (bot.stats.wagered / bot.stats.bets) : 0;
+
+            if (win) {
+                bot.stats.wins++;
+                bot.stats.winStreak++;
+                bot.stats.lossStreak = 0;
+                if (bot.stats.winStreak > bot.stats.maxWinStreak) {
+                    bot.stats.maxWinStreak = bot.stats.winStreak;
+                }
+                bot.stats.consecutiveWins++;
+                bot.stats.consecutiveLosses = 0;
+                
+                if (bot.recoveryMode.active) {
+                    bot.recoveryMode.currentRecoveryWins++;
+                    bot.recoveryMode.lastWinProfit = pft;
+                    bot.recoveryMode.recoveryStreak = [];
+                    
+                    // WIN STREAK BOOSTER
+                    if (bot.stats.consecutiveWins >= 2) {
+                        if (bot.recoveryMode.mode === 'manual') {
+                            bot.recoveryMode.manualMultiplier = Math.max(0.5, bot.recoveryMode.manualMultiplier * 0.9);
+                        } else {
+                            bot.recoveryMode.smartMultiplier = Math.max(0.5, bot.recoveryMode.smartMultiplier * 0.9);
+                        }
+                        updateLogs(`📈 Win streak! Reducing multiplier to lock profits`, true);
+                    }
+                    
+                    updateLogs(`✅ SRL Win #${bot.recoveryMode.currentRecoveryWins}/${bot.recoveryMode.winsToBEP}`, true);
+                }
+            } else {
+                bot.stats.loss++;
+                bot.stats.winStreak = 0;
+                bot.stats.lossStreak++;
+                if (bot.stats.lossStreak > bot.stats.maxLossStreak) {
+                    bot.stats.maxLossStreak = bot.stats.lossStreak;
+                }
+                bot.stats.consecutiveLosses++;
+                bot.stats.consecutiveWins = 0;
+                
+                if (bot.recoveryMode.active) {
+                    if (bot.recoveryMode.currentRecoveryWins > 0) {
+                        bot.recoveryMode.currentRecoveryWins = 0;
+                    }
+                    
+                    if (pft < 0) {
+                        bot.recoveryMode.recoveryStreak.push(Math.abs(pft));
+                    }
+                }
+            }
+
+            if (!bot.isDemo) {
+                bot.realBalance += pft;
+            }
+
+            bot.stats.lastResults.unshift({
+                win: win,
+                betAmount: betAmount,
+                profit: pft,
+                chance: chance,
+                multiplier: multiplier,
+                mode: gameMode,
+                time: new Date().toLocaleTimeString()
+            });
+            
+            if (bot.stats.lastResults.length > 10) {
+                bot.stats.lastResults.pop();
+            }
+
+            if (bot.stats.currentBal > bot.stats.peakBalance) {
+                bot.stats.peakBalance = bot.stats.currentBal;
+            }
+            
+            const drawdown = bot.stats.peakBalance - bot.stats.currentBal;
+            if (drawdown > bot.stats.maxDrawdown) {
+                bot.stats.maxDrawdown = drawdown;
+                bot.stats.drawdownPercentage = (drawdown / bot.stats.peakBalance) * 100;
+            }
+
+            let modeInfo = "";
+            if (bot.wagerMode.active) {
+                modeInfo = `[${bot.wagerMode.currentMode.toUpperCase()} ${bot.wagerMode.currentMode === 'dice' ? bot.wagerMode.diceBetCount : bot.wagerMode.limboBetCount}]`;
+            } else {
+                modeInfo = `[${bot.recoveryMode.mode === 'manual' ? 'MANUAL' : 'AI'} Stage ${bot.recoveryMode.recoveryStage} | Wins: ${bot.recoveryMode.currentRecoveryWins}/${bot.recoveryMode.winsToBEP}]`;
+            }
+            
+            const betPercent = (betAmount / bot.stats.currentBal) * 100;
+            let logLine = `${modeInfo} ${gameMode === 'dice' ? '🎲' : '📈'} ${betAmount.toFixed(8)} (${betPercent.toFixed(2)}%) → ${win ? 'WIN' : 'LOSS'} ${pft > 0 ? '+' : ''}${pft.toFixed(8)}`;
+            
+            if (bot.stats.consecutiveLosses > 0) {
+                logLine += ` [L:${bot.stats.consecutiveLosses}]`;
+            }
+            if (bot.stats.consecutiveWins > 0) {
+                logLine += ` [W:${bot.stats.consecutiveWins}]`;
+            }
+            
+            updateLogs(logLine);
+            updateDashboard();
+            updateLiveLogs();
+
+            if (bot.isRunning && !bot.isPaused) {
+                const delay = bot.isDemo ? 50 : 100;
+                setTimeout(runLoop, delay);
+            }
+
+        } catch (e) {
+            updateLogs(`⚠️ Error: ${e.message}`, true);
+            
+            if (bot.isRunning && !bot.isPaused) {
+                setTimeout(runLoop, 100);
+            }
+        }
+    }
+
+    // =============== UI FUNCTIONS ===============
+    function createUI() {
+        if (document.getElementById("orion-wrap")) return;
+
+        const s = document.createElement("style");
+        s.innerHTML = `
+            #orion-wrap {
+                position: fixed;
+                top: 10px;
+                right: 10px;
+                width: 420px;
+                max-width: calc(100vw - 20px);
+                max-height: 90vh;
+                background: linear-gradient(135deg, rgba(15, 23, 42, 0.98), rgba(30, 41, 59, 0.98));
+                backdrop-filter: blur(10px);
+                border: 1px solid rgba(59, 130, 246, 0.3);
+                border-radius: 12px;
+                color: #f8fafc;
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+                font-size: 14px;
+                z-index: 999999;
+                box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3), 0 0 20px rgba(59, 130, 246, 0.1);
+                overflow: hidden;
+                display: flex;
+                flex-direction: column;
+                transition: all 0.3s ease;
+            }
+            
+            .orion-header {
+                background: linear-gradient(135deg, rgba(30, 41, 59, 0.95), rgba(59, 130, 246, 0.2));
+                padding: 14px 16px;
+                border-bottom: 1px solid rgba(59, 130, 246, 0.3);
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+            
+            .header-left {
+                flex: 1;
+                min-width: 200px;
+            }
+            
+            .app-title {
+                font-size: 16px;
+                font-weight: 800;
+                background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                margin-bottom: 4px;
+                letter-spacing: 0.5px;
+                line-height: 1.2;
+            }
+            
+            .app-subtitle {
+                font-size: 11px;
+                color: #94a3b8;
+                font-weight: 600;
+            }
+            
+            .header-info {
+                display: flex;
+                gap: 6px;
+                font-size: 11px;
+                color: #94a3b8;
+                flex-wrap: wrap;
+                margin-top: 4px;
+            }
+            
+            .header-info span {
+                padding: 4px 8px;
+                background: rgba(30, 41, 59, 0.6);
+                border-radius: 6px;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                white-space: nowrap;
+            }
+            
+            .header-controls {
+                display: flex;
+                gap: 6px;
+                align-items: center;
+            }
+            
+            .control-btn {
+                width: 32px;
+                height: 32px;
+                border-radius: 8px;
+                background: rgba(30, 41, 59, 0.7);
+                border: 1px solid rgba(59, 130, 246, 0.3);
+                color: #3b82f6;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 14px;
+                transition: all 0.2s;
+                font-weight: bold;
+            }
+            
+            .control-btn:hover {
+                background: rgba(59, 130, 246, 0.2);
+                transform: translateY(-1px);
+            }
+            
+            .tab-nav {
+                display: flex;
+                background: rgba(30, 41, 59, 0.8);
+                border-bottom: 1px solid rgba(59, 130, 246, 0.3);
+                padding: 0 10px;
+                flex-wrap: wrap;
+            }
+            
+            .tab-btn {
+                flex: 1;
+                min-width: 80px;
+                padding: 12px 8px;
+                background: transparent;
+                border: none;
+                color: #94a3b8;
+                font-size: 12px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.3s;
+                border-bottom: 3px solid transparent;
+                text-align: center;
+                white-space: nowrap;
+            }
+            
+            .tab-btn:hover {
+                color: #3b82f6;
+                background: rgba(59, 130, 246, 0.1);
+            }
+            
+            .tab-btn.active {
+                color: #3b82f6;
+                border-bottom: 3px solid #3b82f6;
+                background: rgba(59, 130, 246, 0.15);
+            }
+            
+            .content {
+                padding: 0;
+                overflow-y: auto;
+                flex: 1;
+                -webkit-overflow-scrolling: touch;
+                background: rgba(15, 23, 42, 0.3);
+            }
+            
+            .tab-pane {
+                display: none;
+                padding: 16px;
+                overflow-y: auto;
+                height: calc(100% - 49px);
+            }
+            
+            .tab-pane.active {
+                display: block;
+            }
+            
+            .demo-toggle {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                margin-bottom: 16px;
+                padding: 12px;
+                background: rgba(30, 41, 59, 0.7);
+                border-radius: 10px;
+                border: 1px solid rgba(59, 130, 246, 0.2);
+            }
+            
+            .switch {
+                position: relative;
+                display: inline-block;
+                width: 46px;
+                height: 24px;
+            }
+            
+            .switch input {
+                opacity: 0;
+                width: 0;
+                height: 0;
+            }
+            
+            .slider {
+                position: absolute;
+                cursor: pointer;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background-color: #4b5563;
+                transition: .4s;
+                border-radius: 24px;
+            }
+            
+            .slider:before {
+                position: absolute;
+                content: "";
+                height: 18px;
+                width: 18px;
+                left: 3px;
+                bottom: 3px;
+                background-color: white;
+                transition: .4s;
+                border-radius: 50%;
+            }
+            
+            input:checked + .slider {
+                background: linear-gradient(135deg, #10b981, #059669);
+            }
+            
+            input:checked + .slider:before {
+                transform: translateX(22px);
+            }
+            
+            .demo-label {
+                font-size: 13px;
+                color: #94a3b8;
+                font-weight: 600;
+            }
+            
+            .demo-label.active {
+                color: #10b981;
+                font-weight: 700;
+            }
+            
+            .currency-selector {
+                margin-bottom: 16px;
+                background: rgba(30, 41, 59, 0.7);
+                border-radius: 10px;
+                padding: 14px;
+                border: 1px solid rgba(59, 130, 246, 0.2);
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            }
+            
+            .currency-row {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                margin-bottom: 12px;
+            }
+            
+            .currency-label {
+                font-size: 12px;
+                color: #94a3b8;
+                width: 80px;
+                font-weight: 600;
+                white-space: nowrap;
+            }
+            
+            .currency-dropdown {
+                flex: 1;
+                background: rgba(15, 23, 42, 0.9);
+                border: 1px solid rgba(59, 130, 246, 0.3);
+                border-radius: 8px;
+                padding: 10px 12px;
+                color: #fff;
+                font-size: 13px;
+                -webkit-appearance: none;
+                -moz-appearance: none;
+                appearance: none;
+                background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' fill='%233b82f6' viewBox='0 0 16 16'%3E%3Cpath d='M8 11L3 6h10l-5 5z'/%3E%3C/svg%3E");
+                background-repeat: no-repeat;
+                background-position: right 12px center;
+                padding-right: 40px;
+                cursor: pointer;
+                transition: border 0.2s;
+                min-height: 40px;
+            }
+            
+            .currency-dropdown:focus {
+                outline: none;
+                border-color: #3b82f6;
+                box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+            }
+            
+            .min-bet-input {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                flex: 1;
+            }
+            
+            .input-field {
+                flex: 1;
+                background: rgba(15, 23, 42, 0.9);
+                border: 1px solid rgba(59, 130, 246, 0.3);
+                border-radius: 8px;
+                padding: 10px 12px;
+                color: #fff;
+                font-size: 13px;
+                font-family: 'Courier New', monospace;
+                -webkit-appearance: none;
+                -moz-appearance: none;
+                appearance: none;
+                text-align: right;
+                transition: all 0.2s;
+                min-height: 40px;
+            }
+            
+            .input-field:focus {
+                outline: none;
+                border-color: #3b82f6;
+                box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+            }
+            
+            .unit {
+                font-size: 12px;
+                color: #94a3b8;
+                min-width: 50px;
+                text-align: center;
+                font-weight: 600;
+            }
+            
+            .stats-grid {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 10px;
+                margin-bottom: 16px;
+            }
+            
+            .stat-card {
+                background: linear-gradient(135deg, rgba(30, 41, 59, 0.8), rgba(30, 41, 59, 0.6));
+                border-radius: 10px;
+                padding: 12px;
+                text-align: center;
+                min-height: 70px;
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                border: 1px solid rgba(59, 130, 246, 0.1);
+                transition: transform 0.2s;
+            }
+            
+            .stat-card:hover {
+                transform: translateY(-2px);
+                border-color: rgba(59, 130, 246, 0.3);
+            }
+            
+            .stat-label {
+                font-size: 11px;
+                color: #94a3b8;
+                text-transform: uppercase;
+                margin-bottom: 6px;
+                font-weight: 600;
+                letter-spacing: 0.5px;
+            }
+            
+            .stat-value {
+                font-size: 14px;
+                font-weight: 800;
+                color: #fff;
+                font-family: 'Courier New', monospace;
+                word-break: break-all;
+                line-height: 1.3;
+            }
+            
+            .mode-indicator {
+                background: linear-gradient(135deg, rgba(30, 41, 59, 0.8), rgba(30, 41, 59, 0.6));
+                border-radius: 10px;
+                padding: 12px;
+                text-align: center;
+                margin-bottom: 16px;
+                font-weight: 700;
+                font-size: 13px;
+                border: 1px solid rgba(59, 130, 246, 0.2);
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                line-height: 1.4;
+            }
+            
+            .settings-section {
+                background: rgba(30, 41, 59, 0.7);
+                border-radius: 10px;
+                padding: 14px;
+                margin-bottom: 12px;
+                border: 1px solid rgba(59, 130, 246, 0.1);
+            }
+            
+            .section-title {
+                font-size: 13px;
+                font-weight: 700;
+                color: #3b82f6;
+                margin-bottom: 12px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding-bottom: 8px;
+                border-bottom: 1px solid rgba(59, 130, 246, 0.2);
+            }
+            
+            .input-row {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 10px;
+                padding: 8px 0;
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+            
+            .input-label {
+                font-size: 12px;
+                color: #cbd5e1;
+                width: 140px;
+                font-weight: 500;
+                flex-shrink: 0;
+            }
+            
+            .input-wrapper {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                flex: 1;
+                min-width: 150px;
+            }
+            
+            .control-buttons {
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 10px;
+                margin: 18px 0;
+            }
+            
+            .main-btn {
+                padding: 14px;
+                border: none;
+                border-radius: 10px;
+                font-size: 13px;
+                font-weight: 700;
+                cursor: pointer;
+                text-transform: uppercase;
+                transition: all 0.2s;
+                letter-spacing: 0.5px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 6px;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                min-height: 50px;
+            }
+            
+            .main-btn:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 6px 8px rgba(0, 0, 0, 0.15);
+            }
+            
+            .main-btn:active {
+                transform: translateY(0);
+            }
+            
+            .btn-start {
+                background: linear-gradient(135deg, #10b981, #059669);
+                color: white;
+            }
+            
+            .btn-stop {
+                background: linear-gradient(135deg, #ef4444, #dc2626);
+                color: white;
+            }
+            
+            .btn-pause {
+                background: linear-gradient(135deg, #f59e0b, #d97706);
+                color: white;
+            }
+            
+            .live-log-container {
+                height: 380px;
+                overflow-y: auto;
+                background: rgba(15, 23, 42, 0.9);
+                border-radius: 10px;
+                padding: 12px;
+                border: 1px solid rgba(59, 130, 246, 0.2);
+                font-family: 'Courier New', monospace;
+                font-size: 12px;
+            }
+            
+            .log-entry {
+                padding: 10px;
+                margin-bottom: 8px;
+                border-radius: 6px;
+                font-size: 13px;
+                border-left: 4px solid;
+                background: rgba(255, 255, 255, 0.05);
+            }
+            
+            .summary-grid {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 10px;
+                margin-top: 12px;
+            }
+            
+            .summary-item {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 8px;
+                background: rgba(255, 255, 255, 0.05);
+                border-radius: 6px;
+                font-size: 12px;
+            }
+            
+            .summary-item span:first-child {
+                color: #94a3b8;
+            }
+            
+            .summary-item span:last-child {
+                color: #3b82f6;
+                font-weight: bold;
+            }
+            
+            .mode-selector {
+                display: flex;
+                gap: 10px;
+                margin-top: 8px;
+            }
+            
+            .mode-option {
+                flex: 1;
+                text-align: center;
+                padding: 8px;
+                border-radius: 8px;
+                cursor: pointer;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                transition: all 0.2s;
+                font-size: 11px;
+            }
+            
+            .mode-option:hover {
+                background: rgba(59, 130, 246, 0.1);
+            }
+            
+            .mode-option.active {
+                background: rgba(59, 130, 246, 0.2);
+                border-color: #3b82f6;
+                font-weight: bold;
+            }
+            
+            .mode-option.manual {
+                color: #f59e0b;
+            }
+            
+            .mode-option.smart {
+                color: #8b5cf6;
+            }
+            
+            @media (max-width: 480px) {
+                #orion-wrap {
+                    width: 95vw;
+                    right: 2.5vw;
+                    left: 2.5vw;
+                    top: 10px;
+                    max-height: 85vh;
+                    font-size: 13px;
+                }
+                
+                .orion-header {
+                    padding: 12px;
+                    flex-direction: column;
+                    align-items: stretch;
+                    gap: 8px;
+                }
+                
+                .header-left {
+                    min-width: auto;
+                }
+                
+                .header-controls {
+                    align-self: flex-end;
+                }
+                
+                .tab-btn {
+                    min-width: 60px;
+                    font-size: 11px;
+                    padding: 10px 6px;
+                }
+                
+                .tab-pane {
+                    padding: 12px;
+                }
+                
+                .live-log-container {
+                    height: 300px;
+                }
+                
+                .stats-grid {
+                    grid-template-columns: repeat(2, 1fr);
+                    gap: 8px;
+                }
+                
+                .stat-card {
+                    padding: 10px;
+                    min-height: 65px;
+                }
+                
+                .stat-value {
+                    font-size: 13px;
+                }
+                
+                .input-row {
+                    flex-direction: column;
+                    align-items: stretch;
+                    gap: 6px;
+                }
+                
+                .input-label {
+                    width: 100%;
+                }
+                
+                .input-wrapper {
+                    width: 100%;
+                }
+                
+                .main-btn {
+                    padding: 12px;
+                    font-size: 12px;
+                    min-height: 45px;
+                }
+                
+                .currency-label {
+                    width: 70px;
+                    font-size: 11px;
+                }
+                
+                .settings-section {
+                    padding: 12px;
+                }
+            }
+            
+            ::-webkit-scrollbar {
+                width: 8px;
+                height: 8px;
+            }
+            
+            ::-webkit-scrollbar-track {
+                background: rgba(255, 255, 255, 0.05);
+                border-radius: 4px;
+            }
+            
+            ::-webkit-scrollbar-thumb {
+                background: rgba(59, 130, 246, 0.5);
+                border-radius: 4px;
+            }
+            
+            ::-webkit-scrollbar-thumb:hover {
+                background: rgba(59, 130, 246, 0.7);
+            }
+            
+            input[type=number]::-webkit-inner-spin-button,
+            input[type=number]::-webkit-outer-spin-button {
+                -webkit-appearance: none;
+                margin: 0;
+            }
+            
+            input[type=number] {
+                -moz-appearance: textfield;
+            }
+            
+            select, input, button {
+                touch-action: manipulation;
+            }
+            
+            .main-btn, .control-btn {
+                user-select: none;
+                -webkit-user-select: none;
+            }
+            
+            @media (max-height: 700px) {
+                .live-log-container {
+                    height: 250px;
+                }
+                
+                .settings-section {
+                    padding: 10px;
+                    margin-bottom: 10px;
+                }
+            }
+            
+            @media (max-height: 600px) {
+                .live-log-container {
+                    height: 200px;
+                }
+                
+                .stats-grid {
+                    gap: 6px;
+                }
+                
+                .stat-card {
+                    padding: 8px;
+                    min-height: 60px;
+                }
+            }
+        `;
+        document.head.appendChild(s);
+
+        const d = document.createElement("div");
+        d.id = "orion-wrap";
+        d.innerHTML = `
+            <div class="orion-header">
+                <div class="header-left">
+                    <div class="app-title">🚀 ORION WAGER BOT</div>
+                    <div class="app-subtitle">Dual Mode Recovery v2.4</div>
+                    <div class="header-info">
+                        <span id="account-name">${bot.stakeUser}</span>
+                        <span id="license-status">${CONFIG.license.isValid() ? "ACTIVE" : "EXPIRED"}</span>
+                        <span id="currency-display">Loading...</span>
+                    </div>
+                </div>
+                <div class="header-controls">
+                    <button class="control-btn sync" title="Sync">↻</button>
+                    <button class="control-btn minimize" title="Minimize">_</button>
+                    <button class="control-btn close" title="Close">×</button>
+                </div>
+            </div>
+            
+            <!-- Tab Navigation -->
+            <div class="tab-nav">
+                <button class="tab-btn active" data-tab="dashboard">📊 Dashboard</button>
+                <button class="tab-btn" data-tab="live-log">📈 Live Log</button>
+                <button class="tab-btn" data-tab="settings">⚙️ Settings</button>
+            </div>
+            
+            <div class="content">
+                <!-- Dashboard Tab -->
+                <div class="tab-pane active" id="dashboard">
+                    <!-- Demo Mode Toggle -->
+                    <div class="demo-toggle">
+                        <label class="switch">
+                            <input type="checkbox" id="demo-toggle">
+                            <span class="slider"></span>
+                        </label>
+                        <span id="demo-label" class="demo-label ${bot.isDemo ? 'active' : ''}">
+                            ${bot.isDemo ? '🔄 DEMO MODE' : '💰 REAL MODE'}
+                        </span>
+                    </div>
+                    
+                    <!-- Currency Selector -->
+                    <div class="currency-selector">
+                        <div class="currency-row">
+                            <span class="currency-label">🌐 Currency</span>
+                            <select id="currency-select" class="currency-dropdown">
+                                <option value="loading">Loading currencies...</option>
+                            </select>
+                        </div>
+                        <div class="currency-row">
+                            <span class="currency-label">⚡ Min Bet</span>
+                            <div class="min-bet-input">
+                                <input type="number" id="min-bet-input" class="input-field" value="${bot.globalMinBet}" step="0.00000001" min="0.00000001">
+                                <span class="unit" id="min-bet-unit">DOGE</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Stats Grid -->
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-label">Balance</div>
+                            <div class="stat-value" id="balance">0.00000000</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Profit</div>
+                            <div class="stat-value" id="profit">0.00000000</div>
+                            <div class="stat-label" id="profit-percent">0.00%</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Wagered</div>
+                            <div class="stat-value" id="wagered">0.00000000</div>
+                            <div class="stat-label" id="wagered-percent">0.00%</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Win Rate</div>
+                            <div class="stat-value" id="win-rate">0.00%</div>
+                        </div>
+                    </div>
+                    
+                    <!-- Mode Indicator -->
+                    <div class="mode-indicator" id="mode-indicator">
+                        <span class="orion-star">✦</span> ORION SRL: <span id="mode-text">STOPPED</span> <span class="orion-star">✦</span>
+                    </div>
+                    
+                    <!-- Control Buttons -->
+                    <div class="control-buttons">
+                        <button id="p-start" class="main-btn btn-start">▶ START</button>
+                        <button id="p-pause" class="main-btn btn-pause">⏸ PAUSE</button>
+                        <button id="p-stop" class="main-btn btn-stop">⏹ STOP</button>
+                    </div>
+                    
+                    <!-- Current Settings Summary -->
+                    <div class="settings-section">
+                        <div class="section-title">Current Settings</div>
+                        <div class="summary-grid">
+                            <div class="summary-item">
+                                <span>Wins to BEP:</span>
+                                <span id="current-wins-bep">3</span>
+                            </div>
+                            <div class="summary-item">
+                                <span>Multiplier:</span>
+                                <span id="current-multiplier">1.5x</span>
+                            </div>
+                            <div class="summary-item">
+                                <span>Chance:</span>
+                                <span id="current-chance">49.5%</span>
+                            </div>
+                            <div class="summary-item">
+                                <span>Mode:</span>
+                                <span id="current-mode">Wager</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Live Log Tab -->
+                <div class="tab-pane" id="live-log">
+                    <div class="section-title">📈 ORION LIVE LOG</div>
+                    <div class="live-log-container" id="live-log-container">
+                        <div style="color: #94a3b8; text-align: center; padding: 20px; font-size: 12px;">
+                            <div style="margin-bottom: 10px; color: #3b82f6; font-weight: bold;">🚀 ORION SRL SYSTEM ACTIVE</div>
+                            <div style="font-size: 11px;">Dual Mode Recovery (Manual & Smart AI)</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Settings Tab -->
+                <div class="tab-pane" id="settings">
+                    <div class="settings-section">
+                        <div class="section-title">🎲 Dice Settings</div>
+                        <div class="input-row">
+                            <span class="input-label">Base Bet %</span>
+                            <div class="input-wrapper">
+                                <input type="number" id="dice-bet-percent" class="input-field" value="${bot.wagerMode.diceBetPercent}" step="0.1" min="0.1" max="20">
+                                <span class="unit">%</span>
+                            </div>
+                        </div>
+                        <div class="input-row">
+                            <span class="input-label">Chance %</span>
+                            <div class="input-wrapper">
+                                <input type="number" id="dice-chance" class="input-field" value="${bot.wagerMode.diceChance}" step="0.01" min="1" max="99.99">
+                                <span class="unit">%</span>
+                            </div>
+                        </div>
+                        <div class="input-row">
+                            <span class="input-label">Bets per Cycle</span>
+                            <div class="input-wrapper">
+                                <input type="number" id="dice-bets" class="input-field" value="${bot.wagerMode.diceBetsPerCycle}" step="1" min="1" max="100">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="settings-section">
+                        <div class="section-title">📈 Limbo Settings (1.0001x)</div>
+                        <div class="input-row">
+                            <span class="input-label">Base Bet %</span>
+                            <div class="input-wrapper">
+                                <input type="number" id="limbo-bet-percent" class="input-field" value="${bot.wagerMode.limboBetPercent}" step="0.1" min="0.1" max="20">
+                                <span class="unit">%</span>
+                            </div>
+                        </div>
+                        <div class="input-row">
+                            <span class="input-label">Multiplier</span>
+                            <div class="input-wrapper">
+                                <input type="number" id="limbo-multiplier" class="input-field" value="1.0001" step="0.0001" min="1.0001" max="1000" readonly>
+                                <span class="unit">x</span>
+                            </div>
+                        </div>
+                        <div class="input-row">
+                            <span class="input-label">Bets per Cycle</span>
+                            <div class="input-wrapper">
+                                <input type="number" id="limbo-bets" class="input-field" value="${bot.wagerMode.limboBetsPerCycle}" step="1" min="1" max="100">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="settings-section">
+                        <div class="section-title">⚠️ Stop Loss</div>
+                        <div class="input-row">
+                            <span class="input-label">Stop Loss %</span>
+                            <div class="input-wrapper">
+                                <input type="number" id="wager-stop-loss" class="input-field" value="${bot.wagerMode.stopLossPercent}" step="0.1" min="0.1" max="10">
+                                <span class="unit">%</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="settings-section">
+                        <div class="section-title">⚡ SRL Recovery System</div>
+                        
+                        <!-- Recovery Mode Selector -->
+                        <div class="input-row">
+                            <span class="input-label">Recovery Mode</span>
+                            <div class="mode-selector">
+                                <div class="mode-option manual active" data-mode="manual">
+                                    📊 Manual
+                                </div>
+                                <div class="mode-option smart" data-mode="smart">
+                                    🤖 Smart AI
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="input-row">
+                            <span class="input-label">Recovery Chance</span>
+                            <div class="input-wrapper">
+                                <input type="number" id="recovery-chance" class="input-field" value="${bot.recoveryMode.manualChance}" step="0.1" min="1" max="99.5">
+                                <span class="unit">%</span>
+                            </div>
+                        </div>
+                        <div class="input-row">
+                            <span class="input-label">Wins to BEP</span>
+                            <div class="input-wrapper">
+                                <input type="number" id="wins-to-bep" class="input-field" value="${bot.recoveryMode.winsToBEP}" step="1" min="1" max="10">
+                                <span class="unit">wins</span>
+                            </div>
+                        </div>
+                        <div class="input-row">
+                            <span class="input-label">Bet Multiplier</span>
+                            <div class="input-wrapper">
+                                <input type="number" id="bet-multiplier" class="input-field" value="${bot.recoveryMode.manualMultiplier}" step="0.1" min="0.1" max="10">
+                                <span class="unit">x</span>
+                            </div>
+                        </div>
+                        <div class="input-row">
+                            <span class="input-label">Max Bet %</span>
+                            <div class="input-wrapper">
+                                <input type="number" id="max-bet-percent" class="input-field" value="${bot.recoveryMode.maxBetPercent}" step="1" min="10" max="90">
+                                <span class="unit">%</span>
+                            </div>
+                        </div>
+                        <div class="input-row">
+                            <span class="input-label">Aggressive After</span>
+                            <div class="input-wrapper">
+                                <input type="number" id="agg-losses" class="input-field" value="${bot.recoveryMode.consecutiveLossesForAggressive}" step="1" min="1" max="20">
+                                <span class="unit">losses</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div id="p-logs" style="display: none;"></div>
+        `;
+        document.body.appendChild(d);
+
+        setupEventListeners();
+        updateUI();
+        
+        setTimeout(() => {
+            API.syncOnce();
+        }, 1500);
+    }
+
+    function setupEventListeners() {
+        // Demo toggle
+        const demoToggle = document.getElementById('demo-toggle');
+        const demoLabel = document.getElementById('demo-label');
+        
+        if (demoToggle) {
+            demoToggle.checked = bot.isDemo;
+            demoToggle.addEventListener('change', function() {
+                bot.isDemo = this.checked;
+                demoLabel.textContent = bot.isDemo ? '🔄 DEMO MODE' : '💰 REAL MODE';
+                demoLabel.classList.toggle('active', bot.isDemo);
+                updateLogs(`Switched to ${bot.isDemo ? 'DEMO' : 'REAL'} mode`, true);
+            });
+        }
+
+        // Currency selector
+        const currencySelect = document.getElementById('currency-select');
+        if (currencySelect) {
+            currencySelect.addEventListener('change', function() {
+                bot.selectedCurrency = this.value;
+                const currencyInfo = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
+                updateLogs(`Currency changed to: ${currencyInfo ? currencyInfo.name : bot.selectedCurrency.toUpperCase()}`, true);
+                updateUI();
+            });
+        }
+
+        // Min Bet Input
+        const minBetInput = document.getElementById('min-bet-input');
+        if (minBetInput) {
+            minBetInput.addEventListener('change', function() {
+                const value = parseFloat(this.value);
+                if (!isNaN(value) && value > 0) {
+                    bot.globalMinBet = value;
+                    updateLogs(`Min bet set to: ${value.toFixed(8)}`, true);
+                    updateUI();
+                } else {
+                    this.value = bot.globalMinBet;
+                }
+            });
+        }
+
+        // Sync button
+        const syncBtn = document.querySelector('.control-btn.sync');
+        if (syncBtn) {
+            syncBtn.addEventListener('click', async () => {
+                updateLogs("🔍 ORION: Syncing account...", true);
+                await API.syncOnce();
+                updateDashboard();
+                updateLogs("✅ ORION: Sync complete!", true);
+            });
+        }
+
+        // Minimize button
+        const minimizeBtn = document.querySelector('.control-btn.minimize');
+        if (minimizeBtn) {
+            minimizeBtn.addEventListener('click', () => {
+                const content = document.querySelector('.content');
+                const wrap = document.getElementById('orion-wrap');
+                if (content.style.display === 'none') {
+                    content.style.display = 'flex';
+                    minimizeBtn.textContent = '_';
+                    wrap.style.width = '420px';
+                } else {
+                    content.style.display = 'none';
+                    minimizeBtn.textContent = '□';
+                    wrap.style.width = 'auto';
+                }
+            });
+        }
+
+        // Close button
+        const closeBtn = document.querySelector('.control-btn.close');
+        if (closeBtn) {
+            closeBtn.addEventListener('click', () => {
+                if (bot.isRunning) {
+                    if (confirm("ORION Bot is running. Close anyway?")) {
+                        document.getElementById("orion-wrap").remove();
+                    }
+                } else {
+                    document.getElementById("orion-wrap").remove();
+                }
+            });
+        }
+
+        // Tab switching
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+                
+                btn.classList.add('active');
+                const tabId = btn.getAttribute('data-tab');
+                document.getElementById(tabId).classList.add('active');
+            });
+        });
+
+        // Recovery Mode Selector
+        const manualModeOption = document.querySelector('.mode-option.manual');
+        const smartModeOption = document.querySelector('.mode-option.smart');
+        const recoveryChanceInput = document.getElementById('recovery-chance');
+        const betMultiplierInput = document.getElementById('bet-multiplier');
+        
+        if (manualModeOption && smartModeOption) {
+            // Set initial active mode
+            manualModeOption.classList.add('active');
+            smartModeOption.classList.remove('active');
+            
+            manualModeOption.addEventListener('click', function() {
+                manualModeOption.classList.add('active');
+                smartModeOption.classList.remove('active');
+                bot.recoveryMode.mode = 'manual';
+                
+                // Update input values to manual settings
+                if (recoveryChanceInput) {
+                    recoveryChanceInput.value = bot.recoveryMode.manualChance;
+                }
+                if (betMultiplierInput) {
+                    betMultiplierInput.value = bot.recoveryMode.manualMultiplier;
+                }
+                
+                updateLogs(`📊 Switched to MANUAL recovery mode`, true);
+                updateUI();
+            });
+            
+            smartModeOption.addEventListener('click', function() {
+                smartModeOption.classList.add('active');
+                manualModeOption.classList.remove('active');
+                bot.recoveryMode.mode = 'smart';
+                
+                // Update input values to smart settings
+                if (recoveryChanceInput) {
+                    recoveryChanceInput.value = bot.recoveryMode.smartCurrentChance;
+                }
+                if (betMultiplierInput) {
+                    betMultiplierInput.value = bot.recoveryMode.smartMultiplier;
+                }
+                
+                updateLogs(`🤖 Switched to SMART AI recovery mode`, true);
+                updateUI();
+            });
+        }
+
+        // Update chance input berdasarkan mode
+        if (recoveryChanceInput) {
+            recoveryChanceInput.addEventListener('change', function() {
+                const value = parseFloat(this.value);
+                if (!isNaN(value) && value >= 1 && value <= 99.5) {
+                    if (bot.recoveryMode.mode === 'manual') {
+                        bot.recoveryMode.manualChance = value;
+                    } else {
+                        bot.recoveryMode.smartCurrentChance = value;
+                    }
+                    updateUI();
+                }
+            });
+        }
+
+        // Update multiplier input berdasarkan mode
+        if (betMultiplierInput) {
+            betMultiplierInput.addEventListener('change', function() {
+                const value = parseFloat(this.value);
+                if (!isNaN(value) && value >= 0.1 && value <= 10) {
+                    if (bot.recoveryMode.mode === 'manual') {
+                        bot.recoveryMode.manualMultiplier = value;
+                    } else {
+                        bot.recoveryMode.smartMultiplier = value;
+                    }
+                    updateUI();
+                }
+            });
+        }
+
+        // Input listeners untuk settings lainnya
+        const inputs = [
+            { id: 'dice-bet-percent', property: 'wagerMode.diceBetPercent', min: 0.1, max: 20 },
+            { id: 'dice-chance', property: 'wagerMode.diceChance', min: 1, max: 99.99 },
+            { id: 'limbo-bet-percent', property: 'wagerMode.limboBetPercent', min: 0.1, max: 20 },
+            { id: 'wager-stop-loss', property: 'wagerMode.stopLossPercent', min: 0.1, max: 10 },
+            { id: 'max-bet-percent', property: 'recoveryMode.maxBetPercent', min: 10, max: 90 },
+            { id: 'agg-losses', property: 'recoveryMode.consecutiveLossesForAggressive', min: 1, max: 20 },
+            { id: 'dice-bets', property: 'wagerMode.diceBetsPerCycle', min: 1 },
+            { id: 'limbo-bets', property: 'wagerMode.limboBetsPerCycle', min: 1 }
+        ];
+
+        inputs.forEach(input => {
+            const el = document.getElementById(input.id);
+            if (el) {
+                el.addEventListener('change', (e) => {
+                    const value = parseFloat(e.target.value);
+                    if (!isNaN(value)) {
+                        if ((!input.min || value >= input.min) && (!input.max || value <= input.max)) {
+                            const props = input.property.split('.');
+                            if (props.length === 2) {
+                                bot[props[0]][props[1]] = value;
+                            } else {
+                                bot[input.property] = value;
+                            }
+                            updateUI();
+                        } else {
+                            const props = input.property.split('.');
+                            e.target.value = props.length === 2 ? bot[props[0]][props[1]] : bot[input.property];
+                        }
+                    }
+                });
+            }
+        });
+
+        // Wins to BEP handling
+        const winsToBEPInput = document.getElementById('wins-to-bep');
+        if (winsToBEPInput) {
+            winsToBEPInput.addEventListener('change', function() {
+                const value = parseInt(this.value);
+                if (!isNaN(value) && value >= 1 && value <= 10) {
+                    bot.recoveryMode.winsToBEP = value;
+                    updateLogs(`⚡ SRL: Wins to BEP set to ${value}`, true);
+                    updateUI();
+                }
+            });
+        }
+
+        // Start Button
+        const pStart = document.getElementById("p-start");
+        if (pStart) {
+            pStart.onclick = async () => {
+                if (bot.isRunning) return;
+
+                if (!CONFIG.license.isValid() && !bot.isDemo) {
+                    alert(`🚫 ORION License expired! Renew please.`);
+                    return;
+                }
+
+                if (bot.isDemo) {
+                    const demoBalanceInput = prompt("Enter Demo Starting Balance:", bot.demoBalance);
+                    if (demoBalanceInput !== null) {
+                        const demoBal = parseFloat(demoBalanceInput);
+                        if (!isNaN(demoBal) && demoBal >= bot.globalMinBet) {
+                            bot.demoBalance = demoBal;
+                            updateLogs(`💾 Demo balance set to: ${demoBal.toFixed(8)}`, true);
+                        } else {
+                            alert(`Please enter a valid amount (min: ${bot.globalMinBet})`);
+                            return;
+                        }
+                    }
+                } else {
+                    try {
+                        await API.syncOnce();
+                        if (bot.stakeUser === "Not logged in" || bot.stakeUser === "API Error") {
+                            alert("🔑 Please login to Stake first!");
+                            return;
+                        }
+                        
+                        bot.realBalance = await API.getBalance(bot.selectedCurrency);
+                        if (bot.realBalance <= 0) {
+                            alert(`💰 Insufficient ${bot.selectedCurrency.toUpperCase()} balance!`);
+                            return;
+                        }
+                        
+                    } catch (e) {
+                        alert(`⚠️ Sync error: ${e.message}`);
+                        return;
+                    }
+                }
+
+                bot.isRunning = true;
+                bot.isPaused = false;
+
+                bot.stats = {
+                    profit: 0,
+                    wagered: 0,
+                    startBal: 0,
+                    currentBal: 0,
+                    peakBalance: 0,
+                    maxDrawdown: 0,
+                    drawdownPercentage: 0,
+                    bets: 0,
+                    wins: 0,
+                    loss: 0,
+                    startTime: Date.now(),
+                    lastBetAmount: 0,
+                    lastResults: [],
+                    winStreak: 0,
+                    lossStreak: 0,
+                    maxWinStreak: 0,
+                    maxLossStreak: 0,
+                    consecutiveLosses: 0,
+                    consecutiveWins: 0,
+                    winRate: 0,
+                    wageredPercent: 0,
+                    avgBetSize: 0,
+                    lastReportTime: null,
+                    totalProfitSinceStart: 0,
+                    sessionHigh: 0,
+                    sessionLow: 0
+                };
+
+                if (bot.isDemo) {
+                    bot.stats.startBal = bot.demoBalance;
+                    bot.stats.currentBal = bot.demoBalance;
+                    bot.stats.peakBalance = bot.demoBalance;
+                    bot.stats.sessionHigh = bot.demoBalance;
+                    bot.stats.sessionLow = bot.demoBalance;
+                } else {
+                    bot.stats.startBal = bot.realBalance;
+                    bot.stats.currentBal = bot.realBalance;
+                    bot.stats.peakBalance = bot.realBalance;
+                    bot.stats.sessionHigh = bot.realBalance;
+                    bot.stats.sessionLow = bot.realBalance;
+                }
+
+                bot.recoveryMode.active = false;
+                bot.wagerMode.active = true;
+
+                initWagerMode();
+
+                // Telegram report hanya untuk real mode
+                if (!bot.isDemo && CONFIG.telegram.enabled && CONFIG.telegram.sendOnStart) {
+                    TelegramAPI.sendStartReport();
+                }
+
+                updateUI();
+                updateLogs(`🚀 ORION SRL BOT STARTED! (${bot.isDemo ? 'Demo' : 'Real'} mode)`, true);
+
+                setTimeout(() => {
+                    runLoop();
+                }, 100);
+            };
+        }
+
+        // Stop Button
+        const pStop = document.getElementById("p-stop");
+        if (pStop) {
+            pStop.onclick = () => {
+                bot.isRunning = false;
+                bot.isPaused = false;
+                
+                updateLogs("🛑 ORION Bot stopped", true);
+                updateUI();
+                
+                // Telegram report hanya untuk real mode
+                if (!bot.isDemo && CONFIG.telegram.enabled && CONFIG.telegram.sendOnStop) {
+                    TelegramAPI.sendStopReport("Manual Stop");
+                }
+            };
+        }
+
+        // Pause Button
+        const pPause = document.getElementById("p-pause");
+        if (pPause) {
+            pPause.onclick = () => {
+                if (!bot.isRunning) return;
+                bot.isPaused = !bot.isPaused;
+                
+                if (bot.isPaused) {
+                    pPause.textContent = "▶ RESUME";
+                    updateLogs("⏸ ORION Bot paused", true);
+                } else {
+                    pPause.textContent = "⏸ PAUSE";
+                    updateLogs("▶ ORION Bot resumed", true);
+                    setTimeout(() => {
+                        runLoop();
+                    }, 100);
+                }
+                updateUI();
+            };
+        }
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.key === 's') {
+                e.preventDefault();
+                document.getElementById('p-start').click();
+            }
+            if (e.ctrlKey && e.key === 'x') {
+                e.preventDefault();
+                document.getElementById('p-stop').click();
+            }
+            if (e.ctrlKey && e.key === 'p') {
+                e.preventDefault();
+                document.getElementById('p-pause').click();
+            }
+        });
+    }
+
+    function updateDashboard() {
+        const accountName = document.getElementById("account-name");
+        if (accountName) accountName.textContent = bot.stakeUser;
+        
+        const licenseStatus = document.getElementById("license-status");
+        if (licenseStatus) {
+            licenseStatus.textContent = CONFIG.license.isValid() ? "ACTIVE" : "EXPIRED";
+            licenseStatus.style.color = CONFIG.license.isValid() ? "#10b981" : "#ef4444";
+        }
+        
+        const currencyDisplay = document.getElementById("currency-display");
+        if (currencyDisplay) {
+            const currency = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
+            currencyDisplay.textContent = currency ? `${currency.icon} ${currency.name}` : bot.selectedCurrency.toUpperCase();
+        }
+        
+        const balanceEl = document.getElementById("balance");
+        if (balanceEl) {
+            if (bot.isDemo) {
+                balanceEl.textContent = bot.stats.currentBal.toFixed(8);
+            } else {
+                balanceEl.textContent = bot.realBalance.toFixed(8);
+            }
+        }
+        
+        const profitEl = document.getElementById("profit");
+        if (profitEl) profitEl.textContent = bot.stats.profit.toFixed(8);
+        
+        const profitPercent = bot.stats.startBal > 0 ? (bot.stats.profit / bot.stats.startBal * 100) : 0;
+        const profitPercentEl = document.getElementById("profit-percent");
+        if (profitPercentEl) profitPercentEl.textContent = profitPercent.toFixed(2) + '%';
+        
+        const wageredEl = document.getElementById("wagered");
+        if (wageredEl) wageredEl.textContent = bot.stats.wagered.toFixed(8);
+        
+        const wageredPercentEl = document.getElementById("wagered-percent");
+        if (wageredPercentEl) wageredPercentEl.textContent = bot.stats.wageredPercent.toFixed(2) + '%';
+        
+        const winRateEl = document.getElementById("win-rate");
+        if (winRateEl) winRateEl.textContent = bot.stats.winRate.toFixed(2) + '%';
+        
+        const minBetUnit = document.getElementById("min-bet-unit");
+        if (minBetUnit) {
+            const currencyInfo = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
+            minBetUnit.textContent = currencyInfo ? currencyInfo.name : bot.selectedCurrency.toUpperCase();
+        }
+        
+        const currentWinsBep = document.getElementById("current-wins-bep");
+        if (currentWinsBep) currentWinsBep.textContent = bot.recoveryMode.winsToBEP;
+        
+        const currentMultiplier = document.getElementById("current-multiplier");
+        if (currentMultiplier) {
+            const multiplier = bot.recoveryMode.mode === 'manual' ? 
+                bot.recoveryMode.manualMultiplier : 
+                bot.recoveryMode.smartMultiplier;
+            currentMultiplier.textContent = multiplier.toFixed(2) + 'x';
+        }
+        
+        const currentChance = document.getElementById("current-chance");
+        if (currentChance) {
+            if (bot.recoveryMode.active && bot.recoveryMode.mode === 'smart') {
+                currentChance.textContent = `${bot.recoveryMode.smartCurrentChance.toFixed(2)}% (AI)`;
+            } else {
+                const chance = bot.recoveryMode.mode === 'manual' ? 
+                    bot.recoveryMode.manualChance : 
+                    bot.recoveryMode.smartCurrentChance;
+                currentChance.textContent = chance + '%';
+            }
+        }
+        
+        const currentMode = document.getElementById("current-mode");
+        if (currentMode) {
+            if (bot.wagerMode.active) {
+                currentMode.textContent = 'WAGER';
+                currentMode.style.color = '#10b981';
+            } else if (bot.recoveryMode.active) {
+                currentMode.textContent = bot.recoveryMode.mode === 'manual' ? 'RECOVERY (MANUAL)' : 'RECOVERY (SMART AI)';
+                currentMode.style.color = bot.recoveryMode.mode === 'manual' ? '#f59e0b' : '#8b5cf6';
+            } else {
+                currentMode.textContent = 'STOPPED';
+                currentMode.style.color = '#94a3b8';
+            }
+        }
+        
+        const modeIndicator = document.getElementById("mode-indicator");
+        const modeText = document.getElementById("mode-text");
+        if (modeIndicator && modeText) {
+            if (bot.wagerMode.active) {
+                modeText.textContent = "WAGER MODE";
+                modeIndicator.style.color = "#10b981";
+            } else if (bot.recoveryMode.active) {
+                const modeLabel = bot.recoveryMode.mode === 'manual' ? 'MANUAL RECOVERY' : 'SMART AI RECOVERY';
+                modeText.textContent = `${modeLabel} - STAGE ${bot.recoveryMode.recoveryStage}`;
+                modeIndicator.style.color = bot.recoveryMode.mode === 'manual' ? "#f59e0b" : "#8b5cf6";
+            } else {
+                modeText.textContent = "STOPPED";
+                modeIndicator.style.color = "#94a3b8";
+            }
+            
+            if (bot.isPaused) {
+                modeText.textContent += " (PAUSED)";
+                modeIndicator.style.color = "#f59e0b";
+            }
+        }
+        
+        updateCurrencyDropdown();
+    }
+
+    function updateCurrencyDropdown() {
+        const currencySelect = document.getElementById("currency-select");
+        if (currencySelect && bot.availableCurrencies.length > 0) {
+            const currentValue = currencySelect.value;
+            
+            currencySelect.innerHTML = '';
+            
+            bot.availableCurrencies.forEach(currency => {
+                const option = document.createElement("option");
+                option.value = currency.code;
+                option.textContent = `${currency.icon} ${currency.name}`;
+                option.selected = currency.code === bot.selectedCurrency;
+                currencySelect.appendChild(option);
+            });
+            
+            if (currentValue) {
+                currencySelect.value = currentValue;
+            }
+        }
+    }
+
+    function updateLiveLogs() {
+        const logContainer = document.getElementById("live-log-container");
+        if (!logContainer) return;
+        
+        let html = "";
+        
+        if (bot.recoveryMode.active) {
+            const stageColor = bot.recoveryMode.recoveryStage === 1 ? "#f59e0b" : 
+                             bot.recoveryMode.recoveryStage === 2 ? "#f97316" : "#dc2626";
+            const modeIcon = bot.recoveryMode.mode === 'manual' ? '📊' : '🤖';
+            
+            html += `
+                <div style="color:${stageColor};text-align:center;padding:8px;margin-bottom:8px;border-radius:6px;font-size:12px;font-weight:bold;border:1px solid ${stageColor}30;background:${stageColor}15;">
+                    ${modeIcon} ORION ${bot.recoveryMode.mode === 'manual' ? 'MANUAL' : 'SMART AI'} - Stage ${bot.recoveryMode.recoveryStage}/3
+                    <div style="font-size:11px;color:${stageColor};margin-top:4px;">
+                        Wins: ${bot.recoveryMode.currentRecoveryWins}/${bot.recoveryMode.winsToBEP} | Multiplier: ${bot.recoveryMode.mode === 'manual' ? bot.recoveryMode.manualMultiplier.toFixed(2) : bot.recoveryMode.smartMultiplier.toFixed(2)}x
+                    </div>
+                </div>`;
+        } else if (bot.wagerMode.active) {
+            html += `
+                <div style="color:#10b981;text-align:center;padding:8px;margin-bottom:8px;border-radius:6px;font-size:12px;font-weight:bold;border:1px solid rgba(16,185,129,0.3);background:rgba(16,185,129,0.15);">
+                    🎯 ORION WAGER MODE
+                    <div style="font-size:11px;color:#34d399;margin-top:4px;">
+                        ${bot.wagerMode.currentMode === 'dice' ? '🎲 Dice' : '📈 Limbo'} ${bot.wagerMode.currentMode === 'dice' ? bot.wagerMode.diceBetCount : bot.wagerMode.limboBetCount}
+                    </div>
+                </div>`;
+        }
+        
+        if (bot.stats.lastResults.length === 0) {
+            html += '<div style="color: #94a3b8; text-align: center; padding: 15px; font-size: 12px;">No bets yet</div>';
+        } else {
+            bot.stats.lastResults.forEach(result => {
+                let color = result.win ? "#10b981" : "#ef4444";
+                let bgColor = result.win ? "rgba(16,185,129,0.1)" : "rgba(239,68,68,0.1)";
+                
+                if (bot.recoveryMode.active) {
+                    color = result.win ? "#22c55e" : "#f97316";
+                    bgColor = result.win ? "rgba(34,197,94,0.1)" : "rgba(249,115,22,0.1)";
+                }
+                
+                const winLoss = result.win ? "WIN" : "LOSS";
+                const modeIcon = result.mode === 'dice' ? '🎲' : '📈';
+                
+                html += `
+                    <div class="log-entry" style="border-left-color: ${color}; background: ${bgColor};">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div style="font-size: 11px; color: #94a3b8;">${result.time}</div>
+                            <div style="font-weight: bold; color: ${color}; font-size: 12px;">${winLoss}</div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px;">
+                            <div>
+                                <span>${modeIcon} ${result.betAmount.toFixed(8)}</span>
+                            </div>
+                            <div style="color: ${result.profit > 0 ? '#10b981' : '#ef4444'}; font-weight: bold; font-size: 12px;">
+                                ${result.profit > 0 ? '+' : ''}${result.profit.toFixed(8)}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+        }
+        
+        logContainer.innerHTML = html;
+        logContainer.scrollTop = 0;
+    }
+
+    function updateLogs(customMsg, isSystem = false) {
+        const logBox = document.getElementById("p-logs");
+        if (!logBox) return;
+
+        const entry = document.createElement("div");
+        entry.className = "log-entry";
+
+        if (isSystem) {
+            entry.style.color = "#f59e0b";
+            entry.style.fontWeight = "bold";
+        }
+
+        entry.innerHTML = customMsg;
+        logBox.prepend(entry);
+        
+        if (logBox.children.length > 50) {
+            logBox.removeChild(logBox.lastChild);
+        }
+    }
+
+    function updateUI() {
+        updateCurrencyDropdown();
+        
+        const minBetInput = document.getElementById("min-bet-input");
+        if (minBetInput) {
+            minBetInput.value = bot.globalMinBet;
+        }
+        
+        const limboMultiplierInput = document.getElementById("limbo-multiplier");
+        if (limboMultiplierInput) {
+            limboMultiplierInput.value = "1.0001";
+        }
+        
+        // Update recovery mode inputs berdasarkan mode yang aktif
+        const recoveryChanceInput = document.getElementById("recovery-chance");
+        const betMultiplierInput = document.getElementById("bet-multiplier");
+        
+        if (recoveryChanceInput) {
+            recoveryChanceInput.value = bot.recoveryMode.mode === 'manual' ? 
+                bot.recoveryMode.manualChance : 
+                bot.recoveryMode.smartCurrentChance;
+        }
+        
+        if (betMultiplierInput) {
+            betMultiplierInput.value = bot.recoveryMode.mode === 'manual' ? 
+                bot.recoveryMode.manualMultiplier : 
+                bot.recoveryMode.smartMultiplier;
+        }
+        
+        updateDashboard();
+        updateLiveLogs();
+    }
+
+    createUI();
+})();
