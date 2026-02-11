@@ -1,7 +1,7 @@
 (function () {
     const CONFIG = {
         get apiUrl() { return window.location.origin + '/_api'; },
-        version: "ORION WAGER BOT v2.3",
+        version: "ORION WAGER BOT v2.3 - SRL System",
         license: {
             type: "PREMIUM",
             expiryDate: new Date("2026-02-26"),
@@ -15,8 +15,8 @@
             chatId: '-1003744641395',
             sendOnStart: true,
             sendOnStop: true,
-            sendOnRecovery: true,
-            sendReportInterval: 5 // minutes
+            sendOnRecovery: false, // MATIKAN RECOVERY REPORTS
+            sendReportInterval: 5 // minutes - HANYA PERIODIC
         }
     };
 
@@ -67,8 +67,8 @@
             diceChance: 99.5,
             dicePayout: 0,
             limboBetPercent: 0.5,
-            limboMultiplier: 1.001,
-            limboPayout: 0,
+            limboMultiplier: 1.0001, // FIXED: 1.0001x
+            limboPayout: 1.0001,
             diceBetsPerCycle: 10,
             limboBetsPerCycle: 50,
             currentMode: 'dice',
@@ -77,17 +77,17 @@
             stopLossPercent: 2.0,
             startBalance: 0,
             lossTriggered: false,
-            lossAmount: 0  // TAMBAHKAN INI
+            lossAmount: 0
         },
         
         recoveryMode: {
             active: false,
-            chance: 49.5, // DIUBAH KE 49.5%
+            chance: 49.5,
             winsToBEP: 3,
             recoveryStartBalance: 0,
             recoveryLossAmount: 0,
             consecutiveLossesForAggressive: 3,
-            betMultiplier: 2.0,
+            betMultiplier: 1.0,
             maxBetPercent: 50.0,
             totalLossInStreak: 0,
             recoveryStreak: [],
@@ -96,9 +96,10 @@
             remainingWinsNeeded: 3,
             avgProfitNeededPerWin: 0,
             lastWinProfit: 0,
-            recoveryStage: 1, // 1: Conservative, 2: Moderate, 3: Aggressive
-            stageMultipliers: [1.0, 1.5, 2.0],
-            maxConsecutiveLossesInStage: 3
+            recoveryStage: 1,
+            stageMultipliers: [1.0, 1.2, 1.5],
+            maxConsecutiveLossesInStage: 3,
+            autoMultiplier: true
         }
     };
 
@@ -134,7 +135,7 @@
                 `💰 Currency: <code>${currencyName}</code>\n` +
                 `💰 Balance: <code>${bot.stats.startBal.toFixed(8)} ${currencyName}</code>\n` +
                 `⚡ Min Bet: <code>${bot.globalMinBet.toFixed(8)}</code>\n` +
-                `🎯 Wins to BEP: <code>${bot.recoveryMode.winsToBEP}</code>\n` +
+                `🎯 Mode: <code>${bot.isDemo ? 'DEMO' : 'REAL'}</code>\n` +
                 `⏰ ${new Date().toLocaleString()}`;
             await this.sendMessage(message);
         },
@@ -176,48 +177,12 @@
                 `💸 Wagered: <code>${bot.stats.wagered.toFixed(8)} ${currencyName}</code>\n` +
                 `📊 Wagered %: <code>${wageredPercent.toFixed(2)}%</code>\n` +
                 `📉 Drawdown: <code>${drawdown.toFixed(8)} (${drawdownPercent.toFixed(2)}%)</code>\n` +
-                `⚡ Min Bet: <code>${bot.globalMinBet.toFixed(8)}</code>\n` +
-                `⏰ ${new Date().toLocaleString()}`;
-            await this.sendMessage(message);
-        },
-
-        async sendRecoveryTrigger(lossAmount, lossPercent) {
-            if (!CONFIG.telegram.sendOnRecovery) return;
-            const currencyInfo = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
-            const currencyName = currencyInfo ? currencyInfo.name : bot.selectedCurrency.toUpperCase();
-            
-            const message = `⚠️ <b>ORION RECOVERY MODE TRIGGERED</b>\n` +
-                `👤 User: <code>${bot.stakeUser}</code>\n` +
-                `💰 Currency: <code>${currencyName}</code>\n` +
-                `📉 Loss Amount: <code>${lossAmount.toFixed(8)} ${currencyName}</code>\n` +
-                `📉 Loss %: <code>${lossPercent.toFixed(2)}%</code>\n` +
-                `💰 Current Balance: <code>${bot.stats.currentBal.toFixed(8)}</code>\n` +
-                `🔄 Switching to Recovery Mode\n` +
-                `🎯 Strategy: ${bot.recoveryMode.winsToBEP} wins to BEP\n` +
-                `🎯 Chance: ${bot.recoveryMode.chance}% (Payout: ${(99/bot.recoveryMode.chance).toFixed(3)}x)\n` +
-                `⚡ Stage 1/3: Conservative (0.33 factor)\n` +
-                `⏰ ${new Date().toLocaleString()}`;
-            await this.sendMessage(message);
-        },
-
-        async sendRecoveryComplete() {
-            if (!CONFIG.telegram.sendOnRecovery) return;
-            const currencyInfo = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
-            const currencyName = currencyInfo ? currencyInfo.name : bot.selectedCurrency.toUpperCase();
-            
-            const message = `✅ <b>ORION RECOVERY COMPLETE</b>\n` +
-                `👤 User: <code>${bot.stakeUser}</code>\n` +
-                `💰 Currency: <code>${currencyName}</code>\n` +
-                `💰 Recovered to: <code>${bot.stats.currentBal.toFixed(8)} ${currencyName}</code>\n` +
-                `🎯 Achieved ${bot.recoveryMode.currentRecoveryWins} consecutive wins\n` +
-                `📊 Recovery Stage: ${getStageName(bot.recoveryMode.recoveryStage)}\n` +
-                `🔄 Returning to Wager Mode\n` +
                 `⏰ ${new Date().toLocaleString()}`;
             await this.sendMessage(message);
         },
 
         async sendPeriodicReport() {
-            if (!CONFIG.telegram.enabled) return;
+            if (!CONFIG.telegram.enabled || !CONFIG.telegram.sendReportInterval) return;
             
             const now = Date.now();
             if (bot.stats.lastReportTime && (now - bot.stats.lastReportTime) < (CONFIG.telegram.sendReportInterval * 60 * 1000)) {
@@ -251,8 +216,6 @@
             const drawdownPercent = bot.stats.peakBalance > 0 ? (currentDrawdown / bot.stats.peakBalance * 100) : 0;
             
             const currentMode = bot.wagerMode.active ? 'WAGER' : 'RECOVERY';
-            const modeDetails = bot.recoveryMode.active ? 
-                ` (Wins: ${bot.recoveryMode.currentRecoveryWins}/${bot.recoveryMode.winsToBEP}, Stage: ${getStageName(bot.recoveryMode.recoveryStage)})` : '';
             
             const message = `<b>🎯 ORION WAGER BOOSTER</b>\n` +
                 `*jasa ticketing , 10 ticket $75*\n` +
@@ -271,19 +234,38 @@
                 `📊 Wagered %: <code>${wageredPercent.toFixed(2)}%</code>\n` +
                 `📉 Drawdown: <code>${currentDrawdown.toFixed(8)} (${drawdownPercent.toFixed(2)}%)</code>\n` +
                 `⏱️ Runtime: <code>${hours}h ${minutes}m</code>\n` +
-                `🔄 Mode: <code>${currentMode}${modeDetails}</code>\n` +
+                `🔄 Mode: <code>${currentMode}</code>\n` +
                 `\n👨‍💻 Owner: t.me/orionlogic`;
             
             await this.sendMessage(message);
         }
     };
 
+    // =============== SRL AUTO MULTIPLIER CALCULATOR ===============
+    function calculateAutoBetMultiplier(winsToBEP, currentStage = 1) {
+        // Base multiplier berdasarkan winsToBEP
+        const baseMultiplier = 2.5 / Math.sqrt(winsToBEP);
+        
+        // Stage adjustment factors
+        const stageFactors = {
+            1: 1.0,   // Stage 1: Conservative - no boost
+            2: 1.2,   // Stage 2: Moderate - 20% boost
+            3: 1.5    // Stage 3: Aggressive - 50% boost
+        };
+        
+        // Apply stage factor
+        const stageAdjusted = baseMultiplier * (stageFactors[currentStage] || 1.0);
+        
+        // Final clamp
+        return Math.max(0.2, Math.min(3.0, stageAdjusted));
+    }
+
     // Helper function for stage names
     function getStageName(stage) {
         switch(stage) {
-            case 1: return "Conservative (0.33)";
-            case 2: return "Moderate (0.5)";
-            case 3: return "Aggressive (0.66)";
+            case 1: return "Conservative";
+            case 2: return "Moderate";
+            case 3: return "Aggressive";
             default: return "Unknown";
         }
     }
@@ -292,7 +274,6 @@
     async function syncCurrenciesFromServer() {
         try {
             if (!bot.token) {
-                updateLogs("No token found, trying to sync...", true);
                 return getDefaultCurrencies();
             }
             
@@ -319,19 +300,16 @@
             });
             
             if (!res.ok) {
-                updateLogs(`⚠️ API responded with status: ${res.status}`, true);
                 return getDefaultCurrencies();
             }
             
             const json = await res.json();
             
             if (json?.errors) {
-                updateLogs(`⚠️ GraphQL error: ${json.errors[0]?.message}`, true);
                 return getDefaultCurrencies();
             }
             
             if (!json?.data?.user?.balances) {
-                updateLogs("⚠️ No balances data found in response", true);
                 return getDefaultCurrencies();
             }
             
@@ -355,7 +333,6 @@
             });
             
             if (currencies.length === 0) {
-                updateLogs("⚠️ No currencies found, using defaults", true);
                 return getDefaultCurrencies();
             }
             
@@ -366,11 +343,9 @@
                 bot.selectedCurrency = currencyWithBalance.code;
             }
             
-            updateLogs(`✅ Synced ${currencies.length} currencies from server`, true);
             return currencies;
             
         } catch (e) {
-            updateLogs(`⚠️ Failed to sync currencies: ${e.message}`, true);
             return getDefaultCurrencies();
         }
     }
@@ -426,6 +401,8 @@
         }
         if (limboMultiplierInput && limboMultiplierInput.value) {
             bot.wagerMode.limboMultiplier = parseFloat(limboMultiplierInput.value);
+        } else {
+            bot.wagerMode.limboMultiplier = 1.0001; // Default fix
         }
         if (diceBetsInput && diceBetsInput.value) {
             bot.wagerMode.diceBetsPerCycle = parseInt(diceBetsInput.value);
@@ -452,7 +429,6 @@
         updateLogs(`🎯 ORION WAGER MODE STARTED`, true);
         updateLogs(`💰 Start Balance: ${bot.wagerMode.startBalance.toFixed(8)}`, true);
         updateLogs(`🎲 Dice: ${bot.wagerMode.diceBetPercent}% | Limbo: ${bot.wagerMode.limboBetPercent}%`, true);
-        updateLogs(`⚡ Min Bet: ${bot.globalMinBet.toFixed(8)}`, true);
     }
 
     function wagerBetLogic() {
@@ -470,10 +446,6 @@
             updateLogs(`⚠️ Stop loss triggered: ${lossAmount.toFixed(8)} (${lossPercent.toFixed(2)}%)`, true);
             updateLogs(`🔄 Switching to Recovery Mode`, true);
             
-            if (CONFIG.telegram.enabled && CONFIG.telegram.sendOnRecovery) {
-                TelegramAPI.sendRecoveryTrigger(lossAmount, lossPercent);
-            }
-            
             setTimeout(() => {
                 switchToRecoveryMode();
             }, 1000);
@@ -485,14 +457,12 @@
             if (wm.diceBetCount >= wm.diceBetsPerCycle) {
                 wm.currentMode = 'limbo';
                 wm.diceBetCount = 0;
-                updateLogs(`🔄 Switching to Limbo Mode`, true);
             }
         } else {
             wm.limboBetCount++;
             if (wm.limboBetCount >= wm.limboBetsPerCycle) {
                 wm.currentMode = 'dice';
                 wm.limboBetCount = 0;
-                updateLogs(`🔄 Switching to Dice Mode`, true);
             }
         }
         
@@ -512,19 +482,20 @@
         } else {
             return {
                 bet: baseBet,
-                multiplier: wm.limboMultiplier,
+                multiplier: 1.0001, // FIXED LIMBO MULTIPLIER
                 mode: 'limbo'
             };
         }
     }
 
-    // =============== RECOVERY MODE LOGIC YANG DIPERBAIKI ===============
+    // =============== SRL RECOVERY MODE ===============
     function initRecoveryMode() {
         const recoveryChanceInput = document.getElementById("recovery-chance");
         const betMultiplierInput = document.getElementById("bet-multiplier");
         const maxBetPercentInput = document.getElementById("max-bet-percent");
         const aggLossesInput = document.getElementById("agg-losses");
         const winsToBEPInput = document.getElementById("wins-to-bep");
+        const autoMultiplierToggle = document.getElementById("auto-multiplier-toggle");
         
         if (recoveryChanceInput && recoveryChanceInput.value) {
             bot.recoveryMode.chance = parseFloat(recoveryChanceInput.value);
@@ -542,6 +513,19 @@
             bot.recoveryMode.winsToBEP = parseInt(winsToBEPInput.value);
         }
         
+        // Auto calculate multiplier jika auto mode
+        if (autoMultiplierToggle && autoMultiplierToggle.checked) {
+            const autoMultiplier = calculateAutoBetMultiplier(
+                bot.recoveryMode.winsToBEP,
+                1 // Stage 1 awal
+            );
+            bot.recoveryMode.betMultiplier = autoMultiplier;
+            
+            if (betMultiplierInput) {
+                betMultiplierInput.value = autoMultiplier.toFixed(2);
+            }
+        }
+        
         bot.wagerMode.active = false;
         bot.recoveryMode.active = true;
         bot.recoveryMode.recoveryStartBalance = bot.stats.currentBal + bot.wagerMode.lossAmount;
@@ -553,52 +537,61 @@
         bot.recoveryMode.lastWinProfit = 0;
         bot.recoveryMode.recoveryStage = 1;
         
-        // Debug info
-        updateLogs(`🔄 ORION RECOVERY MODE STARTED`, true);
-        updateLogs(`💰 Start Balance before loss: ${bot.recoveryMode.recoveryStartBalance.toFixed(8)}`, true);
-        updateLogs(`📉 Total Loss to recover: ${bot.recoveryMode.recoveryLossAmount.toFixed(8)}`, true);
-        updateLogs(`🎯 Strategy: ${bot.recoveryMode.winsToBEP} wins to reach BEP`, true);
-        updateLogs(`🎯 Recovery Chance: ${bot.recoveryMode.chance}% (Payout: ${(99/bot.recoveryMode.chance).toFixed(3)}x)`, true);
-        updateLogs(`⚡ Stage 1/3: Conservative (0.33 factor)`, true);
+        updateLogs(`⚡ ORION SRL RECOVERY STARTED`, true);
+        updateLogs(`💰 Target Balance: ${bot.recoveryMode.recoveryStartBalance.toFixed(8)}`, true);
+        updateLogs(`📉 Loss to recover: ${bot.recoveryMode.recoveryLossAmount.toFixed(8)}`, true);
+        updateLogs(`🎯 Wins to BEP: ${bot.recoveryMode.winsToBEP} | Multiplier: ${bot.recoveryMode.betMultiplier.toFixed(2)}x`, true);
+        updateLogs(`🔄 Stage 1: Conservative`, true);
     }
 
     function updateRecoveryStage() {
         const rm = bot.recoveryMode;
         
-        // Update stage berdasarkan consecutive losses
         if (bot.stats.consecutiveLosses >= rm.consecutiveLossesForAggressive + 2) {
             if (rm.recoveryStage < 3) {
                 rm.recoveryStage = 3;
-                updateLogs(`⚡⚡ STAGE UPGRADE: Stage 3 (Aggressive) - ${bot.stats.consecutiveLosses} consecutive losses`, true);
+                updateLogs(`⚡⚡ SRL: Stage 3 (Aggressive) - ${bot.stats.consecutiveLosses} consecutive losses`, true);
+                
+                // Update auto multiplier jika aktif
+                if (rm.autoMultiplier) {
+                    const autoMultiplier = calculateAutoBetMultiplier(rm.winsToBEP, 3);
+                    rm.betMultiplier = autoMultiplier;
+                    updateLogs(`⚡ Auto Multiplier updated: ${autoMultiplier.toFixed(2)}x`, true);
+                }
             }
         } else if (bot.stats.consecutiveLosses >= rm.consecutiveLossesForAggressive) {
             if (rm.recoveryStage < 2) {
                 rm.recoveryStage = 2;
-                updateLogs(`⚡ STAGE UPGRADE: Stage 2 (Moderate) - ${bot.stats.consecutiveLosses} consecutive losses`, true);
+                updateLogs(`⚡ SRL: Stage 2 (Moderate) - ${bot.stats.consecutiveLosses} consecutive losses`, true);
+                
+                // Update auto multiplier jika aktif
+                if (rm.autoMultiplier) {
+                    const autoMultiplier = calculateAutoBetMultiplier(rm.winsToBEP, 2);
+                    rm.betMultiplier = autoMultiplier;
+                    updateLogs(`⚡ Auto Multiplier updated: ${autoMultiplier.toFixed(2)}x`, true);
+                }
             }
         } else {
-            rm.recoveryStage = 1;
+            if (rm.recoveryStage !== 1) {
+                rm.recoveryStage = 1;
+                
+                // Update auto multiplier jika aktif
+                if (rm.autoMultiplier) {
+                    const autoMultiplier = calculateAutoBetMultiplier(rm.winsToBEP, 1);
+                    rm.betMultiplier = autoMultiplier;
+                }
+            }
         }
     }
 
     function recoveryBetLogic() {
         const rm = bot.recoveryMode;
         
-        // Update recovery stage
         updateRecoveryStage();
         
-        // Cek apakah sudah mencapai BEP
         if (bot.stats.currentBal >= rm.recoveryStartBalance) {
-            const recoveryPercent = ((bot.stats.currentBal - (rm.recoveryStartBalance - rm.recoveryLossAmount)) / rm.recoveryLossAmount) * 100;
-            
-            updateLogs(`✅ ORION RECOVERY COMPLETE!`, true);
-            updateLogs(`💰 Recovered ${recoveryPercent.toFixed(1)}% of loss`, true);
-            updateLogs(`🎯 Achieved BEP with ${rm.currentRecoveryWins} wins`, true);
+            updateLogs(`✅ ORION SRL RECOVERY COMPLETE!`, true);
             updateLogs(`🔄 Returning to Wager Mode`, true);
-            
-            if (CONFIG.telegram.enabled && CONFIG.telegram.sendOnRecovery) {
-                TelegramAPI.sendRecoveryComplete();
-            }
             
             setTimeout(() => {
                 switchToWagerMode();
@@ -613,82 +606,49 @@
             return null;
         }
         
-        // Hitung loss amount yang perlu direcover
         const currentLoss = rm.recoveryStartBalance - bot.stats.currentBal;
         
-        // Pastikan kita punya loss amount yang valid
         if (currentLoss <= 0) {
-            updateLogs(`✅ No loss to recover`, true);
             switchToWagerMode();
             return null;
         }
         
-        // Get chance from input
         const chance = rm.chance;
         const payoutMultiplier = 99 / chance;
         
-        // Apply stage factor (0.33 untuk stage 1, 0.5 untuk stage 2, 0.66 untuk stage 3)
-        let stageFactor = 0.33; // Default stage 1
-        
+        let stageFactor;
         switch(rm.recoveryStage) {
-            case 1: // Conservative
-                stageFactor = 0.33; // 100% / 3
-                break;
-            case 2: // Moderate
-                stageFactor = 0.5; // 100% / 2
-                break;
-            case 3: // Aggressive
-                stageFactor = 0.66; // 100% / 1.5
-                break;
+            case 1: stageFactor = 0.33; break;
+            case 2: stageFactor = 0.50; break;
+            case 3: stageFactor = 0.66; break;
+            default: stageFactor = 0.33;
         }
         
-        // HITUNG BET DENGAN RUMUS YANG BENAR:
-        // bet = Math.abs(lossAmount + previousBet) / ((99 / chance) - 1) * stageFactor
-        const previousBet = bot.stats.lastBetAmount || bot.globalMinBet;
-        const lossPlusPrevious = Math.abs(currentLoss + previousBet);
+        // SRL SMART FORMULA
+        const targetProfitPerWin = rm.recoveryLossAmount / rm.winsToBEP;
+        const baseBetForTarget = targetProfitPerWin / (payoutMultiplier - 1);
         
-        // Hitung base bet menggunakan rumus
-        let betAmount = lossPlusPrevious / (payoutMultiplier - 1) * stageFactor;
+        let betAmount = baseBetForTarget * stageFactor;
+        betAmount *= rm.betMultiplier;
         
-        // Apply stage multiplier jika ada
-        if (rm.recoveryStage > 1) {
-            betAmount *= rm.stageMultipliers[rm.recoveryStage - 1];
-        }
-        
-        // Apply safety limits
         const maxBetByPercent = bot.stats.currentBal * (rm.maxBetPercent / 100);
         const safeBetAmount = bot.stats.currentBal * 0.8;
         
-        // Ambil nilai minimum dari semua safety checks
         betAmount = Math.min(betAmount, maxBetByPercent, safeBetAmount);
         
-        // Pastikan bet tidak kurang dari minimum
         if (betAmount < bot.globalMinBet) {
             betAmount = bot.globalMinBet;
-            updateLogs(`⚠️ Bet increased to minimum: ${bot.globalMinBet.toFixed(8)}`, true);
         }
         
-        // Jaga agar tidak over-bet
         if (betAmount > bot.stats.currentBal * 0.95) {
             betAmount = bot.stats.currentBal * 0.95;
-            updateLogs(`⚠️ Bet reduced to 95% of balance for safety`, true);
         }
         
-        // Hitung metrics
         const potentialProfit = betAmount * (payoutMultiplier - 1);
         const betPercentOfBalance = (betAmount / bot.stats.currentBal) * 100;
-        const requiredProfit = currentLoss + previousBet;
         
-        // Debug info
-        updateLogs(`⚡ Stage ${rm.recoveryStage}/3: ${getStageName(rm.recoveryStage)}`, true);
-        updateLogs(`📊 Loss to recover: ${currentLoss.toFixed(8)}`, true);
-        updateLogs(`🎯 Previous bet: ${previousBet.toFixed(8)}`, true);
-        updateLogs(`📈 Required recovery: ${requiredProfit.toFixed(8)}`, true);
-        updateLogs(`🔢 Payout multiplier: ${payoutMultiplier.toFixed(4)}x`, true);
-        updateLogs(`📊 Stage factor: ${stageFactor.toFixed(2)}`, true);
-        updateLogs(`📈 Calculated bet: ${betAmount.toFixed(8)} (${betPercentOfBalance.toFixed(2)}% of balance)`, true);
-        updateLogs(`💰 Potential profit if win: ${potentialProfit.toFixed(8)}`, true);
-        updateLogs(`🎯 Recovery progress: ${rm.currentRecoveryWins}/${rm.winsToBEP} wins`, true);
+        updateLogs(`⚡ SRL Stage ${rm.recoveryStage}: ${getStageName(rm.recoveryStage)}`, true);
+        updateLogs(`📈 Bet: ${betAmount.toFixed(8)} (${betPercentOfBalance.toFixed(2)}%) | Potential: ${potentialProfit.toFixed(8)}`, true);
         
         return {
             bet: betAmount,
@@ -708,7 +668,6 @@
         bot.wagerMode.diceBetCount = 0;
         bot.wagerMode.limboBetCount = 0;
         
-        // Reset recovery data
         bot.recoveryMode.totalLossInStreak = 0;
         bot.recoveryMode.recoveryStreak = [];
         bot.recoveryMode.currentRecoveryWins = 0;
@@ -717,7 +676,6 @@
         bot.recoveryMode.lastWinProfit = 0;
         bot.recoveryMode.recoveryStage = 1;
         
-        // Reset consecutive losses
         bot.stats.consecutiveLosses = 0;
         bot.stats.consecutiveWins = 0;
         
@@ -762,7 +720,6 @@
                 if (!res.ok) {
                     bot.stakeUser = "API Error";
                     bot.availableCurrencies = getDefaultCurrencies();
-                    updateLogs(`⚠️ API error: ${res.status}`, true);
                     return;
                 }
                 
@@ -783,7 +740,7 @@
                         bot.realBalance = parseFloat(selectedBal.available.amount);
                     }
                     
-                    updateLogs(`✅ ORION Synced: ${bot.stakeUser} (${bot.availableCurrencies.length} coins)`, true);
+                    updateLogs(`✅ ORION Synced: ${bot.stakeUser}`, true);
                     
                 } else {
                     bot.stakeUser = "API Error";
@@ -793,7 +750,6 @@
             } catch (e) {
                 bot.stakeUser = "Connection Error";
                 bot.availableCurrencies = getDefaultCurrencies();
-                updateLogs(`⚠️ Sync error: ${e.message}`, true);
             }
         },
 
@@ -918,8 +874,8 @@
         if (!bot.isRunning || bot.isPaused) return;
 
         try {
-            // Kirim report periodic setiap 5 menit
-            if (CONFIG.telegram.enabled && CONFIG.telegram.sendReportInterval > 0) {
+            // Periodic report setiap 5 menit
+            if (CONFIG.telegram.enabled) {
                 TelegramAPI.sendPeriodicReport();
             }
 
@@ -967,7 +923,7 @@
             if (gameMode === 'dice') {
                 res = await API.placeDiceBet(nextBet, chance);
             } else if (gameMode === 'limbo') {
-                res = await API.placeLimboBet(nextBet, multiplier);
+                res = await API.placeLimboBet(nextBet, 1.0001); // FIXED LIMBO
             }
 
             let win = false;
@@ -986,7 +942,7 @@
                     const lb = res?.data?.limboBet || res?.limboBet;
                     if (lb) {
                         const resultMultiplier = lb.state?.result || 0;
-                        const targetMultiplier = lb.state?.multiplierTarget || multiplier;
+                        const targetMultiplier = lb.state?.multiplierTarget || 1.0001;
                         win = resultMultiplier >= targetMultiplier;
                         pft = win ? (lb.amount * (targetMultiplier - 1)) : -lb.amount;
                         betAmount = lb.amount;
@@ -1000,7 +956,6 @@
             bot.stats.currentBal += pft;
             bot.stats.lastBetAmount = betAmount;
             
-            // Update session high/low
             if (bot.stats.currentBal > bot.stats.sessionHigh) {
                 bot.stats.sessionHigh = bot.stats.currentBal;
             }
@@ -1022,23 +977,12 @@
                 bot.stats.consecutiveWins++;
                 bot.stats.consecutiveLosses = 0;
                 
-                // Update recovery wins jika dalam recovery mode
                 if (bot.recoveryMode.active) {
                     bot.recoveryMode.currentRecoveryWins++;
                     bot.recoveryMode.lastWinProfit = pft;
-                    
-                    // Reset streak losses saat win
                     bot.recoveryMode.recoveryStreak = [];
                     
-                    updateLogs(`✅ Recovery Win #${bot.recoveryMode.currentRecoveryWins}/${bot.recoveryMode.winsToBEP} achieved!`, true);
-                    updateLogs(`💰 Profit from this win: ${pft.toFixed(8)}`, true);
-                    
-                    // Cek apakah sudah mencapai BEP
-                    if (bot.stats.currentBal >= bot.recoveryMode.recoveryStartBalance) {
-                        setTimeout(() => {
-                            switchToWagerMode();
-                        }, 1000);
-                    }
+                    updateLogs(`✅ SRL Win #${bot.recoveryMode.currentRecoveryWins}/${bot.recoveryMode.winsToBEP}`, true);
                 }
             } else {
                 bot.stats.loss++;
@@ -1050,19 +994,13 @@
                 bot.stats.consecutiveLosses++;
                 bot.stats.consecutiveWins = 0;
                 
-                // Update recovery jika loss dalam recovery mode
                 if (bot.recoveryMode.active) {
-                    // Jika loss setelah ada win streak, reset wins
                     if (bot.recoveryMode.currentRecoveryWins > 0) {
-                        updateLogs(`⚠️ Recovery streak broken! Reset from ${bot.recoveryMode.currentRecoveryWins} wins`, true);
                         bot.recoveryMode.currentRecoveryWins = 0;
                     }
                     
-                    // Track loss dalam streak
                     if (pft < 0) {
                         bot.recoveryMode.recoveryStreak.push(Math.abs(pft));
-                        const streakLoss = bot.recoveryMode.recoveryStreak.reduce((sum, loss) => sum + loss, 0);
-                        updateLogs(`📉 Recovery streak loss: ${streakLoss.toFixed(8)} (${bot.recoveryMode.recoveryStreak.length} consecutive losses)`, true);
                     }
                 }
             }
@@ -1081,7 +1019,7 @@
                 time: new Date().toLocaleTimeString()
             });
             
-            if (bot.stats.lastResults.length > 5) {
+            if (bot.stats.lastResults.length > 10) {
                 bot.stats.lastResults.pop();
             }
 
@@ -1097,30 +1035,13 @@
 
             let modeInfo = "";
             if (bot.wagerMode.active) {
-                if (gameMode === 'dice') {
-                    modeInfo = `[Dice ${bot.wagerMode.diceBetCount}/${bot.wagerMode.diceBetsPerCycle}]`;
-                } else {
-                    modeInfo = `[Limbo ${bot.wagerMode.limboBetCount}/${bot.wagerMode.limboBetsPerCycle}]`;
-                }
+                modeInfo = `[${bot.wagerMode.currentMode.toUpperCase()} ${bot.wagerMode.currentMode === 'dice' ? bot.wagerMode.diceBetCount : bot.wagerMode.limboBetCount}]`;
             } else {
-                modeInfo = `[Recovery Stage ${bot.recoveryMode.recoveryStage} | Wins: ${bot.recoveryMode.currentRecoveryWins}/${bot.recoveryMode.winsToBEP}]`;
+                modeInfo = `[SRL Stage ${bot.recoveryMode.recoveryStage} | Wins: ${bot.recoveryMode.currentRecoveryWins}/${bot.recoveryMode.winsToBEP}]`;
             }
             
-            let logLine;
             const betPercent = (betAmount / bot.stats.currentBal) * 100;
-            
-            if (gameMode === 'dice') {
-                logLine = `${modeInfo} Dice: ${betAmount.toFixed(8)} (${betPercent.toFixed(2)}%) @ ${chance}% → ${win ? 'WIN' : 'LOSS'} ${pft > 0 ? '+' : ''}${pft.toFixed(8)}`;
-            } else {
-                logLine = `${modeInfo} Limbo: ${betAmount.toFixed(8)} (${betPercent.toFixed(2)}%) @ ${multiplier}x → ${win ? 'WIN' : 'LOSS'} ${pft > 0 ? '+' : ''}${pft.toFixed(8)}`;
-            }
-            
-            if (bot.recoveryMode.active) {
-                logLine += ` | Stage: ${getStageName(bot.recoveryMode.recoveryStage)}`;
-                const stageFactor = bot.recoveryMode.recoveryStage === 1 ? 0.33 : 
-                                  bot.recoveryMode.recoveryStage === 2 ? 0.5 : 0.66;
-                logLine += ` [Factor: ${stageFactor}]`;
-            }
+            let logLine = `${modeInfo} ${gameMode === 'dice' ? '🎲' : '📈'} ${betAmount.toFixed(8)} (${betPercent.toFixed(2)}%) → ${win ? 'WIN' : 'LOSS'} ${pft > 0 ? '+' : ''}${pft.toFixed(8)}`;
             
             if (bot.stats.consecutiveLosses > 0) {
                 logLine += ` [L:${bot.stats.consecutiveLosses}]`;
@@ -1130,7 +1051,6 @@
             }
             
             updateLogs(logLine);
-
             updateDashboard();
             updateLiveLogs();
 
@@ -1149,262 +1069,6 @@
     }
 
     // =============== UI FUNCTIONS ===============
-    function updateDashboard() {
-        const accountName = document.getElementById("account-name");
-        if (accountName) accountName.textContent = bot.stakeUser;
-        
-        const licenseStatus = document.getElementById("license-status");
-        if (licenseStatus) {
-            licenseStatus.textContent = CONFIG.license.isValid() ? "ACTIVE" : "EXPIRED";
-            licenseStatus.style.color = CONFIG.license.isValid() ? "#10b981" : "#ef4444";
-        }
-        
-        const currencyDisplay = document.getElementById("currency-display");
-        if (currencyDisplay) {
-            const currency = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
-            currencyDisplay.textContent = currency ? `${currency.icon} ${currency.name}` : bot.selectedCurrency.toUpperCase();
-        }
-        
-        const balanceEl = document.getElementById("balance");
-        if (balanceEl) {
-            if (bot.isDemo) {
-                balanceEl.textContent = bot.stats.currentBal.toFixed(8);
-                balanceEl.title = `Demo Balance`;
-            } else {
-                balanceEl.textContent = bot.realBalance.toFixed(8);
-                balanceEl.title = `Real Balance`;
-            }
-        }
-        
-        const profitEl = document.getElementById("profit");
-        if (profitEl) profitEl.textContent = bot.stats.profit.toFixed(8);
-        
-        const profitPercent = bot.stats.startBal > 0 ? (bot.stats.profit / bot.stats.startBal * 100) : 0;
-        const profitPercentEl = document.getElementById("profit-percent");
-        if (profitPercentEl) profitPercentEl.textContent = profitPercent.toFixed(2) + '%';
-        
-        const betsEl = document.getElementById("bets");
-        if (betsEl) betsEl.textContent = bot.stats.bets;
-        
-        const wageredEl = document.getElementById("wagered");
-        if (wageredEl) wageredEl.textContent = bot.stats.wagered.toFixed(8);
-        
-        const wageredPercentEl = document.getElementById("wagered-percent");
-        if (wageredPercentEl) wageredPercentEl.textContent = bot.stats.wageredPercent.toFixed(2) + '%';
-        
-        const winRateEl = document.getElementById("win-rate");
-        if (winRateEl) winRateEl.textContent = bot.stats.winRate.toFixed(2) + '%';
-        
-        const minBetEl = document.getElementById("min-bet");
-        if (minBetEl) minBetEl.textContent = bot.globalMinBet.toFixed(8);
-        
-        const avgBetEl = document.getElementById("avg-bet");
-        if (avgBetEl) avgBetEl.textContent = bot.stats.avgBetSize.toFixed(8);
-        
-        const modeIndicator = document.getElementById("mode-indicator");
-        if (modeIndicator) {
-            if (bot.wagerMode.active) {
-                let patternInfo = "";
-                if (bot.wagerMode.currentMode === 'dice') {
-                    patternInfo = `Dice ${bot.wagerMode.diceBetCount}/${bot.wagerMode.diceBetsPerCycle}`;
-                } else {
-                    patternInfo = `Limbo ${bot.wagerMode.limboBetCount}/${bot.wagerMode.limboBetsPerCycle}`;
-                }
-                modeIndicator.textContent = `WAGER (${patternInfo})`;
-                modeIndicator.style.color = "#10b981";
-            } else if (bot.recoveryMode.active) {
-                const stageFactor = bot.recoveryMode.recoveryStage === 1 ? 0.33 : 
-                                  bot.recoveryMode.recoveryStage === 2 ? 0.5 : 0.66;
-                modeIndicator.textContent = `RECOVERY Stage ${bot.recoveryMode.recoveryStage} (Factor: ${stageFactor}) | Wins: ${bot.recoveryMode.currentRecoveryWins}/${bot.recoveryMode.winsToBEP}`;
-                modeIndicator.style.color = "#f59e0b";
-            } else {
-                modeIndicator.textContent = "STOPPED";
-                modeIndicator.style.color = "#94a3b8";
-            }
-            
-            if (bot.isPaused) {
-                modeIndicator.textContent += " (PAUSED)";
-                modeIndicator.style.color = "#f59e0b";
-            }
-        }
-        
-        updateCurrencyDropdown();
-    }
-
-    function updateCurrencyDropdown() {
-        const currencySelect = document.getElementById("currency-select");
-        if (currencySelect && bot.availableCurrencies.length > 0) {
-            const currentValue = currencySelect.value;
-            
-            currencySelect.innerHTML = '';
-            
-            bot.availableCurrencies.forEach(currency => {
-                const option = document.createElement("option");
-                option.value = currency.code;
-                option.textContent = `${currency.icon} ${currency.name}`;
-                option.selected = currency.code === bot.selectedCurrency;
-                currencySelect.appendChild(option);
-            });
-            
-            if (currentValue) {
-                currencySelect.value = currentValue;
-            }
-        }
-    }
-
-    function updateLiveLogs() {
-        const logContainer = document.getElementById("live-log");
-        if (!logContainer) return;
-        
-        let html = "";
-        
-        if (bot.recoveryMode.active) {
-            const remainingWins = bot.recoveryMode.winsToBEP - bot.recoveryMode.currentRecoveryWins;
-            const recoveryProgress = (bot.recoveryMode.currentRecoveryWins / bot.recoveryMode.winsToBEP) * 100;
-            const stageName = getStageName(bot.recoveryMode.recoveryStage);
-            const stageColor = bot.recoveryMode.recoveryStage === 1 ? "#f59e0b" : 
-                             bot.recoveryMode.recoveryStage === 2 ? "#f97316" : "#dc2626";
-            const stageFactor = bot.recoveryMode.recoveryStage === 1 ? 0.33 : 
-                              bot.recoveryMode.recoveryStage === 2 ? 0.5 : 0.66;
-            
-            html += `
-                <div style="color:${stageColor};text-align:center;padding:8px;background:rgba(245,158,11,0.15);margin-bottom:8px;border-radius:6px;font-size:12px;font-weight:bold;border:1px solid rgba(245,158,11,0.3);">
-                    ⚡ ENHANCED RECOVERY - Stage ${bot.recoveryMode.recoveryStage}/3: ${stageName}
-                    <div style="font-size:11px;color:#fbbf24;margin-top:4px;">
-                        Factor: ${stageFactor} | Wins: ${bot.recoveryMode.currentRecoveryWins}/${bot.recoveryMode.winsToBEP} | 
-                        Progress: ${recoveryProgress.toFixed(1)}% | Remaining: ${remainingWins} win(s) to BEP
-                    </div>
-                </div>`;
-        } else if (bot.wagerMode.active) {
-            html += `
-                <div style="color:#10b981;text-align:center;padding:8px;background:rgba(16,185,129,0.15);margin-bottom:8px;border-radius:6px;font-size:12px;font-weight:bold;border:1px solid rgba(16,185,129,0.3);">
-                    🎯 ORION ${bot.wagerMode.currentMode.toUpperCase()} MODE
-                    <div style="font-size:11px;color:#34d399;margin-top:4px;">
-                        Stop Loss: ${bot.wagerMode.stopLossPercent}% | 
-                        Dice: ${bot.wagerMode.diceBetPercent}% @ ${bot.wagerMode.diceChance}% | 
-                        Limbo: ${bot.wagerMode.limboBetPercent}% @ ${bot.wagerMode.limboMultiplier}x
-                    </div>
-                </div>`;
-        }
-        
-        if (bot.stats.lastResults.length === 0) {
-            html += '<div style="color: #94a3b8; text-align: center; padding: 15px; font-size: 12px;">No bets yet</div>';
-        } else {
-            bot.stats.lastResults.forEach(result => {
-                let color = result.win ? "#10b981" : "#ef4444";
-                let bgColor = result.win ? "rgba(16,185,129,0.1)" : "rgba(239,68,68,0.1)";
-                
-                if (bot.recoveryMode.active) {
-                    color = result.win ? "#22c55e" : "#f97316";
-                    bgColor = result.win ? "rgba(34,197,94,0.1)" : "rgba(249,115,22,0.1)";
-                }
-                
-                const winLoss = result.win ? "WIN" : "LOSS";
-                const modeIcon = result.mode === 'dice' ? '🎲' : '📈';
-                
-                const betPercent = bot.stats.currentBal > 0 ? (result.betAmount / bot.stats.currentBal * 100) : 0;
-                
-                html += `
-                    <div class="log-entry" style="color: ${color}; background: ${bgColor}; padding: 10px; margin-bottom: 8px; border-radius: 6px; font-size: 13px; border-left: 4px solid ${color};">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <div style="font-size: 11px; color: #94a3b8;">${result.time}</div>
-                            <div style="font-weight: bold; color: ${color}; font-size: 12px;">${winLoss}</div>
-                        </div>
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px;">
-                            <div>
-                                <span>${modeIcon} ${result.betAmount.toFixed(8)}</span>
-                                <span style="font-size: 11px; color: #94a3b8; margin-left: 6px;">(${betPercent.toFixed(2)}%)</span>
-                            </div>
-                            <div style="color: ${result.profit > 0 ? '#10b981' : '#ef4444'}; font-weight: bold; font-size: 12px;">
-                                ${result.profit > 0 ? '+' : ''}${result.profit.toFixed(8)}
-                            </div>
-                        </div>
-                        ${bot.recoveryMode.active ? 
-                            `<div style="font-size: 11px; color: #f59e0b; text-align: center; margin-top: 6px; padding: 4px; background: rgba(245,158,11,0.1); border-radius: 4px;">
-                                Stage ${bot.recoveryMode.recoveryStage}: ${bot.recoveryMode.currentRecoveryWins}/${bot.recoveryMode.winsToBEP} wins
-                            </div>` : ''}
-                    </div>
-                `;
-            });
-        }
-        
-        logContainer.innerHTML = html;
-    }
-
-    function updateLogs(customMsg, isSystem = false) {
-        const logBox = document.getElementById("p-logs");
-        if (!logBox) return;
-
-        const entry = document.createElement("div");
-        entry.className = "log-entry";
-
-        if (isSystem) {
-            entry.style.color = "#f59e0b";
-            entry.style.fontWeight = "bold";
-        }
-
-        entry.innerHTML = customMsg;
-        logBox.prepend(entry);
-        
-        if (logBox.children.length > 50) {
-            logBox.removeChild(logBox.lastChild);
-        }
-    }
-
-    function updateUI() {
-        updateCurrencyDropdown();
-        
-        const minBetInput = document.getElementById("min-bet-input");
-        if (minBetInput) {
-            minBetInput.value = bot.globalMinBet;
-            const currencyInfo = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
-            const unitEl = minBetInput.nextElementSibling;
-            if (unitEl && unitEl.classList.contains('unit')) {
-                unitEl.textContent = currencyInfo ? currencyInfo.name : bot.selectedCurrency.toUpperCase();
-            }
-        }
-        
-        const diceBetPercentInput = document.getElementById("dice-bet-percent");
-        if (diceBetPercentInput) diceBetPercentInput.value = bot.wagerMode.diceBetPercent;
-        
-        const diceChanceInput = document.getElementById("dice-chance");
-        if (diceChanceInput) diceChanceInput.value = bot.wagerMode.diceChance;
-        
-        const limboBetPercentInput = document.getElementById("limbo-bet-percent");
-        if (limboBetPercentInput) limboBetPercentInput.value = bot.wagerMode.limboBetPercent;
-        
-        const limboMultiplierInput = document.getElementById("limbo-multiplier");
-        if (limboMultiplierInput) limboMultiplierInput.value = bot.wagerMode.limboMultiplier;
-        
-        const wagerStopLoss = document.getElementById("wager-stop-loss");
-        if (wagerStopLoss) wagerStopLoss.value = bot.wagerMode.stopLossPercent;
-        
-        const recoveryChance = document.getElementById("recovery-chance");
-        if (recoveryChance) recoveryChance.value = bot.recoveryMode.chance;
-        
-        const betMultiplier = document.getElementById("bet-multiplier");
-        if (betMultiplier) betMultiplier.value = bot.recoveryMode.betMultiplier;
-        
-        const maxBetPercent = document.getElementById("max-bet-percent");
-        if (maxBetPercent) maxBetPercent.value = bot.recoveryMode.maxBetPercent;
-        
-        const aggLosses = document.getElementById("agg-losses");
-        if (aggLosses) aggLosses.value = bot.recoveryMode.consecutiveLossesForAggressive;
-        
-        const winsToBEP = document.getElementById("wins-to-bep");
-        if (winsToBEP) winsToBEP.value = bot.recoveryMode.winsToBEP;
-        
-        const diceBets = document.getElementById("dice-bets");
-        if (diceBets) diceBets.value = bot.wagerMode.diceBetsPerCycle;
-        
-        const limboBets = document.getElementById("limbo-bets");
-        if (limboBets) limboBets.value = bot.wagerMode.limboBetsPerCycle;
-        
-        updateDashboard();
-        updateLiveLogs();
-    }
-
-    // =============== UI CREATION ===============
     function createUI() {
         if (document.getElementById("orion-wrap")) return;
 
@@ -1509,12 +1173,58 @@
                 transform: translateY(-1px);
             }
             
+            .tab-nav {
+                display: flex;
+                background: rgba(30, 41, 59, 0.8);
+                border-bottom: 1px solid rgba(59, 130, 246, 0.3);
+                padding: 0 10px;
+                flex-wrap: wrap;
+            }
+            
+            .tab-btn {
+                flex: 1;
+                min-width: 80px;
+                padding: 12px 8px;
+                background: transparent;
+                border: none;
+                color: #94a3b8;
+                font-size: 12px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.3s;
+                border-bottom: 3px solid transparent;
+                text-align: center;
+                white-space: nowrap;
+            }
+            
+            .tab-btn:hover {
+                color: #3b82f6;
+                background: rgba(59, 130, 246, 0.1);
+            }
+            
+            .tab-btn.active {
+                color: #3b82f6;
+                border-bottom: 3px solid #3b82f6;
+                background: rgba(59, 130, 246, 0.15);
+            }
+            
             .content {
-                padding: 16px;
+                padding: 0;
                 overflow-y: auto;
                 flex: 1;
                 -webkit-overflow-scrolling: touch;
                 background: rgba(15, 23, 42, 0.3);
+            }
+            
+            .tab-pane {
+                display: none;
+                padding: 16px;
+                overflow-y: auto;
+                height: calc(100% - 49px);
+            }
+            
+            .tab-pane.active {
+                display: block;
             }
             
             .demo-toggle {
@@ -1634,12 +1344,6 @@
                 box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
             }
             
-            .currency-dropdown option {
-                background: rgba(15, 23, 42, 0.95);
-                color: white;
-                padding: 10px;
-            }
-            
             .min-bet-input {
                 display: flex;
                 align-items: center;
@@ -1719,10 +1423,6 @@
                 font-family: 'Courier New', monospace;
                 word-break: break-all;
                 line-height: 1.3;
-            }
-            
-            .stat-value.small {
-                font-size: 12px;
             }
             
             .mode-indicator {
@@ -1834,18 +1534,52 @@
                 color: white;
             }
             
-            .live-log {
+            .live-log-container {
+                height: 380px;
+                overflow-y: auto;
                 background: rgba(15, 23, 42, 0.9);
                 border-radius: 10px;
-                padding: 14px;
-                height: 180px;
-                overflow-y: auto;
+                padding: 12px;
+                border: 1px solid rgba(59, 130, 246, 0.2);
                 font-family: 'Courier New', monospace;
                 font-size: 12px;
-                border: 1px solid rgba(59, 130, 246, 0.2);
             }
             
-            /* Mobile optimizations */
+            .log-entry {
+                padding: 10px;
+                margin-bottom: 8px;
+                border-radius: 6px;
+                font-size: 13px;
+                border-left: 4px solid;
+                background: rgba(255, 255, 255, 0.05);
+            }
+            
+            .summary-grid {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 10px;
+                margin-top: 12px;
+            }
+            
+            .summary-item {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 8px;
+                background: rgba(255, 255, 255, 0.05);
+                border-radius: 6px;
+                font-size: 12px;
+            }
+            
+            .summary-item span:first-child {
+                color: #94a3b8;
+            }
+            
+            .summary-item span:last-child {
+                color: #3b82f6;
+                font-weight: bold;
+            }
+            
             @media (max-width: 480px) {
                 #orion-wrap {
                     width: 95vw;
@@ -1871,8 +1605,18 @@
                     align-self: flex-end;
                 }
                 
-                .content {
+                .tab-btn {
+                    min-width: 60px;
+                    font-size: 11px;
+                    padding: 10px 6px;
+                }
+                
+                .tab-pane {
                     padding: 12px;
+                }
+                
+                .live-log-container {
+                    height: 300px;
                 }
                 
                 .stats-grid {
@@ -1919,7 +1663,6 @@
                 }
             }
             
-            /* Touch-friendly scrollbar */
             ::-webkit-scrollbar {
                 width: 8px;
                 height: 8px;
@@ -1939,7 +1682,6 @@
                 background: rgba(59, 130, 246, 0.7);
             }
             
-            /* Hide number input spinners */
             input[type=number]::-webkit-inner-spin-button,
             input[type=number]::-webkit-outer-spin-button {
                 -webkit-appearance: none;
@@ -1950,21 +1692,18 @@
                 -moz-appearance: textfield;
             }
             
-            /* Better touch targets */
             select, input, button {
                 touch-action: manipulation;
             }
             
-            /* Prevent text selection on buttons */
             .main-btn, .control-btn {
                 user-select: none;
                 -webkit-user-select: none;
             }
             
-            /* Responsive adjustments */
             @media (max-height: 700px) {
-                .live-log {
-                    height: 150px;
+                .live-log-container {
+                    height: 250px;
                 }
                 
                 .settings-section {
@@ -1974,8 +1713,8 @@
             }
             
             @media (max-height: 600px) {
-                .live-log {
-                    height: 120px;
+                .live-log-container {
+                    height: 200px;
                 }
                 
                 .stats-grid {
@@ -1996,7 +1735,7 @@
             <div class="orion-header">
                 <div class="header-left">
                     <div class="app-title">🚀 ORION WAGER BOT</div>
-                    <div class="app-subtitle">Enhanced Recovery System v2.3</div>
+                    <div class="app-subtitle">Smart Recovery Logic (SRL) v2.3</div>
                     <div class="header-info">
                         <span id="account-name">${bot.stakeUser}</span>
                         <span id="license-status">${CONFIG.license.isValid() ? "ACTIVE" : "EXPIRED"}</span>
@@ -2010,174 +1749,223 @@
                 </div>
             </div>
             
+            <!-- Tab Navigation -->
+            <div class="tab-nav">
+                <button class="tab-btn active" data-tab="dashboard">📊 Dashboard</button>
+                <button class="tab-btn" data-tab="live-log">📈 Live Log</button>
+                <button class="tab-btn" data-tab="settings">⚙️ Settings</button>
+            </div>
+            
             <div class="content">
-                <!-- Demo Mode Toggle -->
-                <div class="demo-toggle">
-                    <label class="switch">
-                        <input type="checkbox" id="demo-toggle">
-                        <span class="slider"></span>
-                    </label>
-                    <span id="demo-label" class="demo-label ${bot.isDemo ? 'active' : ''}">
-                        ${bot.isDemo ? '🔄 DEMO MODE' : '💰 REAL MODE'}
-                    </span>
-                </div>
-                
-                <!-- Currency Selector -->
-                <div class="currency-selector">
-                    <div class="currency-row">
-                        <span class="currency-label">🌐 Currency</span>
-                        <select id="currency-select" class="currency-dropdown">
-                            <option value="loading">Loading currencies...</option>
-                        </select>
+                <!-- Dashboard Tab -->
+                <div class="tab-pane active" id="dashboard">
+                    <!-- Demo Mode Toggle -->
+                    <div class="demo-toggle">
+                        <label class="switch">
+                            <input type="checkbox" id="demo-toggle">
+                            <span class="slider"></span>
+                        </label>
+                        <span id="demo-label" class="demo-label ${bot.isDemo ? 'active' : ''}">
+                            ${bot.isDemo ? '🔄 DEMO MODE' : '💰 REAL MODE'}
+                        </span>
                     </div>
-                    <div class="currency-row">
-                        <span class="currency-label">⚡ Min Bet</span>
-                        <div class="min-bet-input">
-                            <input type="number" id="min-bet-input" class="input-field" value="${bot.globalMinBet}" step="0.00000001" min="0.00000001">
-                            <span class="unit" id="min-bet-unit">DOGE</span>
+                    
+                    <!-- Currency Selector -->
+                    <div class="currency-selector">
+                        <div class="currency-row">
+                            <span class="currency-label">🌐 Currency</span>
+                            <select id="currency-select" class="currency-dropdown">
+                                <option value="loading">Loading currencies...</option>
+                            </select>
+                        </div>
+                        <div class="currency-row">
+                            <span class="currency-label">⚡ Min Bet</span>
+                            <div class="min-bet-input">
+                                <input type="number" id="min-bet-input" class="input-field" value="${bot.globalMinBet}" step="0.00000001" min="0.00000001">
+                                <span class="unit" id="min-bet-unit">DOGE</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Stats Grid -->
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-label">Balance</div>
+                            <div class="stat-value" id="balance">0.00000000</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Profit</div>
+                            <div class="stat-value" id="profit">0.00000000</div>
+                            <div class="stat-label" id="profit-percent">0.00%</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Wagered</div>
+                            <div class="stat-value" id="wagered">0.00000000</div>
+                            <div class="stat-label" id="wagered-percent">0.00%</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Win Rate</div>
+                            <div class="stat-value" id="win-rate">0.00%</div>
+                        </div>
+                    </div>
+                    
+                    <!-- Mode Indicator -->
+                    <div class="mode-indicator" id="mode-indicator">
+                        <span class="orion-star">✦</span> ORION SRL: <span id="mode-text">STOPPED</span> <span class="orion-star">✦</span>
+                    </div>
+                    
+                    <!-- Control Buttons -->
+                    <div class="control-buttons">
+                        <button id="p-start" class="main-btn btn-start">▶ START</button>
+                        <button id="p-pause" class="main-btn btn-pause">⏸ PAUSE</button>
+                        <button id="p-stop" class="main-btn btn-stop">⏹ STOP</button>
+                    </div>
+                    
+                    <!-- Current Settings Summary -->
+                    <div class="settings-section">
+                        <div class="section-title">Current Settings</div>
+                        <div class="summary-grid">
+                            <div class="summary-item">
+                                <span>Wins to BEP:</span>
+                                <span id="current-wins-bep">3</span>
+                            </div>
+                            <div class="summary-item">
+                                <span>Multiplier:</span>
+                                <span id="current-multiplier">1.5x</span>
+                            </div>
+                            <div class="summary-item">
+                                <span>Chance:</span>
+                                <span id="current-chance">49.5%</span>
+                            </div>
+                            <div class="summary-item">
+                                <span>Mode:</span>
+                                <span id="current-mode">Wager</span>
+                            </div>
                         </div>
                     </div>
                 </div>
                 
-                <!-- Stats Grid -->
-                <div class="stats-grid">
-                    <div class="stat-card">
-                        <div class="stat-label">Balance</div>
-                        <div class="stat-value" id="balance">0.00000000</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-label">Profit</div>
-                        <div class="stat-value" id="profit">0.00000000</div>
-                        <div class="stat-label" id="profit-percent">0.00%</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-label">Wagered</div>
-                        <div class="stat-value small" id="wagered">0.00000000</div>
-                        <div class="stat-label" id="wagered-percent">0.00%</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-label">Win Rate</div>
-                        <div class="stat-value small" id="win-rate">0.00%</div>
-                    </div>
-                </div>
-                
-                <!-- Mode Indicator -->
-                <div class="mode-indicator" id="mode-indicator">
-                    <span class="orion-star">✦</span> ORION SYSTEM: <span id="mode-text">STOPPED</span> <span class="orion-star">✦</span>
-                </div>
-                
-                <!-- Wager Settings -->
-                <div class="settings-section">
-                    <div class="section-title">🎲 Dice Settings</div>
-                    <div class="input-row">
-                        <span class="input-label">Base Bet %</span>
-                        <div class="input-wrapper">
-                            <input type="number" id="dice-bet-percent" class="input-field" value="${bot.wagerMode.diceBetPercent}" step="0.1" min="0.1" max="20">
-                            <span class="unit">%</span>
-                        </div>
-                    </div>
-                    <div class="input-row">
-                        <span class="input-label">Chance %</span>
-                        <div class="input-wrapper">
-                            <input type="number" id="dice-chance" class="input-field" value="${bot.wagerMode.diceChance}" step="0.01" min="1" max="99.99">
-                            <span class="unit">%</span>
-                        </div>
-                    </div>
-                    <div class="input-row">
-                        <span class="input-label">Bets per Cycle</span>
-                        <div class="input-wrapper">
-                            <input type="number" id="dice-bets" class="input-field" value="${bot.wagerMode.diceBetsPerCycle}" step="1" min="1" max="100">
+                <!-- Live Log Tab -->
+                <div class="tab-pane" id="live-log">
+                    <div class="section-title">📈 ORION LIVE LOG</div>
+                    <div class="live-log-container" id="live-log-container">
+                        <div style="color: #94a3b8; text-align: center; padding: 20px; font-size: 12px;">
+                            <div style="margin-bottom: 10px; color: #3b82f6; font-weight: bold;">🚀 ORION SRL SYSTEM ACTIVE</div>
+                            <div style="font-size: 11px;">Smart 3-Stage Recovery with Auto Multiplier</div>
                         </div>
                     </div>
                 </div>
                 
-                <div class="settings-section">
-                    <div class="section-title">📈 Limbo Settings</div>
-                    <div class="input-row">
-                        <span class="input-label">Base Bet %</span>
-                        <div class="input-wrapper">
-                            <input type="number" id="limbo-bet-percent" class="input-field" value="${bot.wagerMode.limboBetPercent}" step="0.1" min="0.1" max="20">
-                            <span class="unit">%</span>
+                <!-- Settings Tab -->
+                <div class="tab-pane" id="settings">
+                    <div class="settings-section">
+                        <div class="section-title">🎲 Dice Settings</div>
+                        <div class="input-row">
+                            <span class="input-label">Base Bet %</span>
+                            <div class="input-wrapper">
+                                <input type="number" id="dice-bet-percent" class="input-field" value="${bot.wagerMode.diceBetPercent}" step="0.1" min="0.1" max="20">
+                                <span class="unit">%</span>
+                            </div>
+                        </div>
+                        <div class="input-row">
+                            <span class="input-label">Chance %</span>
+                            <div class="input-wrapper">
+                                <input type="number" id="dice-chance" class="input-field" value="${bot.wagerMode.diceChance}" step="0.01" min="1" max="99.99">
+                                <span class="unit">%</span>
+                            </div>
+                        </div>
+                        <div class="input-row">
+                            <span class="input-label">Bets per Cycle</span>
+                            <div class="input-wrapper">
+                                <input type="number" id="dice-bets" class="input-field" value="${bot.wagerMode.diceBetsPerCycle}" step="1" min="1" max="100">
+                            </div>
                         </div>
                     </div>
-                    <div class="input-row">
-                        <span class="input-label">Multiplier</span>
-                        <div class="input-wrapper">
-                            <input type="number" id="limbo-multiplier" class="input-field" value="${bot.wagerMode.limboMultiplier}" step="0.001" min="1.001" max="1000">
-                            <span class="unit">x</span>
+                    
+                    <div class="settings-section">
+                        <div class="section-title">📈 Limbo Settings (1.0001x)</div>
+                        <div class="input-row">
+                            <span class="input-label">Base Bet %</span>
+                            <div class="input-wrapper">
+                                <input type="number" id="limbo-bet-percent" class="input-field" value="${bot.wagerMode.limboBetPercent}" step="0.1" min="0.1" max="20">
+                                <span class="unit">%</span>
+                            </div>
+                        </div>
+                        <div class="input-row">
+                            <span class="input-label">Multiplier</span>
+                            <div class="input-wrapper">
+                                <input type="number" id="limbo-multiplier" class="input-field" value="1.0001" step="0.0001" min="1.0001" max="1000" readonly>
+                                <span class="unit">x</span>
+                            </div>
+                        </div>
+                        <div class="input-row">
+                            <span class="input-label">Bets per Cycle</span>
+                            <div class="input-wrapper">
+                                <input type="number" id="limbo-bets" class="input-field" value="${bot.wagerMode.limboBetsPerCycle}" step="1" min="1" max="100">
+                            </div>
                         </div>
                     </div>
-                    <div class="input-row">
-                        <span class="input-label">Bets per Cycle</span>
-                        <div class="input-wrapper">
-                            <input type="number" id="limbo-bets" class="input-field" value="${bot.wagerMode.limboBetsPerCycle}" step="1" min="1" max="100">
+                    
+                    <div class="settings-section">
+                        <div class="section-title">⚠️ Stop Loss</div>
+                        <div class="input-row">
+                            <span class="input-label">Stop Loss %</span>
+                            <div class="input-wrapper">
+                                <input type="number" id="wager-stop-loss" class="input-field" value="${bot.wagerMode.stopLossPercent}" step="0.1" min="0.1" max="10">
+                                <span class="unit">%</span>
+                            </div>
                         </div>
                     </div>
-                </div>
-                
-                <div class="settings-section">
-                    <div class="section-title">⚠️ Stop Loss</div>
-                    <div class="input-row">
-                        <span class="input-label">Stop Loss %</span>
-                        <div class="input-wrapper">
-                            <input type="number" id="wager-stop-loss" class="input-field" value="${bot.wagerMode.stopLossPercent}" step="0.1" min="0.1" max="10">
-                            <span class="unit">%</span>
+                    
+                    <div class="settings-section">
+                        <div class="section-title">⚡ SRL Recovery System</div>
+                        <div class="input-row">
+                            <span class="input-label">Recovery Chance</span>
+                            <div class="input-wrapper">
+                                <input type="number" id="recovery-chance" class="input-field" value="${bot.recoveryMode.chance}" step="0.1" min="1" max="99.5">
+                                <span class="unit">%</span>
+                            </div>
                         </div>
-                    </div>
-                </div>
-                
-                <div class="settings-section">
-                    <div class="section-title">⚡ Recovery System (3-Stage)</div>
-                    <div class="input-row">
-                        <span class="input-label">Recovery Chance</span>
-                        <div class="input-wrapper">
-                            <input type="number" id="recovery-chance" class="input-field" value="${bot.recoveryMode.chance}" step="0.1" min="1" max="99.5">
-                            <span class="unit">%</span>
+                        <div class="input-row">
+                            <span class="input-label">Wins to BEP</span>
+                            <div class="input-wrapper">
+                                <input type="number" id="wins-to-bep" class="input-field" value="${bot.recoveryMode.winsToBEP}" step="1" min="1" max="10">
+                                <span class="unit">wins</span>
+                            </div>
                         </div>
-                    </div>
-                    <div class="input-row">
-                        <span class="input-label">Wins to BEP</span>
-                        <div class="input-wrapper">
-                            <input type="number" id="wins-to-bep" class="input-field" value="${bot.recoveryMode.winsToBEP}" step="1" min="1" max="10">
-                            <span class="unit">wins</span>
+                        <div class="input-row">
+                            <span class="input-label">Auto Multiplier</span>
+                            <div class="input-wrapper">
+                                <label class="switch">
+                                    <input type="checkbox" id="auto-multiplier-toggle" checked>
+                                    <span class="slider"></span>
+                                </label>
+                                <span style="font-size: 12px; color: #94a3b8; margin-left: 8px;">
+                                    Smart calculation
+                                </span>
+                            </div>
                         </div>
-                    </div>
-                    <div class="input-row">
-                        <span class="input-label">Bet Multiplier</span>
-                        <div class="input-wrapper">
-                            <input type="number" id="bet-multiplier" class="input-field" value="${bot.recoveryMode.betMultiplier}" step="0.1" min="1" max="10">
-                            <span class="unit">x</span>
+                        <div class="input-row" id="manual-multiplier-row" style="display: none;">
+                            <span class="input-label">Manual Multiplier</span>
+                            <div class="input-wrapper">
+                                <input type="number" id="bet-multiplier" class="input-field" value="${bot.recoveryMode.betMultiplier}" step="0.1" min="0.1" max="10">
+                                <span class="unit">x</span>
+                            </div>
                         </div>
-                    </div>
-                    <div class="input-row">
-                        <span class="input-label">Max Bet %</span>
-                        <div class="input-wrapper">
-                            <input type="number" id="max-bet-percent" class="input-field" value="${bot.recoveryMode.maxBetPercent}" step="1" min="10" max="90">
-                            <span class="unit">%</span>
+                        <div class="input-row">
+                            <span class="input-label">Max Bet %</span>
+                            <div class="input-wrapper">
+                                <input type="number" id="max-bet-percent" class="input-field" value="${bot.recoveryMode.maxBetPercent}" step="1" min="10" max="90">
+                                <span class="unit">%</span>
+                            </div>
                         </div>
-                    </div>
-                    <div class="input-row">
-                        <span class="input-label">Aggressive After</span>
-                        <div class="input-wrapper">
-                            <input type="number" id="agg-losses" class="input-field" value="${bot.recoveryMode.consecutiveLossesForAggressive}" step="1" min="1" max="20">
-                            <span class="unit">losses</span>
+                        <div class="input-row">
+                            <span class="input-label">Aggressive After</span>
+                            <div class="input-wrapper">
+                                <input type="number" id="agg-losses" class="input-field" value="${bot.recoveryMode.consecutiveLossesForAggressive}" step="1" min="1" max="20">
+                                <span class="unit">losses</span>
+                            </div>
                         </div>
-                    </div>
-                </div>
-                
-                <!-- Control Buttons -->
-                <div class="control-buttons">
-                    <button id="p-start" class="main-btn btn-start">▶ START</button>
-                    <button id="p-pause" class="main-btn btn-pause">⏸ PAUSE</button>
-                    <button id="p-stop" class="main-btn btn-stop">⏹ STOP</button>
-                </div>
-                
-                <!-- Live Log -->
-                <div class="section-title" style="margin-top: 15px; margin-bottom: 8px;">📊 ORION LIVE LOG</div>
-                <div class="live-log" id="live-log">
-                    <div style="color: #94a3b8; text-align: center; padding: 20px; font-size: 12px;">
-                        <div style="margin-bottom: 10px; color: #3b82f6; font-weight: bold;">🚀 ORION WAGER BOT READY</div>
-                        <div style="font-size: 11px;">Enhanced 3-Stage Recovery System Active</div>
                     </div>
                 </div>
             </div>
@@ -2239,7 +2027,7 @@
         const syncBtn = document.querySelector('.control-btn.sync');
         if (syncBtn) {
             syncBtn.addEventListener('click', async () => {
-                updateLogs("🔍 ORION: Syncing account and currencies...", true);
+                updateLogs("🔍 ORION: Syncing account...", true);
                 await API.syncOnce();
                 updateDashboard();
                 updateLogs("✅ ORION: Sync complete!", true);
@@ -2253,7 +2041,7 @@
                 const content = document.querySelector('.content');
                 const wrap = document.getElementById('orion-wrap');
                 if (content.style.display === 'none') {
-                    content.style.display = 'block';
+                    content.style.display = 'flex';
                     minimizeBtn.textContent = '_';
                     wrap.style.width = '420px';
                 } else {
@@ -2278,16 +2066,48 @@
             });
         }
 
+        // Tab switching
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+                
+                btn.classList.add('active');
+                const tabId = btn.getAttribute('data-tab');
+                document.getElementById(tabId).classList.add('active');
+            });
+        });
+
+        // Auto multiplier toggle
+        const autoMultiplierToggle = document.getElementById('auto-multiplier-toggle');
+        const manualMultiplierRow = document.getElementById('manual-multiplier-row');
+        
+        if (autoMultiplierToggle) {
+            autoMultiplierToggle.checked = bot.recoveryMode.autoMultiplier;
+            autoMultiplierToggle.addEventListener('change', function() {
+                bot.recoveryMode.autoMultiplier = this.checked;
+                if (this.checked) {
+                    manualMultiplierRow.style.display = 'none';
+                    // Calculate auto multiplier
+                    const autoMultiplier = calculateAutoBetMultiplier(bot.recoveryMode.winsToBEP, bot.recoveryMode.recoveryStage);
+                    bot.recoveryMode.betMultiplier = autoMultiplier;
+                    updateLogs(`⚡ SRL: Auto Multiplier = ${autoMultiplier.toFixed(2)}x`, true);
+                } else {
+                    manualMultiplierRow.style.display = 'flex';
+                    updateLogs(`⚡ SRL: Manual Multiplier mode`, true);
+                }
+                updateUI();
+            });
+        }
+
         // Input listeners
         const inputs = [
             { id: 'dice-bet-percent', property: 'wagerMode.diceBetPercent', min: 0.1, max: 20 },
             { id: 'dice-chance', property: 'wagerMode.diceChance', min: 1, max: 99.99 },
             { id: 'limbo-bet-percent', property: 'wagerMode.limboBetPercent', min: 0.1, max: 20 },
-            { id: 'limbo-multiplier', property: 'wagerMode.limboMultiplier', min: 1.001 },
             { id: 'wager-stop-loss', property: 'wagerMode.stopLossPercent', min: 0.1, max: 10 },
             { id: 'recovery-chance', property: 'recoveryMode.chance', min: 1, max: 99.5 },
-            { id: 'wins-to-bep', property: 'recoveryMode.winsToBEP', min: 1, max: 10 },
-            { id: 'bet-multiplier', property: 'recoveryMode.betMultiplier', min: 1, max: 10 },
+            { id: 'bet-multiplier', property: 'recoveryMode.betMultiplier', min: 0.1, max: 10 },
             { id: 'max-bet-percent', property: 'recoveryMode.maxBetPercent', min: 10, max: 90 },
             { id: 'agg-losses', property: 'recoveryMode.consecutiveLossesForAggressive', min: 1, max: 20 },
             { id: 'dice-bets', property: 'wagerMode.diceBetsPerCycle', min: 1 },
@@ -2307,15 +2127,50 @@
                             } else {
                                 bot[input.property] = value;
                             }
-                            updateLogs(`⚙️ ${input.id.replace(/-/g, ' ')}: ${value}`, true);
+                            
+                            // Special handling for wins-to-bep
+                            if (input.id === 'wins-to-bep' && bot.recoveryMode.autoMultiplier) {
+                                const autoMultiplier = calculateAutoBetMultiplier(value, bot.recoveryMode.recoveryStage);
+                                bot.recoveryMode.betMultiplier = autoMultiplier;
+                                const multiplierInput = document.getElementById('bet-multiplier');
+                                if (multiplierInput) multiplierInput.value = autoMultiplier.toFixed(2);
+                            }
+                            
                             updateUI();
                         } else {
-                            e.target.value = bot[input.property.split('.')[0]][input.property.split('.')[1]];
+                            const props = input.property.split('.');
+                            e.target.value = props.length === 2 ? bot[props[0]][props[1]] : bot[input.property];
                         }
                     }
                 });
             }
         });
+
+        // Wins to BEP special handling
+        const winsToBEPInput = document.getElementById('wins-to-bep');
+        if (winsToBEPInput) {
+            winsToBEPInput.addEventListener('change', function() {
+                const value = parseInt(this.value);
+                if (!isNaN(value) && value >= 1 && value <= 10) {
+                    bot.recoveryMode.winsToBEP = value;
+                    
+                    // Auto update multiplier jika auto mode
+                    if (bot.recoveryMode.autoMultiplier) {
+                        const autoMultiplier = calculateAutoBetMultiplier(value, bot.recoveryMode.recoveryStage);
+                        bot.recoveryMode.betMultiplier = autoMultiplier;
+                        
+                        const multiplierInput = document.getElementById('bet-multiplier');
+                        if (multiplierInput) {
+                            multiplierInput.value = autoMultiplier.toFixed(2);
+                        }
+                        
+                        updateLogs(`⚡ SRL: Wins to BEP = ${value} → Auto Multiplier = ${autoMultiplier.toFixed(2)}x`, true);
+                    }
+                    
+                    updateUI();
+                }
+            });
+        }
 
         // Start Button
         const pStart = document.getElementById("p-start");
@@ -2416,8 +2271,7 @@
                 }
 
                 updateUI();
-                updateLogs(`🚀 ORION BOT STARTED! (${bot.isDemo ? 'Demo' : 'Real'} mode)`, true);
-                updateLogs(`🎯 Enhanced 3-Stage Recovery System Activated`, true);
+                updateLogs(`🚀 ORION SRL BOT STARTED! (${bot.isDemo ? 'Demo' : 'Real'} mode)`, true);
 
                 setTimeout(() => {
                     runLoop();
@@ -2477,6 +2331,219 @@
                 document.getElementById('p-pause').click();
             }
         });
+    }
+
+    function updateDashboard() {
+        const accountName = document.getElementById("account-name");
+        if (accountName) accountName.textContent = bot.stakeUser;
+        
+        const licenseStatus = document.getElementById("license-status");
+        if (licenseStatus) {
+            licenseStatus.textContent = CONFIG.license.isValid() ? "ACTIVE" : "EXPIRED";
+            licenseStatus.style.color = CONFIG.license.isValid() ? "#10b981" : "#ef4444";
+        }
+        
+        const currencyDisplay = document.getElementById("currency-display");
+        if (currencyDisplay) {
+            const currency = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
+            currencyDisplay.textContent = currency ? `${currency.icon} ${currency.name}` : bot.selectedCurrency.toUpperCase();
+        }
+        
+        const balanceEl = document.getElementById("balance");
+        if (balanceEl) {
+            if (bot.isDemo) {
+                balanceEl.textContent = bot.stats.currentBal.toFixed(8);
+            } else {
+                balanceEl.textContent = bot.realBalance.toFixed(8);
+            }
+        }
+        
+        const profitEl = document.getElementById("profit");
+        if (profitEl) profitEl.textContent = bot.stats.profit.toFixed(8);
+        
+        const profitPercent = bot.stats.startBal > 0 ? (bot.stats.profit / bot.stats.startBal * 100) : 0;
+        const profitPercentEl = document.getElementById("profit-percent");
+        if (profitPercentEl) profitPercentEl.textContent = profitPercent.toFixed(2) + '%';
+        
+        const wageredEl = document.getElementById("wagered");
+        if (wageredEl) wageredEl.textContent = bot.stats.wagered.toFixed(8);
+        
+        const wageredPercentEl = document.getElementById("wagered-percent");
+        if (wageredPercentEl) wageredPercentEl.textContent = bot.stats.wageredPercent.toFixed(2) + '%';
+        
+        const winRateEl = document.getElementById("win-rate");
+        if (winRateEl) winRateEl.textContent = bot.stats.winRate.toFixed(2) + '%';
+        
+        const minBetUnit = document.getElementById("min-bet-unit");
+        if (minBetUnit) {
+            const currencyInfo = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
+            minBetUnit.textContent = currencyInfo ? currencyInfo.name : bot.selectedCurrency.toUpperCase();
+        }
+        
+        const currentWinsBep = document.getElementById("current-wins-bep");
+        if (currentWinsBep) currentWinsBep.textContent = bot.recoveryMode.winsToBEP;
+        
+        const currentMultiplier = document.getElementById("current-multiplier");
+        if (currentMultiplier) currentMultiplier.textContent = bot.recoveryMode.betMultiplier.toFixed(2) + 'x';
+        
+        const currentChance = document.getElementById("current-chance");
+        if (currentChance) currentChance.textContent = bot.recoveryMode.chance + '%';
+        
+        const currentMode = document.getElementById("current-mode");
+        if (currentMode) {
+            currentMode.textContent = bot.wagerMode.active ? 'WAGER' : 'RECOVERY';
+            currentMode.style.color = bot.wagerMode.active ? '#10b981' : '#f59e0b';
+        }
+        
+        const modeIndicator = document.getElementById("mode-indicator");
+        const modeText = document.getElementById("mode-text");
+        if (modeIndicator && modeText) {
+            if (bot.wagerMode.active) {
+                modeText.textContent = "WAGER MODE";
+                modeIndicator.style.color = "#10b981";
+            } else if (bot.recoveryMode.active) {
+                modeText.textContent = `SRL STAGE ${bot.recoveryMode.recoveryStage}`;
+                modeIndicator.style.color = "#f59e0b";
+            } else {
+                modeText.textContent = "STOPPED";
+                modeIndicator.style.color = "#94a3b8";
+            }
+            
+            if (bot.isPaused) {
+                modeText.textContent += " (PAUSED)";
+                modeIndicator.style.color = "#f59e0b";
+            }
+        }
+        
+        updateCurrencyDropdown();
+    }
+
+    function updateCurrencyDropdown() {
+        const currencySelect = document.getElementById("currency-select");
+        if (currencySelect && bot.availableCurrencies.length > 0) {
+            const currentValue = currencySelect.value;
+            
+            currencySelect.innerHTML = '';
+            
+            bot.availableCurrencies.forEach(currency => {
+                const option = document.createElement("option");
+                option.value = currency.code;
+                option.textContent = `${currency.icon} ${currency.name}`;
+                option.selected = currency.code === bot.selectedCurrency;
+                currencySelect.appendChild(option);
+            });
+            
+            if (currentValue) {
+                currencySelect.value = currentValue;
+            }
+        }
+    }
+
+    function updateLiveLogs() {
+        const logContainer = document.getElementById("live-log-container");
+        if (!logContainer) return;
+        
+        let html = "";
+        
+        if (bot.recoveryMode.active) {
+            const stageColor = bot.recoveryMode.recoveryStage === 1 ? "#f59e0b" : 
+                             bot.recoveryMode.recoveryStage === 2 ? "#f97316" : "#dc2626";
+            
+            html += `
+                <div style="color:${stageColor};text-align:center;padding:8px;margin-bottom:8px;border-radius:6px;font-size:12px;font-weight:bold;border:1px solid ${stageColor}30;background:${stageColor}15;">
+                    ⚡ ORION SRL - Stage ${bot.recoveryMode.recoveryStage}/3: ${getStageName(bot.recoveryMode.recoveryStage)}
+                    <div style="font-size:11px;color:${stageColor};margin-top:4px;">
+                        Wins: ${bot.recoveryMode.currentRecoveryWins}/${bot.recoveryMode.winsToBEP} | Multiplier: ${bot.recoveryMode.betMultiplier.toFixed(2)}x
+                    </div>
+                </div>`;
+        } else if (bot.wagerMode.active) {
+            html += `
+                <div style="color:#10b981;text-align:center;padding:8px;margin-bottom:8px;border-radius:6px;font-size:12px;font-weight:bold;border:1px solid rgba(16,185,129,0.3);background:rgba(16,185,129,0.15);">
+                    🎯 ORION WAGER MODE
+                    <div style="font-size:11px;color:#34d399;margin-top:4px;">
+                        ${bot.wagerMode.currentMode === 'dice' ? '🎲 Dice' : '📈 Limbo'} ${bot.wagerMode.currentMode === 'dice' ? bot.wagerMode.diceBetCount : bot.wagerMode.limboBetCount}
+                    </div>
+                </div>`;
+        }
+        
+        if (bot.stats.lastResults.length === 0) {
+            html += '<div style="color: #94a3b8; text-align: center; padding: 15px; font-size: 12px;">No bets yet</div>';
+        } else {
+            bot.stats.lastResults.forEach(result => {
+                let color = result.win ? "#10b981" : "#ef4444";
+                let bgColor = result.win ? "rgba(16,185,129,0.1)" : "rgba(239,68,68,0.1)";
+                
+                if (bot.recoveryMode.active) {
+                    color = result.win ? "#22c55e" : "#f97316";
+                    bgColor = result.win ? "rgba(34,197,94,0.1)" : "rgba(249,115,22,0.1)";
+                }
+                
+                const winLoss = result.win ? "WIN" : "LOSS";
+                const modeIcon = result.mode === 'dice' ? '🎲' : '📈';
+                
+                html += `
+                    <div class="log-entry" style="border-left-color: ${color}; background: ${bgColor};">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div style="font-size: 11px; color: #94a3b8;">${result.time}</div>
+                            <div style="font-weight: bold; color: ${color}; font-size: 12px;">${winLoss}</div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px;">
+                            <div>
+                                <span>${modeIcon} ${result.betAmount.toFixed(8)}</span>
+                            </div>
+                            <div style="color: ${result.profit > 0 ? '#10b981' : '#ef4444'}; font-weight: bold; font-size: 12px;">
+                                ${result.profit > 0 ? '+' : ''}${result.profit.toFixed(8)}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+        }
+        
+        logContainer.innerHTML = html;
+        logContainer.scrollTop = 0;
+    }
+
+    function updateLogs(customMsg, isSystem = false) {
+        const logBox = document.getElementById("p-logs");
+        if (!logBox) return;
+
+        const entry = document.createElement("div");
+        entry.className = "log-entry";
+
+        if (isSystem) {
+            entry.style.color = "#f59e0b";
+            entry.style.fontWeight = "bold";
+        }
+
+        entry.innerHTML = customMsg;
+        logBox.prepend(entry);
+        
+        if (logBox.children.length > 50) {
+            logBox.removeChild(logBox.lastChild);
+        }
+    }
+
+    function updateUI() {
+        updateCurrencyDropdown();
+        
+        const minBetInput = document.getElementById("min-bet-input");
+        if (minBetInput) {
+            minBetInput.value = bot.globalMinBet;
+        }
+        
+        const limboMultiplierInput = document.getElementById("limbo-multiplier");
+        if (limboMultiplierInput) {
+            limboMultiplierInput.value = "1.0001";
+        }
+        
+        const autoMultiplierToggle = document.getElementById("auto-multiplier-toggle");
+        if (autoMultiplierToggle) {
+            autoMultiplierToggle.checked = bot.recoveryMode.autoMultiplier;
+        }
+        
+        updateDashboard();
+        updateLiveLogs();
     }
 
     createUI();
