@@ -14,7 +14,7 @@
 
     // =============== OPTIMIZED MEMORY POOL ===============
     const MemoryPool = {
-        stats: new Array(64).fill(0), // Pre-allocated array
+        stats: new Array(64).fill(0),
         betQueue: [],
         maxQueueSize: 1000,
         
@@ -56,7 +56,7 @@
         requestId: 0,
         
         // Parallel Processing
-        workers: 3, // Parallel bet workers
+        workers: 3,
         activeWorkers: 0,
         workerQueue: [],
         
@@ -78,7 +78,7 @@
             lossSession: 0,
             startTime: null,
             lastBetAmount: 0,
-            lastResults: new Uint8Array(100), // Typed array for last results
+            lastResults: new Uint8Array(100),
             consecutiveLosses: 0,
             consecutiveWins: 0,
             winRate: 0,
@@ -129,6 +129,8 @@
     const WebSocketManager = {
         messageBuffer: [],
         processing: false,
+        reconnectAttempts: 0,
+        maxReconnectAttempts: 999999,
         
         connect() {
             if (bot.ws?.readyState === WebSocket.OPEN) return;
@@ -136,16 +138,16 @@
             try {
                 bot.ws = new WebSocket('wss://stake.krd/_api/websockets', 'graphql-transport-ws');
                 
-                bot.ws.binaryType = 'arraybuffer'; // Binary mode for speed
+                bot.ws.binaryType = 'arraybuffer';
                 
                 bot.ws.onopen = () => {
                     console.log('🔌 WebSocket TURBO Connected');
+                    this.reconnectAttempts = 0;
                     this.sendInit();
                     this.startMessageProcessor();
                 };
 
                 bot.ws.onmessage = (event) => {
-                    // Queue messages for batch processing
                     this.messageBuffer.push(event.data);
                     if (!this.processing) {
                         setTimeout(() => this.processMessageBatch(), 0);
@@ -155,8 +157,13 @@
                 bot.ws.onclose = () => {
                     console.log('🔌 WebSocket Disconnected - Reconnecting...');
                     bot.wsConnected = false;
-                    setTimeout(() => this.connect(), 100);
+                    this.reconnectAttempts++;
+                    if (this.reconnectAttempts < this.maxReconnectAttempts) {
+                        setTimeout(() => this.connect(), 100);
+                    }
                 };
+
+                bot.ws.onerror = () => {};
 
             } catch (e) {
                 setTimeout(() => this.connect(), 100);
@@ -179,7 +186,7 @@
         },
 
         processMessageBatch() {
-            const batch = this.messageBuffer.splice(0, 50); // Process 50 at a time
+            const batch = this.messageBuffer.splice(0, 100);
             for (const data of batch) {
                 try {
                     const parsed = typeof data === 'string' ? JSON.parse(data) : data;
@@ -201,7 +208,6 @@
             }
             
             if (data.type === 'next' && data.payload?.data?.userBalanceChanged) {
-                // Ultra fast balance update - no parsing needed
                 const newBalance = parseFloat(data.payload.data.userBalanceChanged.balance);
                 if (!isNaN(newBalance)) {
                     bot.realBalance = newBalance;
@@ -216,7 +222,6 @@
                 return;
             }
 
-            // Handle bet responses
             if (data.id && bot.pendingBets.has(data.id)) {
                 const callback = bot.pendingBets.get(data.id);
                 callback(data);
@@ -246,31 +251,36 @@
                     currency: bot.selectedCurrency
                 };
 
-                let query = betData.type === 'dice' 
-                    ? `mutation{ diceRoll(amount:${payload.amount},currency:${payload.currency},target:${(100 - betData.chance).toFixed(2)},condition:above){id amount payout}}`
-                    : `mutation{ limboBet(amount:${payload.amount},currency:${payload.currency},multiplierTarget:${betData.multiplier}){id amount payout multiplierTarget}}`;
+                let query;
+                if (betData.mode === 'dice') {
+                    query = `mutation{ diceRoll(amount:${payload.amount},currency:${payload.currency},target:${(100 - betData.chance).toFixed(2)},condition:above){id amount payout}}`;
+                } else {
+                    query = `mutation{ limboBet(amount:${payload.amount},currency:${payload.currency},multiplierTarget:${betData.multiplier}){id amount payout multiplierTarget}}`;
+                }
 
                 const message = { id: requestId, type: 'subscribe', payload: { query } };
 
                 bot.pendingBets.set(requestId, (response) => {
-                    if (response.payload?.data) resolve(response.payload.data);
-                    else reject(new Error('Bet failed'));
+                    if (response.payload?.data) {
+                        resolve(response.payload.data);
+                    } else {
+                        reject(new Error('Bet failed'));
+                    }
                 });
 
                 bot.ws.send(JSON.stringify(message));
 
-                // Fast timeout
                 setTimeout(() => {
                     if (bot.pendingBets.has(requestId)) {
                         bot.pendingBets.delete(requestId);
                         reject(new Error('Timeout'));
                     }
-                }, 1000);
+                }, 500);
             });
         },
 
         placeBetRest(betData) {
-            return betData.type === 'dice' 
+            return betData.mode === 'dice' 
                 ? API.placeDiceBet(betData.amount, betData.chance)
                 : API.placeLimboBet(betData.amount, betData.multiplier);
         }
@@ -278,19 +288,21 @@
 
     // =============== PARALLEL PROCESSING ENGINE ===============
     const ParallelEngine = {
+        workerCount: 3,
+        activeWorkers: 0,
+        
         async start() {
             if (!bot.isRunning || bot.isPaused) return;
             
-            // Launch parallel workers
             const workers = [];
-            for (let i = 0; i < bot.workers; i++) {
-                workers.push(this.worker(i));
+            for (let i = 0; i < this.workerCount; i++) {
+                workers.push(this.runWorker(i));
             }
             
             await Promise.all(workers);
         },
 
-        async worker(id) {
+        async runWorker(id) {
             while (bot.isRunning && !bot.isPaused) {
                 try {
                     const betInfo = this.getNextBetOptimized();
@@ -299,25 +311,35 @@
                         continue;
                     }
 
-                    // Execute bet in parallel
+                    // Validate bet
+                    if (betInfo.bet <= 0 || betInfo.bet > bot.stats.currentBal * 0.5) {
+                        await this.microSleep();
+                        continue;
+                    }
+
                     const result = await this.executeBet(betInfo);
                     
-                    // Update stats (atomic operations)
-                    this.updateStatsAtomic(result);
-                    
-                    // Process Z Rec if active
-                    if (betInfo.type === 'ZREC') {
-                        this.processZRecResult(result);
+                    if (result) {
+                        this.updateStatsAtomic(result);
+                        
+                        if (betInfo.type === 'ZREC') {
+                            this.processZRecResult(result);
+                        }
+
+                        // Update UI every 10 bets
+                        if (bot.stats.bets % 10 === 0) {
+                            this.updateUI();
+                        }
                     }
 
                 } catch (e) {
                     await this.microSleep();
                 }
             }
+            this.activeWorkers--;
         },
 
         getNextBetOptimized() {
-            // Cache values for speed
             const currentBal = bot.stats.currentBal;
             const peakBalance = bot.stats.peakBalance;
             const z = bot.zRec;
@@ -366,7 +388,7 @@
                 z.currentChance = z.baseChance;
             }
 
-            const needToRecover = z.balanceStart - bot.stats.currentBal;
+            const needToRecover = Math.max(0, z.balanceStart - bot.stats.currentBal);
             const payout = 99 / z.currentChance;
             
             let nextBet = needToRecover > 0 
@@ -378,7 +400,7 @@
             
             z.steps++;
             
-            return { bet: nextBet, chance: z.currentChance, mode: 'dice', type: 'ZREC' };
+            return { bet: nextBet, chance: z.currentChance, mode: 'dice', type: 'ZREC', multiplier: payout };
         },
 
         checkZRecTriggerFast() {
@@ -416,6 +438,7 @@
             z.singleChanceBets = 0;
             z.currentChance = z.baseChance;
             z.stats.totalRecoveries++;
+            console.log(`⚡ Z REC ACTIVATED - Target: ${z.balanceStart.toFixed(8)}`);
         },
 
         async executeBet(betInfo) {
@@ -423,7 +446,7 @@
             
             if (!bot.isDemo) {
                 if (bot.realBalance < nextBet) {
-                    throw new Error('Insufficient balance');
+                    return null;
                 }
             }
 
@@ -434,25 +457,23 @@
                     const result = await WebSocketManager.placeBet(betInfo);
                     
                     if (betInfo.mode === 'dice') {
-                        const diceData = result.diceRoll || result.data?.diceRoll;
+                        const diceData = result.diceRoll;
                         if (diceData) {
                             win = diceData.payout > 0;
                             pft = diceData.payout - diceData.amount;
                         }
                     } else {
-                        const limboData = result.limboBet || result.data?.limboBet;
+                        const limboData = result.limboBet;
                         if (limboData) {
                             win = limboData.payout > 0;
                             pft = limboData.payout - limboData.amount;
                         }
                     }
                 } catch (e) {
-                    // Fallback to demo mode simulation on error
                     win = Math.random() * 100 < betInfo.chance;
                     pft = win ? (nextBet * (99 / betInfo.chance - 1)) : -nextBet;
                 }
             } else {
-                // Demo mode
                 win = Math.random() * 100 < betInfo.chance;
                 pft = win ? (nextBet * (99 / betInfo.chance - 1)) : -nextBet;
                 await this.microSleep();
@@ -464,8 +485,7 @@
         updateStatsAtomic(result) {
             const { win, pft, nextBet } = result;
             
-            // Atomic updates using bitwise where possible
-            bot.stats.bets = (bot.stats.bets + 1) | 0;
+            bot.stats.bets++;
             bot.stats.wagered += nextBet;
             bot.stats.profit += pft;
             
@@ -474,40 +494,58 @@
             }
             
             if (win) {
-                bot.stats.wins = (bot.stats.wins + 1) | 0;
-                bot.stats.consecutiveWins = (bot.stats.consecutiveWins + 1) | 0;
+                bot.stats.wins++;
+                bot.stats.consecutiveWins++;
                 bot.stats.consecutiveLosses = 0;
             } else {
-                bot.stats.loss = (bot.stats.loss + 1) | 0;
-                bot.stats.consecutiveLosses = (bot.stats.consecutiveLosses + 1) | 0;
+                bot.stats.loss++;
+                bot.stats.consecutiveLosses++;
                 bot.stats.consecutiveWins = 0;
             }
             
-            bot.stats.winRate = (bot.stats.wins / bot.stats.bets * 100) || 0;
+            // Update win rate
+            if (bot.stats.bets > 0) {
+                bot.stats.winRate = (bot.stats.wins / bot.stats.bets * 100);
+            }
+
+            // Update max drawdown
+            const drawdown = bot.stats.peakBalance - bot.stats.currentBal;
+            if (drawdown > bot.stats.maxDrawdown) {
+                bot.stats.maxDrawdown = drawdown;
+                if (bot.stats.peakBalance > 0) {
+                    bot.stats.maxDrawdownPercent = (drawdown / bot.stats.peakBalance) * 100;
+                }
+            }
         },
 
         processZRecResult(result) {
             const { win, pft, nextBet, betInfo } = result;
             const z = bot.zRec;
             
+            if (!z.active) return;
+            
             if (bot.stats.currentBal > z.balancePeak) {
                 z.balancePeak = bot.stats.currentBal;
             }
 
+            // Check if recovery complete
             if (bot.stats.currentBal >= z.balanceStart) {
                 z.active = false;
                 z.stats.successfulRecoveries++;
                 z.stats.recoveredAmount += bot.stats.currentBal - z.balanceStart;
+                console.log(`✅ Z REC SUCCESS - Profit: ${(bot.stats.currentBal - z.balanceStart).toFixed(8)}`);
                 this.startNewSessionFast();
                 return;
             }
 
+            // Trail logic
             if (z.trail.enabled && !z.trail.isActive) {
                 const profitFromStart = ((bot.stats.currentBal - z.balanceStart) / z.balanceStart) * 100;
                 if (profitFromStart >= z.trail.activationPercent) {
                     z.trail.isActive = true;
                     z.trail.currentLevel = 1;
                     z.level1Peak = z.balancePeak;
+                    console.log(`🛡️ TRAIL ACTIVATED at ${profitFromStart.toFixed(2)}%`);
                 }
             }
 
@@ -519,6 +557,14 @@
                 z.lastWinTime = Date.now();
             } else {
                 z.singleChanceBets++;
+            }
+
+            // Check max steps
+            if (z.steps >= z.maxSteps) {
+                z.active = false;
+                z.stats.failedRecoveries++;
+                console.log(`⚠️ Z REC MAX STEPS - Failed to recover`);
+                this.startNewSessionFast();
             }
         },
 
@@ -536,6 +582,26 @@
 
         microSleep() {
             return new Promise(resolve => setTimeout(resolve, 0));
+        },
+
+        updateUI() {
+            const el = id => document.getElementById(id);
+            if (el('balance-display')) el('balance-display').textContent = bot.stats.currentBal.toFixed(8);
+            if (el('profit-display')) {
+                const p = bot.stats.profit || 0;
+                el('profit-display').textContent = (p > 0 ? '+' : '') + p.toFixed(4);
+            }
+            if (el('bets-display')) el('bets-display').textContent = bot.stats.bets || 0;
+            if (el('winrate-display')) el('winrate-display').textContent = (bot.stats.winRate || 0).toFixed(1) + '%';
+            if (el('ws-status')) {
+                el('ws-status').style.background = bot.wsConnected ? '#065F46' : '#991B1B';
+                el('ws-status').textContent = bot.wsConnected ? '✅ WS' : '❌ WS';
+            }
+            if (el('workers-status')) el('workers-status').textContent = bot.isRunning ? `${this.workerCount}⚡` : '0⚡';
+            if (el('zrec-status')) {
+                el('zrec-status').textContent = bot.zRec.active ? '⚡ ACTIVE' : 'INACTIVE';
+                el('zrec-status').style.background = bot.zRec.active ? '#6B21A5' : '#1F2937';
+            }
         }
     };
 
@@ -543,8 +609,10 @@
     const API = {
         async syncOnce() {
             try {
-                bot.token = localStorage.getItem('apitoken') || localStorage.getItem('token') || 
-                           sessionStorage.getItem('token') || document.cookie.match(/session=([^;]+)/)?.[1];
+                bot.token = localStorage.getItem('apitoken') || 
+                           localStorage.getItem('token') || 
+                           sessionStorage.getItem('token') || 
+                           document.cookie.match(/session=([^;]+)/)?.[1];
                 
                 if (!bot.token) {
                     bot.stakeUser = "Not logged in";
@@ -553,7 +621,11 @@
 
                 const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
                     method: "POST",
-                    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${bot.token}` },
+                    headers: { 
+                        "Content-Type": "application/json", 
+                        "Authorization": `Bearer ${bot.token}`,
+                        "x-access-token": bot.token
+                    },
                     body: JSON.stringify({
                         query: `query{user{name balances{available{amount currency}}}}`
                     })
@@ -582,7 +654,11 @@
         async placeDiceBet(amount, chance) {
             const res = await fetch(`${CONFIG.apiUrl}/casino/dice/roll`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json", "Authorization": `Bearer ${bot.token}` },
+                headers: { 
+                    "Content-Type": "application/json", 
+                    "Authorization": `Bearer ${bot.token}`,
+                    "x-access-token": bot.token
+                },
                 body: JSON.stringify({
                     amount: parseFloat(amount.toFixed(8)),
                     currency: bot.selectedCurrency,
@@ -596,9 +672,13 @@
         async placeLimboBet(amount, multiplierTarget) {
             const res = await fetch(`${CONFIG.apiUrl}/casino/limbo/bet`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json", "Authorization": `Bearer ${bot.token}` },
+                headers: { 
+                    "Content-Type": "application/json", 
+                    "Authorization": `Bearer ${bot.token}`,
+                    "x-access-token": bot.token
+                },
                 body: JSON.stringify({
-                    multiplierTarget,
+                    multiplierTarget: multiplierTarget,
                     amount: parseFloat(amount.toFixed(8)),
                     currency: bot.selectedCurrency
                 })
@@ -623,13 +703,34 @@
             }).catch(() => {});
         },
 
+        async sendStartReport() {
+            if (!CONFIG.telegram.sendOnStart) return;
+            const message = `🚀 <b>ORION TURBO STARTED</b>\n` +
+                `👤 User: <code>${bot.stakeUser}</code>\n` +
+                `💰 Balance: <code>${bot.stats.startBal.toFixed(8)}</code>\n` +
+                `⚡ Workers: <code>${bot.workers}</code>\n` +
+                `⏰ ${new Date().toLocaleString()}`;
+            await this.sendMessage(message);
+        },
+
+        async sendStopReport(reason) {
+            if (!CONFIG.telegram.sendOnStop) return;
+            const runtime = bot.stats.startTime ? Math.floor((Date.now() - bot.stats.startTime) / 1000) : 0;
+            const message = `🛑 <b>ORION STOPPED</b>\n` +
+                `📝 Reason: <b>${reason}</b>\n` +
+                `⏱️ Runtime: <code>${Math.floor(runtime/60)}m</code>\n` +
+                `🎯 Bets: <code>${bot.stats.bets}</code>\n` +
+                `📈 Profit: <code>${bot.stats.profit.toFixed(8)}</code>`;
+            await this.sendMessage(message);
+        },
+
         async sendPeriodicReport() {
             if (!CONFIG.telegram.enabled) return;
             const runtime = bot.stats.startTime ? Math.floor((Date.now() - bot.stats.startTime) / 1000) : 0;
             const profitPercent = bot.stats.startBal > 0 ? ((bot.stats.profit / bot.stats.startBal) * 100) : 0;
             
             const message = `📊 <b>PERIODIC REPORT</b>\n` +
-                `⏱️ Runtime: <code>${Math.floor(runtime/3600)}h ${Math.floor((runtime%3600)/60)}m</code>\n` +
+                `⏱️ Runtime: <code>${Math.floor(runtime/60)}m</code>\n` +
                 `💰 Balance: <code>${bot.stats.currentBal.toFixed(8)}</code>\n` +
                 `📈 Profit: <code>${bot.stats.profit > 0 ? '+' : ''}${bot.stats.profit.toFixed(8)} (${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}%)</code>\n` +
                 `🎯 Bets: <code>${bot.stats.bets}</code>\n` +
@@ -639,7 +740,7 @@
         }
     };
 
-    // =============== UI (Lightweight) ===============
+    // =============== UI ===============
     function createUI() {
         if (document.getElementById("orion-turbo")) return;
 
@@ -647,21 +748,117 @@
         style.innerHTML = `
             #orion-turbo {
                 position: fixed; top: 50%; right: 20px; transform: translateY(-50%);
-                width: 380px; max-height: 90vh;
+                width: 400px; max-height: 90vh;
                 background: linear-gradient(145deg, #0A0A0F, #1A0B2E);
-                border: 1px solid #A855F7; border-radius: 24px;
-                color: #fff; font-family: system-ui, sans-serif; font-size: 12px;
-                z-index: 999999; box-shadow: 0 20px 40px #581c87; backdrop-filter: blur(10px);
+                border: 2px solid #A855F7; border-radius: 24px;
+                color: #fff; font-family: system-ui, sans-serif; font-size: 13px;
+                z-index: 999999; box-shadow: 0 20px 40px rgba(168,85,247,0.3);
+                backdrop-filter: blur(10px);
                 overflow: hidden;
             }
-            .turbo-header { padding: 16px; background: #2E1065; border-bottom: 1px solid #A855F7; }
-            .turbo-title { font-size: 20px; font-weight: 800; color: #E9D5FF; }
-            .turbo-content { padding: 16px; overflow-y: auto; max-height: calc(90vh - 80px); }
-            .stat-row { display: flex; justify-content: space-between; margin: 8px 0; padding: 8px; background: #1E1035; border-radius: 12px; }
-            .btn { padding: 12px; border: none; border-radius: 12px; font-weight: 700; cursor: pointer; }
-            .btn-start { background: #A855F7; color: white; width: 100%; }
-            .btn-stop { background: #991B1B; color: white; width: 100%; }
-            .ws-badge { display: inline-block; padding: 4px 8px; border-radius: 12px; font-size: 10px; }
+            .turbo-header { 
+                padding: 20px; 
+                background: linear-gradient(90deg, #2E1065, #4C1D95);
+                border-bottom: 2px solid #A855F7;
+            }
+            .turbo-title { 
+                font-size: 24px; 
+                font-weight: 800; 
+                background: linear-gradient(135deg, #E9D5FF, #F0E9FF);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                margin-bottom: 10px;
+            }
+            .turbo-subtitle {
+                display: flex; gap: 10px; font-size: 11px;
+            }
+            .turbo-content { 
+                padding: 20px; 
+                overflow-y: auto; 
+                max-height: calc(90vh - 120px);
+            }
+            .stat-row { 
+                display: flex; 
+                justify-content: space-between; 
+                margin: 10px 0; 
+                padding: 12px; 
+                background: rgba(30, 16, 53, 0.8);
+                border-radius: 16px;
+                border: 1px solid #6B21A5;
+            }
+            .stat-label { color: #C4B5FD; font-weight: 500; }
+            .stat-value { color: #F0E9FF; font-weight: 700; }
+            .stat-value.positive { color: #6EE7B7; }
+            .stat-value.negative { color: #FCA5A5; }
+            .btn { 
+                padding: 14px; 
+                border: none; 
+                border-radius: 16px; 
+                font-weight: 700; 
+                cursor: pointer;
+                font-size: 14px;
+                transition: all 0.2s;
+            }
+            .btn-start { 
+                background: linear-gradient(135deg, #6B21A5, #A855F7);
+                color: white; 
+                width: 100%;
+                box-shadow: 0 10px 20px #581C87;
+            }
+            .btn-stop { 
+                background: linear-gradient(135deg, #7F1D1D, #991B1B);
+                color: white; 
+                width: 100%;
+                margin-top: 10px;
+            }
+            .btn-secondary {
+                background: #2D1B4A;
+                color: #D8B4FE;
+                border: 1px solid #A855F7;
+                margin-top: 10px;
+            }
+            .badge {
+                display: inline-block;
+                padding: 4px 12px;
+                border-radius: 20px;
+                font-size: 11px;
+                font-weight: 600;
+                background: rgba(168, 85, 247, 0.2);
+                color: #D8B4FE;
+                border: 1px solid #A855F7;
+            }
+            .ws-badge {
+                display: inline-block;
+                padding: 4px 12px;
+                border-radius: 20px;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            .select-input {
+                width: 100%;
+                padding: 12px;
+                background: #1E1035;
+                color: #F0E9FF;
+                border: 1px solid #6B21A5;
+                border-radius: 12px;
+                margin: 10px 0;
+                font-size: 13px;
+            }
+            .number-input {
+                width: 80px;
+                padding: 8px;
+                background: #1E1035;
+                color: #F0E9FF;
+                border: 1px solid #6B21A5;
+                border-radius: 8px;
+                text-align: center;
+            }
+            .grid-2 {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 10px;
+                margin: 10px 0;
+            }
         `;
         document.head.appendChild(style);
 
@@ -669,85 +866,267 @@
             <div id="orion-turbo">
                 <div class="turbo-header">
                     <div class="turbo-title">⚡ ORION TURBO</div>
-                    <div style="display: flex; gap: 8px; margin-top: 8px;">
-                        <span class="ws-badge" id="ws-status">✅ WS</span>
-                        <span class="ws-badge" id="workers-status">3⚡</span>
+                    <div class="turbo-subtitle">
+                        <span class="badge" id="zrec-status">INACTIVE</span>
+                        <span class="ws-badge" id="ws-status" style="background:#065F46;">✅ WS</span>
+                        <span class="ws-badge" id="workers-status" style="background:#6B21A5;">3⚡</span>
                     </div>
                 </div>
                 <div class="turbo-content">
+                    <!-- Mode Selector -->
+                    <div class="grid-2">
+                        <button id="mode-real" class="btn btn-secondary" style="background:#6B21A5;">🎯 REAL</button>
+                        <button id="mode-demo" class="btn btn-secondary">🧪 DEMO</button>
+                    </div>
+
+                    <!-- Main Stats -->
                     <div class="stat-row">
-                        <span>Balance</span>
-                        <span id="balance-display">0.00000000</span>
+                        <span class="stat-label">Balance</span>
+                        <span class="stat-value" id="balance-display">0.00000000</span>
                     </div>
                     <div class="stat-row">
-                        <span>Profit</span>
-                        <span id="profit-display">0.00</span>
+                        <span class="stat-label">Profit</span>
+                        <span class="stat-value" id="profit-display">0.0000</span>
                     </div>
                     <div class="stat-row">
-                        <span>Bets</span>
-                        <span id="bets-display">0</span>
+                        <span class="stat-label">Bets</span>
+                        <span class="stat-value" id="bets-display">0</span>
                     </div>
                     <div class="stat-row">
-                        <span>Win Rate</span>
-                        <span id="winrate-display">0%</span>
+                        <span class="stat-label">Win Rate</span>
+                        <span class="stat-value" id="winrate-display">0%</span>
                     </div>
-                    <div style="display: flex; gap: 8px; margin: 16px 0;">
-                        <select id="currency-select" style="flex:2; padding: 8px; background: #1E1035; color: white; border: 1px solid #A855F7; border-radius: 8px;"></select>
-                        <input type="number" id="betpercent" value="0.5" step="0.1" style="flex:1; padding: 8px; background: #1E1035; color: white; border: 1px solid #A855F7; border-radius: 8px;">
+                    <div class="stat-row">
+                        <span class="stat-label">Wins/Losses</span>
+                        <span class="stat-value" id="wl-display">0/0</span>
                     </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Peak/Drop</span>
+                        <span class="stat-value" id="peak-display">0.00/0%</span>
+                    </div>
+
+                    <!-- Currency & Settings -->
+                    <select id="currency-select" class="select-input">
+                        <option value="doge">🐕 DOGE</option>
+                        <option value="btc">₿ BTC</option>
+                        <option value="eth">Ξ ETH</option>
+                    </select>
+
+                    <div class="grid-2">
+                        <input type="number" id="betpercent" class="number-input" value="0.5" step="0.1" placeholder="Bet %">
+                        <input type="number" id="minbet" class="number-input" value="0.000123" step="0.000001" placeholder="Min Bet">
+                    </div>
+
+                    <!-- Wager Mode Settings -->
+                    <div style="margin: 15px 0;">
+                        <div style="color:#C4B5FD; margin-bottom:8px;">🎲 WAGER MODE</div>
+                        <div class="grid-2">
+                            <select id="wager-mode" class="select-input" style="padding:8px;">
+                                <option value="dice">Dice</option>
+                                <option value="limbo">Limbo</option>
+                            </select>
+                            <input type="number" id="wager-chance" class="number-input" value="99.5" step="0.1" placeholder="Chance">
+                        </div>
+                        <div class="grid-2" style="margin-top:8px;">
+                            <input type="number" id="wager-multiplier" class="number-input" value="1.0001" step="0.0001" placeholder="Multiplier">
+                            <input type="number" id="wager-cycles" class="number-input" value="10" step="1" placeholder="Cycles">
+                        </div>
+                    </div>
+
+                    <!-- Z Recovery Settings -->
+                    <div style="margin: 15px 0; padding:15px; background:#2E1065; border-radius:16px;">
+                        <div style="color:#E9D5FF; margin-bottom:8px;">⚡ Z RECOVERY</div>
+                        <div class="grid-2">
+                            <input type="number" id="zrec-drop" class="number-input" value="0.5" step="0.1" placeholder="Drop %">
+                            <input type="number" id="zrec-time" class="number-input" value="60" step="5" placeholder="Time sec">
+                        </div>
+                        <div class="grid-2" style="margin-top:8px;">
+                            <input type="number" id="zrec-chance-min" class="number-input" value="10" step="1" placeholder="Min Chance">
+                            <input type="number" id="zrec-chance-max" class="number-input" value="25" step="1" placeholder="Max Chance">
+                        </div>
+                    </div>
+
+                    <!-- Control Buttons -->
                     <button id="start-btn" class="btn btn-start">▶ START TURBO</button>
-                    <button id="stop-btn" class="btn btn-stop" style="margin-top: 8px;">⏹ STOP</button>
+                    <button id="stop-btn" class="btn btn-stop">⏹ STOP</button>
+                    <div class="grid-2">
+                        <button id="manual-zrec" class="btn btn-secondary">⚡ MANUAL Z</button>
+                        <button id="new-session" class="btn btn-secondary">🔄 NEW SESSION</button>
+                    </div>
                 </div>
             </div>
         `;
 
         document.body.insertAdjacentHTML('beforeend', html);
         
-        // Event listeners
-        document.getElementById('start-btn').onclick = startTurbo;
-        document.getElementById('stop-btn').onclick = () => bot.isRunning = false;
+        setupEventListeners();
+        ParallelEngine.updateUI();
         
-        function startTurbo() {
-            if (bot.isRunning) return;
-            
-            bot.isRunning = true;
-            bot.stats = {
-                profit: 0, wagered: 0, startBal: bot.demoBalance || 1000,
-                currentBal: bot.demoBalance || 1000, peakBalance: bot.demoBalance || 1000,
-                bets: 0, wins: 0, loss: 0, startTime: Date.now()
-            };
-            
-            ParallelEngine.start();
-            updateUI();
-            setInterval(updateUI, 100);
-        }
+        // Auto sync
+        API.syncOnce();
+        setInterval(() => API.syncOnce(), 30000);
     }
 
-    function updateUI() {
-        const el = id => document.getElementById(id);
-        if (el('balance-display')) el('balance-display').textContent = bot.stats.currentBal.toFixed(8);
-        if (el('profit-display')) {
-            const p = bot.stats.profit || 0;
-            el('profit-display').textContent = (p > 0 ? '+' : '') + p.toFixed(4);
-        }
-        if (el('bets-display')) el('bets-display').textContent = bot.stats.bets || 0;
-        if (el('winrate-display')) el('winrate-display').textContent = (bot.stats.winRate || 0).toFixed(1) + '%';
-        if (el('ws-status')) {
-            el('ws-status').style.background = bot.wsConnected ? '#065F46' : '#991B1B';
-            el('ws-status').textContent = bot.wsConnected ? '✅ WS' : '❌ WS';
-        }
-        if (el('workers-status')) el('workers-status').textContent = bot.isRunning ? `${bot.workers}⚡` : '0⚡';
+    function setupEventListeners() {
+        // Mode switches
+        document.getElementById('mode-real').onclick = () => {
+            bot.isDemo = false;
+            document.getElementById('mode-real').style.background = '#6B21A5';
+            document.getElementById('mode-demo').style.background = '#2D1B4A';
+        };
+        
+        document.getElementById('mode-demo').onclick = () => {
+            bot.isDemo = true;
+            bot.demoBalance = parseFloat(prompt("Demo Balance:", "1000")) || 1000;
+            document.getElementById('mode-demo').style.background = '#6B21A5';
+            document.getElementById('mode-real').style.background = '#2D1B4A';
+        };
+
+        // Currency
+        document.getElementById('currency-select').onchange = (e) => {
+            bot.selectedCurrency = e.target.value;
+        };
+
+        // Settings
+        document.getElementById('betpercent').onchange = (e) => {
+            bot.wagerMode.betPercent = parseFloat(e.target.value) || 0.5;
+        };
+
+        document.getElementById('minbet').onchange = (e) => {
+            bot.globalMinBet = parseFloat(e.target.value) || 0.000123;
+        };
+
+        document.getElementById('wager-mode').onchange = (e) => {
+            bot.wagerMode.mode = e.target.value;
+        };
+
+        document.getElementById('wager-chance').onchange = (e) => {
+            bot.wagerMode.diceChance = parseFloat(e.target.value) || 99.5;
+        };
+
+        document.getElementById('wager-multiplier').onchange = (e) => {
+            bot.wagerMode.limboMultiplier = parseFloat(e.target.value) || 1.0001;
+        };
+
+        document.getElementById('wager-cycles').onchange = (e) => {
+            bot.wagerMode.cyclesBetweenSwitch = parseInt(e.target.value) || 10;
+        };
+
+        document.getElementById('zrec-drop').onchange = (e) => {
+            bot.zRec.trigger.dropdownPercent = parseFloat(e.target.value) || 0.5;
+        };
+
+        document.getElementById('zrec-time').onchange = (e) => {
+            bot.zRec.trigger.timeSeconds = parseInt(e.target.value) || 60;
+        };
+
+        document.getElementById('zrec-chance-min').onchange = (e) => {
+            bot.zRec.chance.min = parseFloat(e.target.value) || 10;
+        };
+
+        document.getElementById('zrec-chance-max').onchange = (e) => {
+            bot.zRec.chance.max = parseFloat(e.target.value) || 25;
+        };
+
+        // Start button
+        document.getElementById('start-btn').onclick = async () => {
+            if (bot.isRunning) return;
+
+            // Get initial balance
+            if (bot.isDemo) {
+                bot.stats.currentBal = bot.demoBalance;
+                bot.stats.startBal = bot.demoBalance;
+                bot.stats.peakBalance = bot.demoBalance;
+            } else {
+                await API.syncOnce();
+                if (bot.realBalance <= 0) {
+                    alert(`Insufficient ${bot.selectedCurrency.toUpperCase()} balance!`);
+                    return;
+                }
+                bot.stats.currentBal = bot.realBalance;
+                bot.stats.startBal = bot.realBalance;
+                bot.stats.peakBalance = bot.realBalance;
+            }
+
+            // Reset stats
+            bot.stats.bets = 0;
+            bot.stats.wins = 0;
+            bot.stats.loss = 0;
+            bot.stats.profit = 0;
+            bot.stats.wagered = 0;
+            bot.stats.maxDrawdown = 0;
+            bot.stats.maxDrawdownPercent = 0;
+            bot.stats.startTime = Date.now();
+            bot.lastTelegramReport = Date.now();
+
+            bot.isRunning = true;
+            
+            // Start parallel engine
+            ParallelEngine.start();
+            
+            // Send telegram start report
+            if (CONFIG.telegram.enabled && CONFIG.telegram.sendOnStart) {
+                TelegramAPI.sendStartReport();
+            }
+            
+            // Update UI
+            ParallelEngine.updateUI();
+        };
+
+        // Stop button
+        document.getElementById('stop-btn').onclick = () => {
+            bot.isRunning = false;
+            ParallelEngine.updateUI();
+            if (CONFIG.telegram.enabled && CONFIG.telegram.sendOnStop) {
+                TelegramAPI.sendStopReport("Manual Stop");
+            }
+        };
+
+        // Manual Z Rec
+        document.getElementById('manual-zrec').onclick = () => {
+            if (!bot.isRunning) {
+                alert('Start bot dulu!');
+                return;
+            }
+            if (bot.zRec.active) {
+                alert('Z Rec sudah aktif!');
+                return;
+            }
+            bot.zRec.balancePeak = Math.max(bot.stats.peakBalance, bot.stats.currentBal);
+            ParallelEngine.activateZRecFast();
+        };
+
+        // New session
+        document.getElementById('new-session').onclick = () => {
+            if (bot.isRunning) {
+                ParallelEngine.startNewSessionFast();
+            }
+        };
     }
 
     // =============== INIT ===============
     setTimeout(() => {
         createUI();
-        API.syncOnce();
+        
+        // Periodic updates
         setInterval(() => {
-            if (bot.isRunning && Date.now() - bot.lastTelegramReport > bot.telegramReportInterval) {
-                TelegramAPI.sendPeriodicReport();
-                bot.lastTelegramReport = Date.now();
+            if (bot.isRunning) {
+                ParallelEngine.updateUI();
+                
+                // Telegram periodic report
+                if (Date.now() - bot.lastTelegramReport > bot.telegramReportInterval) {
+                    TelegramAPI.sendPeriodicReport();
+                    bot.lastTelegramReport = Date.now();
+                }
             }
-        }, 60000);
+        }, 100);
+        
+        // Auto reconnect WebSocket
+        setInterval(() => {
+            if (!bot.wsConnected && bot.token) {
+                WebSocketManager.connect();
+            }
+        }, 5000);
+        
     }, 500);
 })();
