@@ -1,14 +1,14 @@
 (function () {
     const CONFIG = {
         get apiUrl() { return window.location.origin + '/_api'; },
-        version: "ORION × SEUNTAI FUSION",
+        version: "ORION × Z RECOVERY",
         telegram: {
             enabled: true,
             botToken: '8472646774:AAGYIU5V1kK4YMj5u1MqR0-QR5mQ4XemdMQ',
             chatId: '-1003744641395',
             sendOnStart: true,
             sendOnStop: true,
-            sendReportInterval: 5
+            sendReportInterval: 3
         }
     };
 
@@ -24,7 +24,7 @@
         realBalance: 0,
         availableCurrencies: [],
         lastTelegramReport: 0,
-        telegramReportInterval: 5 * 60 * 1000,
+        telegramReportInterval: 3 * 60 * 1000,
         
         telegramWagerTracker: {
             lastReportedWagered: 0,
@@ -39,8 +39,8 @@
             startBal: 0,
             currentBal: 0,
             peakBalance: 0,
-            maxDrawdown: 0,            // absolute max drawdown ever reached
-            maxDrawdownPercent: 0,      // percentage max drawdown ever reached
+            maxDrawdown: 0,
+            maxDrawdownPercent: 0,
             bets: 0,
             betsSession: 0,
             wins: 0,
@@ -73,37 +73,54 @@
             lastMode: 'dice'
         },
         
-        seuntai: {
+        zRec: {
             active: false,
-            layer: 0,
-            triggerDropPercent: 8.0,
-            triggerConsecutiveLosses: 10,
-            useDropTrigger: true,
-            useLossTrigger: true,
-            layer1Enabled: true,
-            layer1ChanceMin: 65,
-            layer1ChanceMax: 75,
-            layer1Multiplier: 0.7,
-            layer2Enabled: true,
-            layer2ChanceMin: 50,
-            layer2ChanceMax: 60,
-            layer2Multiplier: 1.0,
-            layer2TriggerDrawdown: 15.0,
-            maxAttempts: 8,
-            maxBetPercent: 2.5,
-            cutLossPercent: 10,
-            startBalance: 0,
-            targetBalance: 0,
-            peakAtTrigger: 0,
-            drawdownAtTrigger: 0,
-            attempts: 0,
-            currentBet: 0,
+            
+            trigger: {
+                useDropdown: true,
+                useTime: false,
+                dropdownPercent: 0.5,
+                timeSeconds: 60
+            },
+            
+            chance: {
+                min: 10.0,
+                max: 25.0,
+                incrementMin: 1.0,
+                incrementMax: 5.0
+            },
+            
+            trail: {
+                enabled: true,
+                level1Gap: 0.5,
+                level2Gap: 0.25,
+                level3Gap: 0.125,
+                currentLevel: 0,
+                isActive: false,
+                activationPercent: 2.0
+            },
+            
+            balanceStart: 0,
+            balancePeak: 0,
+            maxSteps: 1000000,
+            steps: 0,
+            baseChance: 0,
+            currentChance: 0,
+            singleChanceLimit: 0,
+            singleChanceBets: 0,
+            level1Peak: 0,
+            level2Peak: 0,
+            lastWinTime: 0,
+            
+            recoveryProfit: 0,
+            recoveryProfitPercent: 0,
+            remainingToTarget: 0,
+            lastRecoveryResult: '',
+            
             stats: {
                 totalRecoveries: 0,
                 successfulRecoveries: 0,
                 failedRecoveries: 0,
-                layer1Attempts: 0,
-                layer2Attempts: 0,
                 recoveredAmount: 0
             }
         }
@@ -131,38 +148,16 @@
             }
         },
 
-        async sendWagerMilestoneReport(wageredAmount) {
-            if (!bot.telegramWagerTracker.enabled) return;
-            const currencyInfo = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
-            const currencyName = currencyInfo ? currencyInfo.name : bot.selectedCurrency.toUpperCase();
-            const milestone = Math.floor(wageredAmount / bot.telegramWagerTracker.milestoneStep) * bot.telegramWagerTracker.milestoneStep;
-            const sessionProfit = bot.stats.currentBal - bot.stats.sessionStartBal;
-            const profitPercent = bot.stats.sessionStartBal > 0 ? (sessionProfit / bot.stats.sessionStartBal * 100) : 0;
-            const profitSign = sessionProfit > 0 ? '+' : '';
-            let modeStatus = '🎲 WAGER';
-            if (bot.seuntai.active) modeStatus = `⚡ SEUNTAI L${bot.seuntai.layer}`;
-            
-            const message = `🎰 <b>WAGER MILESTONE ${milestone.toFixed(2)}</b>\n` +
-                `👤 User: <code>${bot.stakeUser}</code>\n` +
-                `💰 Currency: <code>${currencyName}</code>\n` +
-                `🎯 Total Wagered: <code>${bot.stats.wagered.toFixed(8)} ${currencyName}</code>\n` +
-                `📈 Session: <code>${profitSign}${sessionProfit.toFixed(8)} (${profitSign}${profitPercent.toFixed(2)}%)</code>\n` +
-                `🎲 Bets: <code>${bot.stats.betsSession}</code>\n` +
-                `📊 Mode: <code>${modeStatus}</code>\n` +
-                `⏰ ${new Date().toLocaleString()}`;
-            await this.sendMessage(message);
-        },
-
         async sendStartReport() {
             if (!CONFIG.telegram.sendOnStart) return;
             const currencyInfo = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
             const currencyName = currencyInfo ? currencyInfo.name : bot.selectedCurrency.toUpperCase();
-            const message = `🚀 <b>ORION × SEUNTAI FUSION</b>\n` +
+            const message = `🚀 <b>ORION × Z RECOVERY</b>\n` +
                 `👤 User: <code>${bot.stakeUser}</code>\n` +
                 `💰 Currency: <code>${currencyName}</code>\n` +
                 `💰 Balance: <code>${bot.stats.startBal.toFixed(8)}</code>\n` +
-                `⚡ Wager: <code>${bot.wagerMode.betPercent}% @ ${bot.wagerMode.diceChance}%</code>\n` +
-                `⚡ Recovery: <code>Seuntai ${bot.seuntai.triggerDropPercent}% / ${bot.seuntai.triggerConsecutiveLosses}x</code>\n` +
+                `⚡ Wager: <code>${bot.wagerMode.betPercent}% @ ${bot.wagerMode.mode === 'dice' ? bot.wagerMode.diceChance+'%' : bot.wagerMode.limboMultiplier+'x'}</code>\n` +
+                `⚡ Z Rec: <code>Drop ${bot.zRec.trigger.dropdownPercent}% / Trail ${bot.zRec.trail.activationPercent}%</code>\n` +
                 `⏰ ${new Date().toLocaleString()}`;
             await this.sendMessage(message);
             bot.lastTelegramReport = Date.now();
@@ -192,51 +187,46 @@
             await this.sendMessage(message);
         },
 
-        async sendSeuntaiStart() {
+        async sendPeriodicReport() {
             if (!CONFIG.telegram.enabled) return;
+            
             const currencyInfo = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
             const currencyName = currencyInfo ? currencyInfo.name : bot.selectedCurrency.toUpperCase();
-            const drawdownPercent = ((bot.seuntai.peakAtTrigger - bot.stats.currentBal) / bot.seuntai.peakAtTrigger * 100).toFixed(2);
-            const message = `⚡ <b>SEUNTAI RECOVERY ACTIVATED</b>\n` +
+            const runtime = bot.stats.startTime ? Math.floor((Date.now() - bot.stats.startTime) / 1000) : 0;
+            const hours = Math.floor(runtime / 3600);
+            const minutes = Math.floor((runtime % 3600) / 60);
+            const profitPercent = bot.stats.startBal > 0 ? ((bot.stats.profit / bot.stats.startBal) * 100) : 0;
+            const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100) : 0;
+            
+            const message = `📊 <b>PERIODIC REPORT (3 MIN)</b>\n` +
                 `👤 User: <code>${bot.stakeUser}</code>\n` +
                 `💰 Currency: <code>${currencyName}</code>\n` +
-                `📉 Drawdown: <code>${drawdownPercent}%</code>\n` +
-                `🎯 Target: <code>${bot.seuntai.targetBalance.toFixed(8)}</code>\n` +
-                `🎲 Layer: <code>${bot.seuntai.layer}</code>\n` +
+                `⏱️ Runtime: <code>${hours}h ${minutes}m</code>\n\n` +
+                `📈 CURRENT STATUS\n` +
+                `💰 Balance: <code>${bot.stats.currentBal.toFixed(8)}</code>\n` +
+                `📈 Profit: <code>${bot.stats.profit > 0 ? '+' : ''}${bot.stats.profit.toFixed(8)} (${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}%)</code>\n` +
+                `🏆 ATH: <code>${bot.stats.peakBalance.toFixed(8)}</code>\n` +
+                `📉 Max DD: <code>${bot.stats.maxDrawdownPercent.toFixed(2)}%</code>\n\n` +
+                `🎲 STATS\n` +
+                `🎯 Bets: <code>${bot.stats.bets}</code>\n` +
+                `📈 Win Rate: <code>${winRate.toFixed(2)}%</code>\n` +
+                `✅ Wins: <code>${bot.stats.wins}</code>\n` +
+                `❌ Losses: <code>${bot.stats.loss}</code>\n` +
+                `💰 Wagered: <code>${bot.stats.wagered.toFixed(8)}</code>\n\n` +
+                `⚙️ CONFIG\n` +
+                `🎲 Mode: <code>${bot.wagerMode.mode === 'dice' ? 'Dice' : 'Limbo'}</code>\n` +
+                `💰 Bet Percent: <code>${bot.wagerMode.betPercent}%</code>\n` +
+                `${bot.wagerMode.mode === 'dice' ? 
+                    `🎯 Chance: <code>${bot.wagerMode.diceChance}%</code>` : 
+                    `📊 Multiplier: <code>${bot.wagerMode.limboMultiplier}x</code>`}\n` +
+                `⚡ Z Rec: <code>Drop ${bot.zRec.trigger.dropdownPercent}%</code>\n` +
                 `⏰ ${new Date().toLocaleString()}`;
-            await this.sendMessage(message);
-        },
-
-        async sendSeuntaiSuccess() {
-            if (!CONFIG.telegram.enabled) return;
-            const currencyInfo = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
-            const currencyName = currencyInfo ? currencyInfo.name : bot.selectedCurrency.toUpperCase();
-            const recovered = bot.stats.currentBal - bot.seuntai.startBalance;
-            const message = `✅ <b>SEUNTAI RECOVERY SUCCESS</b>\n` +
-                `👤 User: <code>${bot.stakeUser}</code>\n` +
-                `💰 Currency: <code>${currencyName}</code>\n` +
-                `📈 Recovered: <code>+${recovered.toFixed(8)}</code>\n` +
-                `🎲 Layer: <code>${bot.seuntai.layer}</code>\n` +
-                `🔄 Attempts: <code>${bot.seuntai.attempts}</code>\n` +
-                `⏰ ${new Date().toLocaleString()}`;
-            await this.sendMessage(message);
-        },
-
-        async sendSeuntaiFail() {
-            if (!CONFIG.telegram.enabled) return;
-            const currencyInfo = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
-            const currencyName = currencyInfo ? currencyInfo.name : bot.selectedCurrency.toUpperCase();
-            const message = `❌ <b>SEUNTAI RECOVERY FAILED</b>\n` +
-                `👤 User: <code>${bot.stakeUser}</code>\n` +
-                `💰 Currency: <code>${currencyName}</code>\n` +
-                `📉 Loss: <code>${(bot.seuntai.startBalance - bot.stats.currentBal).toFixed(8)}</code>\n` +
-                `🔄 New Session Started\n` +
-                `⏰ ${new Date().toLocaleString()}`;
+            
             await this.sendMessage(message);
         }
     };
 
-    // =============== FIX: SYNC BALANCE DENGAN REAL ACCOUNT ===============
+    // =============== SYNC BALANCE ===============
     async function syncBalanceWithServer() {
         if (bot.isDemo) return bot.stats.currentBal;
         if (!bot.token) return bot.stats.currentBal;
@@ -275,6 +265,7 @@
                         
                         if (realBalance > bot.stats.peakBalance) {
                             bot.stats.peakBalance = realBalance;
+                            console.log(`🏆 NEW ATH: ${bot.stats.peakBalance.toFixed(8)}`);
                         }
                         
                         console.log(`🔄 Balance synced: ${oldBalance.toFixed(8)} → ${realBalance.toFixed(8)}`);
@@ -290,122 +281,233 @@
         return bot.stats.currentBal;
     }
 
-    // =============== SEUNTAI RECOVERY FUNCTIONS ===============
-    function checkSeuntaiTrigger() {
-        const s = bot.seuntai;
+    // =============== Z RECOVERY FUNCTIONS ===============
+    
+    function zRecNewBaseChance() {
+        const z = bot.zRec;
         
-        if (s.active) return false;
-        if (!bot.stats.peakBalance) bot.stats.peakBalance = bot.stats.currentBal;
+        z.baseChance = parseFloat((Math.random() * (z.chance.max - z.chance.min) + z.chance.min).toFixed(1));
+        z.singleChanceBets = 0;
+        z.singleChanceLimit = Math.floor(99 / z.baseChance);
+        z.currentChance = z.baseChance;
+    }
+
+    function zRecGetChanceIncrement() {
+        const z = bot.zRec;
+        return parseFloat((Math.random() * (z.chance.incrementMax - z.chance.incrementMin) + z.chance.incrementMin).toFixed(1));
+    }
+
+    function zRecGetCurrentGap() {
+        const z = bot.zRec;
+        if (z.trail.currentLevel === 1) return z.trail.level1Gap;
+        if (z.trail.currentLevel === 2) return z.trail.level2Gap;
+        return z.trail.level3Gap;
+    }
+
+    function zRecResetTrail() {
+        const z = bot.zRec;
+        z.trail.currentLevel = 1;
+        z.level1Peak = z.balancePeak;
+        z.level2Peak = 0;
+    }
+
+    function checkZRecTrigger() {
+        const z = bot.zRec;
         
-        if (bot.stats.currentBal > bot.stats.peakBalance) {
-            bot.stats.peakBalance = bot.stats.currentBal;
-        }
+        if (z.active) return false;
         
         let triggered = false;
         let reason = '';
         
-        if (s.useDropTrigger) {
+        if (z.trigger.useDropdown) {
             const peak = bot.stats.peakBalance;
             const drawdown = peak - bot.stats.currentBal;
             const drawdownPercent = (drawdown / peak) * 100;
             
-            if (drawdownPercent >= s.triggerDropPercent) {
+            if (drawdownPercent >= z.trigger.dropdownPercent) {
                 triggered = true;
-                reason = `Drawdown ${drawdownPercent.toFixed(2)}%`;
-                s.peakAtTrigger = peak;
-                s.drawdownAtTrigger = drawdown;
+                reason = `Drawdown ${drawdownPercent.toFixed(2)}% dari ATH (>=${z.trigger.dropdownPercent}%)`;
+                z.balancePeak = peak;
             }
         }
         
-        if (!triggered && s.useLossTrigger) {
-            if (bot.stats.consecutiveLosses >= s.triggerConsecutiveLosses) {
+        if (!triggered && z.trigger.useTime) {
+            const timeSinceLastWin = Date.now() - z.lastWinTime;
+            if (timeSinceLastWin >= z.trigger.timeSeconds * 1000) {
                 triggered = true;
-                reason = `${bot.stats.consecutiveLosses}x Losses`;
-                s.peakAtTrigger = Math.max(bot.stats.peakBalance, bot.stats.currentBal);
-                s.drawdownAtTrigger = s.peakAtTrigger - bot.stats.currentBal;
+                reason = `Time ${z.trigger.timeSeconds}s no win`;
+                z.balancePeak = Math.max(bot.stats.peakBalance, bot.stats.currentBal);
             }
         }
         
         if (triggered) {
-            console.log(`⚡⚡⚡ SEUNTAI TRIGGER: ${reason} ⚡⚡⚡`);
+            console.log(`⚡⚡⚡ Z RECOVERY TRIGGER: ${reason} ⚡⚡⚡`);
         }
         
         return triggered;
     }
 
-    function activateSeuntai() {
-        const s = bot.seuntai;
+    function activateZRec() {
+        const z = bot.zRec;
         
-        s.active = true;
-        s.layer = 1;
-        s.startBalance = bot.stats.currentBal;
-        s.targetBalance = s.peakAtTrigger;
-        s.attempts = 0;
-        s.currentBet = 0;
+        z.active = true;
+        z.steps = 0;
+        z.balanceStart = bot.stats.currentBal;
+        z.balancePeak = Math.max(z.balancePeak, bot.stats.currentBal);
+        z.level1Peak = z.balancePeak;
+        z.trail.isActive = false;
+        z.trail.currentLevel = 0;
+        z.recoveryProfit = 0;
+        z.recoveryProfitPercent = 0;
+        z.remainingToTarget = 0;
         
-        s.stats.totalRecoveries++;
+        zRecNewBaseChance();
         
-        console.log(`⚡⚡⚡ SEUNTAI ACTIVATED ⚡⚡⚡`);
-        console.log(`📉 Drawdown: ${(s.peakAtTrigger - bot.stats.currentBal).toFixed(8)}`);
-        console.log(`🎯 Target: ${s.targetBalance.toFixed(8)}`);
-        console.log(`🛡️ Max Bet: ${(bot.stats.currentBal * s.maxBetPercent / 100).toFixed(8)} (${s.maxBetPercent}%)`);
+        z.stats.totalRecoveries++;
         
-        TelegramAPI.sendSeuntaiStart();
+        console.log(`⚡⚡⚡ Z RECOVERY ACTIVATED ⚡⚡⚡`);
+        console.log(`🎯 TARGET : ${z.balanceStart.toFixed(8)}`);
+        console.log(`📉 Current: ${bot.stats.currentBal.toFixed(8)}`);
+        console.log(`🏆 ATH Global: ${bot.stats.peakBalance.toFixed(8)}`);
+        
         updateUI();
     }
 
-    function getSeuntaiBet() {
-        const s = bot.seuntai;
+    function getZRecBet() {
+        const z = bot.zRec;
         
-        const currentDrawdown = s.peakAtTrigger - bot.stats.currentBal;
-        const drawdownPercent = (currentDrawdown / s.peakAtTrigger) * 100;
-        
-        if (s.layer === 1 && drawdownPercent >= s.layer2TriggerDrawdown && s.layer2Enabled) {
-            s.layer = 2;
-            console.log(`⬆️ Seuntai Layer 2 Activated - Drawdown ${drawdownPercent.toFixed(2)}%`);
-        }
-        
-        let chance, multiplier;
-        
-        if (s.layer === 1) {
-            chance = Math.floor(Math.random() * (s.layer1ChanceMax - s.layer1ChanceMin + 1)) + s.layer1ChanceMin;
-            multiplier = s.layer1Multiplier;
-            s.stats.layer1Attempts++;
+        if (z.singleChanceBets < z.singleChanceLimit) {
+            z.currentChance = z.baseChance;
         } else {
-            chance = Math.floor(Math.random() * (s.layer2ChanceMax - s.layer2ChanceMin + 1)) + s.layer2ChanceMin;
-            multiplier = s.layer2Multiplier;
-            s.stats.layer2Attempts++;
+            const increment = zRecGetChanceIncrement();
+            z.currentChance = Math.min(98, z.baseChance + increment);
+        }
+
+        const needToRecover = z.balanceStart - bot.stats.currentBal;
+        
+        if (needToRecover <= 0) {
+            z.recoveryProfit = bot.stats.currentBal - z.balanceStart;
+            z.recoveryProfitPercent = (z.recoveryProfit / z.balanceStart) * 100;
+            z.remainingToTarget = 0;
+        } else {
+            z.recoveryProfit = 0;
+            z.recoveryProfitPercent = 0;
+            z.remainingToTarget = needToRecover;
+        }
+
+        const payout = 99 / z.currentChance;
+        let nextBet = 0;
+        
+        if (needToRecover > 0) {
+            nextBet = (needToRecover / (payout - 1)) * 1.1;
+        } else {
+            const loss = z.balancePeak - bot.stats.currentBal;
+            nextBet = loss > 0 ? (loss / (payout - 1)) * 1.01 : bot.globalMinBet;
         }
         
-        const totalLossToRecover = s.peakAtTrigger - bot.stats.currentBal;
-        const targetProfitPercent = 0.05;
-        const targetProfit = totalLossToRecover * targetProfitPercent;
-        const odds = 99 / chance;
+        const maxBet = bot.stats.currentBal * 0.1;
+        nextBet = Math.min(nextBet, maxBet);
+        nextBet = Math.max(nextBet, bot.globalMinBet);
         
-        let betAmount = (totalLossToRecover + targetProfit) / (odds - 1);
-        betAmount = betAmount * multiplier;
+        z.steps++;
         
-        const maxBet = bot.stats.currentBal * (s.maxBetPercent / 100);
-        
-        if (s.currentBet > 0) {
-            const maxIncrease = s.currentBet * 2;
-            betAmount = Math.min(betAmount, maxIncrease);
-        }
-        
-        betAmount = Math.min(betAmount, maxBet);
-        betAmount = Math.max(betAmount, bot.globalMinBet);
-        
-        s.currentBet = betAmount;
-        s.attempts++;
-        
-        console.log(`🎲 Seuntai L${s.layer}: ${betAmount.toFixed(8)} @ ${chance}% | Loss: ${totalLossToRecover.toFixed(8)} | Max: ${maxBet.toFixed(8)} (${s.maxBetPercent}%)`);
+        console.log(`⚡ Z Rec: ${nextBet.toFixed(8)} @ ${z.currentChance.toFixed(1)}% | Need: ${needToRecover > 0 ? needToRecover.toFixed(8) : '0'} | Current: ${bot.stats.currentBal.toFixed(8)} | Target: ${z.balanceStart.toFixed(8)}`);
         
         return {
-            bet: betAmount,
-            chance: chance,
+            bet: nextBet,
+            chance: z.currentChance,
             mode: 'dice',
-            type: 'SEUNTAI'
+            type: 'ZREC'
         };
+    }
+
+    function processZRecResult(win, pft, amt) {
+        const z = bot.zRec;
+        
+        if (bot.stats.currentBal > z.balancePeak) {
+            z.balancePeak = bot.stats.currentBal;
+            console.log(`📈 Recovery Peak: ${z.balancePeak.toFixed(8)}`);
+        }
+
+        const needToRecover = z.balanceStart - bot.stats.currentBal;
+        z.remainingToTarget = needToRecover > 0 ? needToRecover : 0;
+        
+        if (needToRecover <= 0) {
+            z.recoveryProfit = bot.stats.currentBal - z.balanceStart;
+            z.recoveryProfitPercent = (z.recoveryProfit / z.balanceStart) * 100;
+        }
+
+        if (bot.stats.currentBal >= z.balanceStart) {
+            console.log(`✅ Z RECOVERY SUCCESS - Balance kembali ke target!`);
+            console.log(`📈 Profit: ${z.recoveryProfit.toFixed(8)} (${z.recoveryProfitPercent.toFixed(2)}%)`);
+            
+            z.active = false;
+            z.stats.successfulRecoveries++;
+            z.stats.recoveredAmount += z.recoveryProfit;
+            z.lastWinTime = Date.now();
+            
+            startNewSession();
+            return 'SUCCESS';
+        }
+
+        if (z.trail.enabled && !z.trail.isActive) {
+            const profitFromStart = ((bot.stats.currentBal - z.balanceStart) / z.balanceStart) * 100;
+            if (profitFromStart >= z.trail.activationPercent) {
+                z.trail.isActive = true;
+                z.trail.currentLevel = 1;
+                z.level1Peak = z.balancePeak;
+                console.log(`🎯 TRAIL ACTIVATED at ${profitFromStart.toFixed(2)}% profit from start`);
+            }
+        }
+
+        if (z.trail.isActive) {
+            if (bot.stats.currentBal > z.level1Peak) {
+                z.level1Peak = bot.stats.currentBal;
+            }
+            
+            if (z.trail.currentLevel === 2 && bot.stats.currentBal > z.level2Peak) {
+                z.level2Peak = bot.stats.currentBal;
+            }
+            
+            if (z.trail.currentLevel === 1 && z.balancePeak > z.level1Peak * 1.01) {
+                z.trail.currentLevel = 2;
+                z.level2Peak = z.balancePeak;
+                console.log(`⬆️ TRAIL LEVEL 2`);
+            }
+            else if (z.trail.currentLevel === 2 && z.balancePeak > z.level2Peak * 1.005) {
+                z.trail.currentLevel = 3;
+                console.log(`⬆️ TRAIL LEVEL 3+`);
+            }
+            
+            const currentGap = zRecGetCurrentGap();
+            const gapThreshold = z.balancePeak * (1 - (currentGap / 100));
+            if (bot.stats.currentBal <= gapThreshold) {
+                console.log(`🛡️ TRAIL STOP at Level ${z.trail.currentLevel} - Gagal recover, masih ${needToRecover.toFixed(8)} dari target`);
+                
+                z.trail.isActive = false;
+                z.trail.currentLevel = 0;
+            }
+        }
+
+        if (z.steps >= z.maxSteps) {
+            console.log(`⚠️ Z RECOVERY MAX STEPS reached - Gagal recover, masih ${needToRecover.toFixed(8)} dari target`);
+            z.active = false;
+            z.stats.failedRecoveries++;
+            startNewSession();
+            return 'MAX_STEPS';
+        }
+
+        if (win) {
+            zRecNewBaseChance();
+            z.lastWinTime = Date.now();
+            if (z.trail.isActive) {
+                zRecResetTrail();
+            }
+        } else {
+            z.singleChanceBets++;
+        }
+
+        return 'CONTINUE';
     }
 
     function getWagerBet() {
@@ -424,6 +526,7 @@
             return {
                 bet: betAmount,
                 chance: w.diceChance,
+                multiplier: 99 / w.diceChance,
                 mode: 'dice',
                 type: 'WAGER'
             };
@@ -434,6 +537,7 @@
             return {
                 bet: betAmount,
                 multiplier: w.limboMultiplier,
+                chance: 99 / w.limboMultiplier,
                 mode: 'limbo',
                 type: 'WAGER'
             };
@@ -441,54 +545,19 @@
     }
 
     function getNextBet() {
-        const s = bot.seuntai;
+        const z = bot.zRec;
         
         if (bot.stats.currentBal > bot.stats.peakBalance) {
             bot.stats.peakBalance = bot.stats.currentBal;
-            bot.stats.peakResetCounter = 0;
+            console.log(`🏆 NEW ATH: ${bot.stats.peakBalance.toFixed(8)}`);
         }
         
-        if (!s.active && checkSeuntaiTrigger()) {
-            activateSeuntai();
+        if (!z.active && checkZRecTrigger()) {
+            activateZRec();
         }
         
-        if (s.active) {
-            if (bot.stats.currentBal >= s.targetBalance) {
-                console.log(`✅✅✅ SEUNTAI SUCCESS ✅✅✅`);
-                s.active = false;
-                s.stats.successfulRecoveries++;
-                s.stats.recoveredAmount += (bot.stats.currentBal - s.startBalance);
-                
-                TelegramAPI.sendSeuntaiSuccess();
-                bot.stats.peakBalance = bot.stats.currentBal;
-                
-                return getWagerBet();
-            }
-            
-            if (s.attempts >= s.maxAttempts) {
-                console.log(`❌❌❌ SEUNTAI FAILED - Max Attempts ❌❌❌`);
-                s.active = false;
-                s.stats.failedRecoveries++;
-                
-                TelegramAPI.sendSeuntaiFail();
-                startNewSession();
-                return getWagerBet();
-            }
-            
-            const totalDrawdown = bot.stats.sessionStartBal - bot.stats.currentBal;
-            const lossPercent = (totalDrawdown / bot.stats.sessionStartBal) * 100;
-            
-            if (lossPercent >= s.cutLossPercent) {
-                console.log(`❌❌❌ SEUNTAI FAILED - Cut Loss ${lossPercent.toFixed(2)}% ❌❌❌`);
-                s.active = false;
-                s.stats.failedRecoveries++;
-                
-                TelegramAPI.sendSeuntaiFail();
-                startNewSession();
-                return getWagerBet();
-            }
-            
-            return getSeuntaiBet();
+        if (z.active) {
+            return getZRecBet();
         }
         
         return getWagerBet();
@@ -498,43 +567,45 @@
         if (!bot.isRunning || bot.isPaused) return;
 
         try {
-            if (!bot.isDemo && bot.stats.bets % 3 === 0) {
-                await syncBalanceWithServer();
+            // Sync balance lebih jarang - setiap 10 bet saja
+            if (!bot.isDemo && bot.stats.bets % 10 === 0 && bot.stats.bets > 0) {
+                // Jangan await, biar jalan di background
+                syncBalanceWithServer().catch(() => {});
             }
 
             let betInfo = getNextBet();
             if (!betInfo) {
-                setTimeout(runLoop, 100);
+                setTimeout(runLoop, 0);
                 return;
             }
 
             let nextBet = betInfo.bet;
             
-            const HARD_CAP_PERCENT = bot.seuntai.maxBetPercent;
-            const maxAllowedBet = bot.stats.currentBal * (HARD_CAP_PERCENT / 100);
+            const maxAllowedBet = bot.stats.currentBal * 0.1;
             
             if (nextBet > maxAllowedBet) {
-                console.log(`⚠️ SAFETY: Bet ${nextBet.toFixed(8)} > ${HARD_CAP_PERCENT}% (${maxAllowedBet.toFixed(8)}) - REDUCING!`);
+                console.log(`⚠️ Bet too high: ${nextBet.toFixed(8)} > ${maxAllowedBet.toFixed(8)}`);
                 nextBet = maxAllowedBet;
             }
             
             if (bot.stats.lastBetAmount > 0 && nextBet > bot.stats.lastBetAmount * 2) {
-                console.log(`⚠️ SAFETY: Bet increase > 2x (${bot.stats.lastBetAmount.toFixed(8)} → ${nextBet.toFixed(8)}) - REDUCING!`);
+                console.log(`⚠️ Bet increase > 2x: ${bot.stats.lastBetAmount.toFixed(8)} → ${nextBet.toFixed(8)}`);
                 nextBet = bot.stats.lastBetAmount * 2;
             }
             
+            // Cek balance real sebelum bet (tanpa await yang bikin delay)
             if (!bot.isDemo) {
-                const currentRealBalance = await syncBalanceWithServer();
-                if (currentRealBalance < bot.globalMinBet) {
-                    console.log(`❌ Insufficient balance: ${currentRealBalance.toFixed(8)}`);
+                // Gunakan currentBal yang sudah ada, jangan sync dulu
+                if (bot.stats.currentBal < bot.globalMinBet) {
+                    console.log(`❌ Insufficient balance`);
                     bot.isRunning = false;
                     await TelegramAPI.sendStopReport("Insufficient Balance");
                     updateUI();
                     return;
                 }
                 
-                if (nextBet > currentRealBalance) {
-                    nextBet = currentRealBalance * 0.9;
+                if (nextBet > bot.stats.currentBal) {
+                    nextBet = bot.stats.currentBal * 0.9;
                 }
             }
 
@@ -565,8 +636,14 @@
             bot.stats.currentBal += pft;
             bot.stats.lastBetAmount = nextBet;
             
-            if (!bot.isDemo) {
-                await syncBalanceWithServer();
+            // Update balance dari result, lebih akurat
+            if (!bot.isDemo && res) {
+                // Update dari response jika ada
+                if (res.diceRoll?.balance) {
+                    bot.stats.currentBal = parseFloat(res.diceRoll.balance);
+                } else if (res.limboBet?.balance) {
+                    bot.stats.currentBal = parseFloat(res.limboBet.balance);
+                }
             }
             
             if (win) {
@@ -574,13 +651,11 @@
                 bot.stats.winsSession++;
                 bot.stats.consecutiveWins++;
                 bot.stats.consecutiveLosses = 0;
-                bot.wagerMode.winStreakCounter++;
             } else {
                 bot.stats.loss++;
                 bot.stats.lossSession++;
                 bot.stats.consecutiveLosses++;
                 bot.stats.consecutiveWins = 0;
-                bot.wagerMode.winStreakCounter = 0;
             }
             
             bot.stats.winRate = bot.stats.bets > 0 ? (bot.stats.wins / bot.stats.bets * 100) : 0;
@@ -588,9 +663,9 @@
             
             if (bot.stats.currentBal > bot.stats.peakBalance) {
                 bot.stats.peakBalance = bot.stats.currentBal;
+                console.log(`🏆 NEW ATH: ${bot.stats.peakBalance.toFixed(8)}`);
             }
 
-            // Update max drawdown
             const currentDrawdown = bot.stats.peakBalance - bot.stats.currentBal;
             if (currentDrawdown > bot.stats.maxDrawdown) {
                 bot.stats.maxDrawdown = currentDrawdown;
@@ -599,72 +674,71 @@
                 }
             }
 
-            checkWagerMilestone();
+            if (betInfo.type === 'ZREC') {
+                const result = processZRecResult(win, pft, nextBet);
+                if (result !== 'CONTINUE') {
+                    console.log(`🔄 Z Rec ended: ${result}`);
+                }
+            } else {
+                if (win) {
+                    bot.zRec.lastWinTime = Date.now();
+                }
+            }
 
-            const icon = betInfo.type === 'SEUNTAI' ? '⚡' : (betInfo.mode === 'dice' ? '🎲' : '📈');
-            const chanceText = betInfo.mode === 'dice' ? `${betInfo.chance.toFixed(2)}%` : `${(betInfo.multiplier || 1.0001).toFixed(4)}x`;
-            console.log(`${icon} ${nextBet.toFixed(8)} @ ${chanceText} → ${win ? '✅' : '❌'} ${pft > 0 ? '+' : ''}${pft.toFixed(8)} | Bal: ${bot.stats.currentBal.toFixed(8)} (${((nextBet/bot.stats.currentBal)*100).toFixed(2)}%)`);
+            const icon = betInfo.type === 'ZREC' ? '⚡' : (betInfo.mode === 'dice' ? '🎲' : '📈');
+            const chanceText = betInfo.mode === 'dice' ? `${betInfo.chance.toFixed(1)}%` : `${betInfo.multiplier.toFixed(4)}x`;
+            console.log(`${icon} ${nextBet.toFixed(8)} @ ${chanceText} → ${win ? '✅' : '❌'} ${pft > 0 ? '+' : ''}${pft.toFixed(8)} | Bal: ${bot.stats.currentBal.toFixed(8)} | ATH: ${bot.stats.peakBalance.toFixed(8)}`);
             
             updateDashboard();
 
-            if (CONFIG.telegram.enabled) {
+            // Telegram report tanpa delay
+            if (CONFIG.telegram.enabled && bot.stats.bets % 50 === 0) {
                 const now = Date.now();
-                if (now - bot.lastTelegramReport >= bot.telegramReportInterval * 60 * 1000) {
-                    await TelegramAPI.sendMessage(`📊 PERIODIC REPORT\nUser: ${bot.stakeUser}\nBalance: ${bot.stats.currentBal.toFixed(8)}\nProfit: ${bot.stats.profit > 0 ? '+' : ''}${bot.stats.profit.toFixed(8)}\nWagered: ${bot.stats.wagered.toFixed(8)}`);
+                if (now - bot.lastTelegramReport >= bot.telegramReportInterval) {
+                    // Jangan await, biar background
+                    TelegramAPI.sendPeriodicReport().catch(() => {});
                     bot.lastTelegramReport = now;
                 }
             }
 
-            // Reduced delay as requested
-            const delay = bot.isDemo ? 30 : (bot.seuntai.active ? 100 : 60);
-            
+            // LANGSUNG LOOP TANPA DELAY!
             if (bot.isRunning && !bot.isPaused) {
-                setTimeout(runLoop, delay);
+                // Gunakan setImmediate atau setTimeout 0 untuk loop secepat mungkin
+                if (typeof setImmediate !== 'undefined') {
+                    setImmediate(runLoop);
+                } else {
+                    setTimeout(runLoop, 0);
+                }
             }
 
         } catch (e) {
             console.log(`⚠️ Error: ${e.message}`);
             if (bot.isRunning && !bot.isPaused) {
-                setTimeout(runLoop, 500);
+                // Kalau error, tetap loop tanpa delay
+                setTimeout(runLoop, 0);
             }
         }
     }
 
-    function checkWagerMilestone() {
-        if (!bot.telegramWagerTracker.enabled) return;
-        const currentWagered = bot.stats.wagered;
-        const lastReported = bot.telegramWagerTracker.lastReportedWagered;
-        const step = bot.telegramWagerTracker.milestoneStep;
-        const currentMilestone = Math.floor(currentWagered / step);
-        const lastMilestone = Math.floor(lastReported / step);
-        
-        if (currentMilestone > lastMilestone) {
-            TelegramAPI.sendWagerMilestoneReport(currentWagered);
-            bot.telegramWagerTracker.lastReportedWagered = currentWagered;
-        }
-    }
-
     function startNewSession() {
-        bot.seuntai.active = false;
-        bot.seuntai.layer = 0;
+        bot.zRec.active = false;
+        bot.zRec.trail.isActive = false;
         
         bot.stats.sessionProfit = bot.stats.currentBal - bot.stats.sessionStartBal;
         bot.stats.sessionStartBal = bot.stats.currentBal;
         bot.stats.sessionStartTime = Date.now();
-        bot.stats.peakBalance = bot.stats.currentBal;
         bot.stats.consecutiveLosses = 0;
-        bot.stats.consecutiveWins = 0;
         bot.stats.betsSession = 0;
         bot.stats.winsSession = 0;
         bot.stats.lossSession = 0;
         bot.stats.wageredSession = 0;
+        bot.stats.winRateSession = 0;
         
-        bot.wagerMode.winStreakCounter = 0;
-        
-        console.log(`🔄 NEW SESSION - Balance: ${bot.stats.currentBal.toFixed(8)}`);
+        console.log(`🔄 NEW SESSION - Balance: ${bot.stats.currentBal.toFixed(8)} | ATH: ${bot.stats.peakBalance.toFixed(8)}`);
         updateUI();
     }
 
+    // =============== API ===============
     const API = {
         async syncOnce() {
             try {
@@ -860,35 +934,48 @@
         }
     };
 
-    // =============== UI - FIX: SEMUA ELEMENT LENGKAP ===============
+    // =============== UI ELEGAN - HITAM GRADIENT UNGU ===============
     function createUI() {
         if (document.getElementById("orion-fusion-wrap")) return;
 
         const style = document.createElement("style");
         style.innerHTML = `
-            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-            
             #orion-fusion-wrap {
                 position: fixed;
-                top: 20px;
+                top: 50%;
                 right: 20px;
-                width: 440px;
-                background: linear-gradient(165deg, #0B1120 0%, #0F172A 100%);
-                border: 1px solid rgba(56, 189, 248, 0.2);
-                border-radius: 24px;
+                transform: translateY(-50%);
+                width: min(420px, calc(100vw - 40px));
+                max-height: 90vh;
+                background: linear-gradient(145deg, #0A0A0F 0%, #1A0B2E 50%, #0D0B1A 100%);
+                border: 1px solid rgba(147, 51, 234, 0.3);
+                border-radius: 28px;
                 color: #fff;
                 font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
                 font-size: 13px;
                 z-index: 999999;
-                box-shadow: 0 25px 40px -12px rgba(0, 0, 0, 0.5);
-                backdrop-filter: blur(8px);
+                box-shadow: 0 30px 50px -15px rgba(88, 28, 135, 0.6), 0 0 0 1px rgba(168, 85, 247, 0.2) inset;
+                backdrop-filter: blur(10px);
                 overflow: hidden;
+                letter-spacing: 0.3px;
+            }
+            
+            @media (max-width: 480px) {
+                #orion-fusion-wrap {
+                    top: auto;
+                    bottom: 10px;
+                    right: 10px;
+                    left: 10px;
+                    width: auto;
+                    transform: none;
+                    max-height: 85vh;
+                }
             }
             
             .fusion-header {
-                background: linear-gradient(90deg, #0F172A 0%, #1E293B 100%);
-                padding: 20px 24px;
-                border-bottom: 1px solid rgba(56, 189, 248, 0.15);
+                background: linear-gradient(90deg, rgba(20, 5, 40, 0.95) 0%, rgba(45, 10, 70, 0.95) 100%);
+                padding: 18px 22px;
+                border-bottom: 1px solid rgba(168, 85, 247, 0.25);
                 position: relative;
                 overflow: hidden;
             }
@@ -896,54 +983,51 @@
             .fusion-header::before {
                 content: '';
                 position: absolute;
-                top: 0;
-                left: 0;
-                right: 0;
-                bottom: 0;
-                background: radial-gradient(circle at 30% 50%, rgba(56, 189, 248, 0.1) 0%, transparent 60%);
-                pointer-events: none;
+                top: -50%;
+                left: -50%;
+                width: 200%;
+                height: 200%;
+                background: radial-gradient(circle, rgba(168,85,247,0.1) 0%, transparent 70%);
+                animation: rotate 20s linear infinite;
+                z-index: 0;
+            }
+            
+            @keyframes rotate {
+                from { transform: rotate(0deg); }
+                to { transform: rotate(360deg); }
             }
             
             .fusion-title {
                 font-size: 24px;
                 font-weight: 800;
-                letter-spacing: -0.5px;
-                background: linear-gradient(135deg, #38BDF8 0%, #818CF8 100%);
+                background: linear-gradient(135deg, #E9D5FF 0%, #C084FC 40%, #A855F7 100%);
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
-                margin-bottom: 4px;
-                display: flex;
-                align-items: center;
-                gap: 8px;
+                margin-bottom: 6px;
+                position: relative;
+                z-index: 1;
+                text-shadow: 0 0 20px rgba(168,85,247,0.5);
+                letter-spacing: -0.5px;
             }
             
             .fusion-subtitle {
-                font-size: 12px;
-                color: #94A3B8;
-                font-weight: 500;
-                letter-spacing: 0.5px;
-                text-transform: uppercase;
+                font-size: 11px;
+                color: #D8B4FE;
                 display: flex;
                 justify-content: space-between;
-                align-items: center;
-            }
-            
-            .fusion-badge {
-                background: rgba(56, 189, 248, 0.15);
-                padding: 4px 10px;
-                border-radius: 20px;
-                font-size: 11px;
-                font-weight: 600;
-                color: #7DD3FC;
-                border: 1px solid rgba(56, 189, 248, 0.3);
+                position: relative;
+                z-index: 1;
+                opacity: 0.9;
+                text-transform: uppercase;
+                letter-spacing: 1px;
             }
             
             .fusion-content {
                 padding: 20px;
-                max-height: 70vh;
+                max-height: calc(85vh - 100px);
                 overflow-y: auto;
                 scrollbar-width: thin;
-                scrollbar-color: #334155 #0F172A;
+                scrollbar-color: #A855F7 #2D1B4A;
             }
             
             .fusion-content::-webkit-scrollbar {
@@ -951,22 +1035,24 @@
             }
             
             .fusion-content::-webkit-scrollbar-track {
-                background: #0F172A;
+                background: #2D1B4A;
+                border-radius: 10px;
             }
             
             .fusion-content::-webkit-scrollbar-thumb {
-                background: #334155;
-                border-radius: 6px;
+                background: #A855F7;
+                border-radius: 10px;
             }
             
             .mode-switch {
                 display: flex;
-                gap: 12px;
-                margin-bottom: 20px;
-                background: rgba(15, 23, 42, 0.6);
-                padding: 6px;
+                gap: 10px;
+                margin-bottom: 18px;
+                background: rgba(25, 10, 40, 0.7);
+                padding: 5px;
                 border-radius: 16px;
-                border: 1px solid rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(168, 85, 247, 0.2);
+                backdrop-filter: blur(5px);
             }
             
             .mode-option {
@@ -976,337 +1062,320 @@
                 border-radius: 12px;
                 cursor: pointer;
                 font-weight: 600;
-                font-size: 13px;
-                color: #94A3B8;
-                transition: all 0.2s;
-            }
-            
-            .mode-option.active {
-                background: linear-gradient(135deg, #2563EB 0%, #38BDF8 100%);
-                color: white;
-                box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
-            }
-            
-            .status-card {
-                background: linear-gradient(145deg, #0F172A, #0B1120);
-                border-radius: 20px;
-                padding: 16px;
-                margin-bottom: 20px;
-                border: 1px solid rgba(56, 189, 248, 0.15);
+                font-size: 12px;
+                color: #C4B5FD;
+                transition: all 0.3s ease;
                 position: relative;
                 overflow: hidden;
             }
             
-            .status-card::after {
+            .mode-option::before {
                 content: '';
                 position: absolute;
                 top: 0;
-                left: 0;
-                width: 4px;
+                left: -100%;
+                width: 100%;
                 height: 100%;
-                background: linear-gradient(180deg, #38BDF8, #818CF8);
-                border-radius: 4px 0 0 4px;
+                background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+                transition: left 0.5s;
             }
             
-            .status-header {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                margin-bottom: 12px;
+            .mode-option:hover::before {
+                left: 100%;
             }
             
-            .status-label {
-                font-size: 12px;
-                color: #94A3B8;
-                text-transform: uppercase;
-                letter-spacing: 1px;
-                font-weight: 600;
+            .mode-option.active {
+                background: linear-gradient(135deg, #7C3AED 0%, #A855F7 100%);
+                color: white;
+                box-shadow: 0 5px 15px -5px #A855F7;
+            }
+            
+            .status-card {
+                background: linear-gradient(145deg, rgba(25, 10, 45, 0.8), rgba(15, 5, 30, 0.9));
+                border-radius: 20px;
+                padding: 16px;
+                margin-bottom: 18px;
+                border: 1px solid rgba(168, 85, 247, 0.25);
+                box-shadow: 0 10px 20px -10px rgba(0,0,0,0.5), 0 0 0 1px rgba(168,85,247,0.1) inset;
+                backdrop-filter: blur(5px);
             }
             
             .status-value {
-                font-size: 20px;
+                font-size: 24px;
                 font-weight: 700;
-                color: #F8FAFC;
+                color: #F0E9FF;
+                text-shadow: 0 0 10px rgba(168,85,247,0.5);
+                letter-spacing: -0.5px;
             }
             
             .status-badge {
-                padding: 6px 14px;
+                padding: 4px 12px;
                 border-radius: 20px;
-                font-size: 12px;
+                font-size: 11px;
                 font-weight: 700;
-                background: rgba(16, 185, 129, 0.15);
-                color: #10B981;
+                background: linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(16, 185, 129, 0.1));
+                color: #6EE7B7;
                 border: 1px solid rgba(16, 185, 129, 0.3);
+                backdrop-filter: blur(5px);
             }
             
             .status-badge.recovery {
-                background: rgba(139, 92, 246, 0.15);
-                color: #C4B5FD;
-                border-color: rgba(139, 92, 246, 0.3);
+                background: linear-gradient(135deg, rgba(168, 85, 247, 0.2), rgba(126, 34, 206, 0.1));
+                color: #D8B4FE;
+                border: 1px solid rgba(168, 85, 247, 0.3);
             }
             
             .stats-grid {
                 display: grid;
-                grid-template-columns: repeat(2, 1fr);
-                gap: 16px;
-                margin-bottom: 20px;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 10px;
+                margin-bottom: 18px;
             }
             
             .stat-item {
-                background: rgba(15, 23, 42, 0.5);
-                border-radius: 16px;
-                padding: 14px;
-                border: 1px solid rgba(255, 255, 255, 0.03);
+                background: linear-gradient(145deg, rgba(30, 15, 50, 0.6), rgba(20, 8, 40, 0.8));
+                border-radius: 14px;
+                padding: 12px 8px;
+                text-align: center;
+                border: 1px solid rgba(168, 85, 247, 0.15);
+                transition: transform 0.2s;
+                backdrop-filter: blur(5px);
             }
             
-            .stat-icon {
-                font-size: 20px;
-                margin-bottom: 8px;
+            .stat-item:hover {
+                transform: translateY(-2px);
+                border-color: rgba(168, 85, 247, 0.4);
+                box-shadow: 0 5px 15px -8px #A855F7;
             }
             
             .stat-label {
-                font-size: 11px;
-                color: #94A3B8;
-                margin-bottom: 4px;
+                font-size: 9px;
+                color: #9CA3AF;
                 text-transform: uppercase;
                 letter-spacing: 0.5px;
+                margin-bottom: 4px;
             }
             
             .stat-number {
-                font-size: 16px;
+                font-size: 13px;
                 font-weight: 700;
-                color: #F8FAFC;
+                color: #F3E8FF;
             }
             
-            .stat-number.positive {
-                color: #10B981;
+            .stat-number.positive { color: #6EE7B7; text-shadow: 0 0 8px #10B981; }
+            .stat-number.negative { color: #FCA5A5; text-shadow: 0 0 8px #EF4444; }
+            
+            .section-card {
+                background: linear-gradient(145deg, rgba(25, 12, 45, 0.8), rgba(18, 8, 35, 0.9));
+                border-radius: 20px;
+                padding: 18px;
+                margin-bottom: 18px;
+                border: 1px solid rgba(168, 85, 247, 0.2);
+                box-shadow: 0 5px 15px -10px rgba(0,0,0,0.5);
+                backdrop-filter: blur(5px);
             }
             
-            .stat-number.negative {
-                color: #EF4444;
+            .zrec-card {
+                background: linear-gradient(145deg, #2E1065, #1E1B4B);
+                border-radius: 20px;
+                padding: 18px;
+                margin-bottom: 18px;
+                border: 1px solid rgba(216, 180, 254, 0.3);
+                box-shadow: 0 10px 25px -12px #A855F7, 0 0 0 1px rgba(216,180,254,0.2) inset;
+                position: relative;
+                overflow: hidden;
+            }
+            
+            .zrec-card::before {
+                content: '';
+                position: absolute;
+                top: -30%;
+                right: -30%;
+                width: 200px;
+                height: 200px;
+                background: radial-gradient(circle, rgba(168,85,247,0.2) 0%, transparent 70%);
+                border-radius: 50%;
+                pointer-events: none;
             }
             
             .section-title {
                 font-size: 16px;
                 font-weight: 700;
-                color: #F8FAFC;
-                margin: 24px 0 16px 0;
+                background: linear-gradient(135deg, #C084FC, #E9D5FF);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                margin-bottom: 15px;
+                letter-spacing: -0.3px;
                 display: flex;
                 align-items: center;
-                gap: 8px;
+                gap: 6px;
             }
             
-            .section-title i {
-                color: #38BDF8;
-            }
-            
-            .seuntai-card {
-                background: linear-gradient(145deg, #1E1B4B, #0F172A);
-                border-radius: 20px;
-                padding: 20px;
-                margin-bottom: 20px;
-                border: 1px solid rgba(139, 92, 246, 0.3);
-                position: relative;
-                overflow: hidden;
-            }
-            
-            .seuntai-card::before {
-                content: '⚡';
-                position: absolute;
-                right: -20px;
-                bottom: -20px;
-                font-size: 100px;
-                opacity: 0.05;
-                color: #8B5CF6;
-            }
-            
-            .seuntai-header {
-                display: flex;
-                align-items: center;
-                gap: 10px;
-                margin-bottom: 16px;
-            }
-            
-            .seuntai-icon {
-                font-size: 24px;
-            }
-            
-            .seuntai-title {
+            .zrec-title {
                 font-size: 16px;
                 font-weight: 700;
-                color: #C4B5FD;
+                background: linear-gradient(135deg, #E9D5FF, #F0E9FF);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                margin-bottom: 15px;
+                letter-spacing: -0.3px;
+                position: relative;
+                z-index: 1;
             }
             
-            .trigger-row {
+            .setting-row {
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
-                margin-bottom: 12px;
-                padding: 8px 0;
-                border-bottom: 1px solid rgba(139, 92, 246, 0.1);
+                margin-bottom: 14px;
+                padding: 0 4px;
             }
             
-            .trigger-label {
-                color: #CBD5E1;
+            .setting-label {
+                color: #D8D0E0;
                 font-size: 12px;
-            }
-            
-            .trigger-control {
-                display: flex;
-                align-items: center;
-                gap: 10px;
-            }
-            
-            .switch {
-                position: relative;
-                display: inline-block;
-                width: 44px;
-                height: 24px;
-            }
-            
-            .switch input {
-                opacity: 0;
-                width: 0;
-                height: 0;
-            }
-            
-            .slider {
-                position: absolute;
-                cursor: pointer;
-                top: 0;
-                left: 0;
-                right: 0;
-                bottom: 0;
-                background-color: #334155;
-                transition: .2s;
-                border-radius: 24px;
-            }
-            
-            .slider:before {
-                position: absolute;
-                content: "";
-                height: 20px;
-                width: 20px;
-                left: 2px;
-                bottom: 2px;
-                background-color: white;
-                transition: .2s;
-                border-radius: 50%;
-            }
-            
-            input:checked + .slider {
-                background: linear-gradient(135deg, #8B5CF6, #6D28D9);
-            }
-            
-            input:checked + .slider:before {
-                transform: translateX(20px);
+                font-weight: 500;
             }
             
             .number-input {
-                width: 70px;
-                background: #0F172A;
-                border: 1px solid #334155;
-                border-radius: 8px;
-                padding: 6px 10px;
-                color: white;
+                width: 80px;
+                background: rgba(10, 5, 20, 0.7);
+                border: 1px solid #6B21A5;
+                border-radius: 10px;
+                padding: 8px 10px;
+                color: #F0E9FF;
                 font-size: 12px;
-                font-weight: 600;
                 text-align: center;
+                transition: all 0.2s;
+                backdrop-filter: blur(5px);
             }
             
             .number-input:focus {
-                border-color: #8B5CF6;
                 outline: none;
+                border-color: #A855F7;
+                box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.3);
             }
             
-            .layer-badge {
+            .badge {
                 display: inline-block;
                 padding: 4px 12px;
                 border-radius: 20px;
-                font-size: 11px;
+                font-size: 10px;
                 font-weight: 700;
-                background: rgba(139, 92, 246, 0.2);
-                color: #C4B5FD;
-                border: 1px solid rgba(139, 92, 246, 0.4);
+                background: linear-gradient(135deg, rgba(168, 85, 247, 0.2), rgba(126, 34, 206, 0.1));
+                color: #D8B4FE;
+                border: 1px solid rgba(168, 85, 247, 0.3);
+                backdrop-filter: blur(5px);
             }
             
-            .wager-card {
-                background: rgba(15, 23, 42, 0.5);
-                border-radius: 16px;
-                padding: 16px;
-                margin-bottom: 16px;
-                border: 1px solid rgba(56, 189, 248, 0.2);
+            .trail-indicator {
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                display: inline-block;
+                margin-right: 6px;
+                box-shadow: 0 0 8px currentColor;
+            }
+            
+            .trail-active { 
+                background: #FBBF24; 
+                box-shadow: 0 0 12px #FBBF24;
+            }
+            .trail-inactive { 
+                background: #94A3B8; 
+            }
+            
+            .currency-select {
+                width: 100%;
+                background: rgba(20, 10, 35, 0.8);
+                border: 1px solid #6B21A5;
+                border-radius: 14px;
+                padding: 12px;
+                color: #F0E9FF;
+                font-size: 13px;
+                margin-bottom: 18px;
+                cursor: pointer;
+                backdrop-filter: blur(5px);
+                font-weight: 500;
+            }
+            
+            .currency-select option {
+                background: #1E1035;
+                color: #F0E9FF;
             }
             
             .control-buttons {
                 display: grid;
                 grid-template-columns: 1fr 1fr;
-                gap: 12px;
-                margin-top: 20px;
+                gap: 10px;
+                margin-top: 18px;
             }
             
             .btn {
                 padding: 14px;
                 border: none;
-                border-radius: 14px;
+                border-radius: 16px;
                 font-size: 14px;
                 font-weight: 700;
                 cursor: pointer;
-                transition: all 0.2s;
                 display: flex;
                 align-items: center;
                 justify-content: center;
                 gap: 8px;
+                transition: all 0.3s;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                position: relative;
+                overflow: hidden;
+            }
+            
+            .btn::before {
+                content: '';
+                position: absolute;
+                top: 0;
+                left: -100%;
+                width: 100%;
+                height: 100%;
+                background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+                transition: left 0.5s;
+            }
+            
+            .btn:hover::before {
+                left: 100%;
             }
             
             .btn-start {
-                background: linear-gradient(135deg, #10B981, #059669);
+                background: linear-gradient(135deg, #6B21A5, #A855F7);
                 color: white;
-                box-shadow: 0 8px 16px -4px rgba(16, 185, 129, 0.2);
+                box-shadow: 0 10px 20px -8px #A855F7;
             }
             
             .btn-start:hover {
                 transform: translateY(-2px);
-                box-shadow: 0 12px 20px -4px rgba(16, 185, 129, 0.3);
+                box-shadow: 0 15px 25px -10px #A855F7;
             }
             
             .btn-stop {
-                background: linear-gradient(135deg, #EF4444, #DC2626);
+                background: linear-gradient(135deg, #7F1D1D, #991B1B);
                 color: white;
-                box-shadow: 0 8px 16px -4px rgba(239, 68, 68, 0.2);
+                box-shadow: 0 10px 20px -8px #991B1B;
             }
             
             .btn-stop:hover {
                 transform: translateY(-2px);
-                box-shadow: 0 12px 20px -4px rgba(239, 68, 68, 0.3);
+                box-shadow: 0 15px 25px -10px #991B1B;
             }
             
             .btn-secondary {
-                background: #1E293B;
-                color: #E2E8F0;
-                border: 1px solid #334155;
+                background: linear-gradient(135deg, #2D1B4A, #1E1035);
+                color: #D8B4FE;
+                border: 1px solid #6B21A5;
             }
             
             .btn-secondary:hover {
-                background: #334155;
-            }
-            
-            .currency-select {
-                width: 100%;
-                background: #0F172A;
-                border: 1px solid #334155;
-                border-radius: 12px;
-                padding: 12px 16px;
-                color: white;
-                font-size: 13px;
-                font-weight: 500;
-                margin-bottom: 16px;
-                cursor: pointer;
-            }
-            
-            .currency-select option {
-                background: #0F172A;
-                color: white;
+                background: linear-gradient(135deg, #3B2260, #2D1B4A);
+                color: #F0E9FF;
+                transform: translateY(-2px);
             }
             
             .live-indicator {
@@ -1318,47 +1387,58 @@
             .live-dot {
                 width: 8px;
                 height: 8px;
-                background: #10B981;
+                background: #A855F7;
                 border-radius: 50%;
                 animation: pulse 2s infinite;
+                box-shadow: 0 0 12px #A855F7;
             }
             
             @keyframes pulse {
-                0%, 100% { opacity: 1; }
-                50% { opacity: 0.5; }
+                0%, 100% { 
+                    opacity: 1;
+                    transform: scale(1);
+                }
+                50% { 
+                    opacity: 0.6;
+                    transform: scale(1.2);
+                }
             }
             
-            .profit-float {
-                position: absolute;
-                top: 20px;
-                right: 24px;
-                text-align: right;
-            }
-            
-            .profit-amount {
-                font-size: 18px;
-                font-weight: 700;
-            }
-            
-            .profit-label {
+            .fusion-badge {
+                background: rgba(168, 85, 247, 0.2);
+                padding: 4px 12px;
+                border-radius: 20px;
                 font-size: 11px;
-                color: #94A3B8;
+                font-weight: 600;
+                color: #D8B4FE;
+                border: 1px solid rgba(168, 85, 247, 0.3);
+            }
+            
+            .recovery-status {
+                margin-top: 15px;
+                padding: 12px;
+                background: rgba(0,0,0,0.3);
+                border-radius: 14px;
+                border: 1px solid rgba(168, 85, 247, 0.2);
+                backdrop-filter: blur(5px);
+            }
+            
+            hr {
+                border: none;
+                height: 1px;
+                background: linear-gradient(90deg, transparent, #A855F7, transparent);
+                margin: 15px 0;
             }
         `;
 
         document.head.appendChild(style);
 
-        // =============== HTML LENGKAP DENGAN MAX DROPDOWN ===============
         const html = `
             <div id="orion-fusion-wrap">
                 <div class="fusion-header">
-                    <div class="fusion-title">
-                        <span>⚡ ORION</span>
-                        <span style="font-size: 20px; background: none; -webkit-text-fill-color: #94A3B8;">×</span>
-                        <span style="background: linear-gradient(135deg, #C4B5FD, #8B5CF6); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">SEUNTAI</span>
-                    </div>
+                    <div class="fusion-title">⚡ ORION × Z RECOVERY</div>
                     <div class="fusion-subtitle">
-                        <span>FUSION ENGINE v1.0</span>
+                        <span>by orionlogic</span>
                         <span class="fusion-badge" id="live-mode-badge">⏹ STOPPED</span>
                     </div>
                 </div>
@@ -1366,263 +1446,181 @@
                 <div class="fusion-content">
                     <!-- Mode Switch -->
                     <div class="mode-switch">
-                        <div class="mode-option active" data-mode="real">🎯 REAL MODE</div>
-                        <div class="mode-option" data-mode="demo">🧪 TEST MODE</div>
+                        <div class="mode-option active" data-mode="real">🎯 REAL</div>
+                        <div class="mode-option" data-mode="demo">🧪 TEST</div>
                     </div>
                     
                     <!-- Status Card -->
                     <div class="status-card">
-                        <div class="status-header">
-                            <span class="status-label">Current Balance</span>
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+                            <span style="color: #C4B5FD; font-weight: 600;">CURRENT BALANCE</span>
                             <span class="live-indicator">
                                 <span class="live-dot"></span>
-                                <span id="runtime-status">00:00:00</span>
+                                <span id="runtime-status" style="color: #A78BFA;">00:00</span>
                             </span>
                         </div>
-                        <div style="display: flex; justify-content: space-between; align-items: baseline;">
+                        <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px;">
                             <span class="status-value" id="balance-display">0.00000000</span>
-                            <span style="color: #94A3B8; font-size: 14px;" id="currency-display">DOGE</span>
+                            <span style="color: #C4B5FD; font-weight: 600;" id="currency-display">DOGE</span>
                         </div>
-                        <div style="display: flex; justify-content: space-between; margin-top: 12px;">
-                            <div>
-                                <div style="color: #94A3B8; font-size: 11px;">USER</div>
-                                <div style="font-weight: 600; margin-top: 2px;" id="username-display">${bot.stakeUser}</div>
-                            </div>
-                            <div>
-                                <div style="color: #94A3B8; font-size: 11px;">PEAK</div>
-                                <div style="font-weight: 600; margin-top: 2px;" id="peak-display">0.00000000</div>
-                            </div>
-                            <div>
-                                <div style="color: #94A3B8; font-size: 11px;">STATUS</div>
-                                <div style="margin-top: 2px;" id="mode-display">
-                                    <span class="status-badge">🎲 WAGER</span>
-                                </div>
-                            </div>
+                        <div style="display: flex; justify-content: space-between; font-size: 11px; color: #9CA3AF;">
+                            <div>User: <span style="color: #F0E9FF;" id="username-display">${bot.stakeUser}</span></div>
+                            <div>ATH: <span style="color: #F0E9FF;" id="peak-display">0.00000000</span></div>
+                            <div id="mode-display"><span class="status-badge">🎲 WAGER</span></div>
                         </div>
                     </div>
                     
-                    <!-- Quick Stats - now includes max drawdown -->
+                    <!-- Stats Grid -->
                     <div class="stats-grid">
-                        <div class="stat-item">
-                            <div class="stat-icon">📊</div>
-                            <div class="stat-label">Wagered</div>
-                            <div class="stat-number" id="wagered-display">0.00</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-icon">💵</div>
-                            <div class="stat-label">Profit</div>
-                            <div class="stat-number" id="profit-display">0.00</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-icon">🎯</div>
-                            <div class="stat-label">Bets</div>
-                            <div class="stat-number" id="bets-display">0</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-icon">⚡</div>
-                            <div class="stat-label">Win Rate</div>
-                            <div class="stat-number" id="winrate-display">0%</div>
-                        </div>
-                        <!-- Max Drawdown (absolute) -->
-                        <div class="stat-item">
-                            <div class="stat-icon">📉</div>
-                            <div class="stat-label">Max Drop</div>
-                            <div class="stat-number" id="maxdrop-display">0.00000000</div>
-                        </div>
-                        <!-- Max Drawdown (%) -->
-                        <div class="stat-item">
-                            <div class="stat-icon">📉%</div>
-                            <div class="stat-label">Max Drop %</div>
-                            <div class="stat-number" id="maxdrop-percent-display">0%</div>
-                        </div>
+                        <div class="stat-item"><div class="stat-label">Wagered</div><div class="stat-number" id="wagered-display">0.00</div></div>
+                        <div class="stat-item"><div class="stat-label">Profit</div><div class="stat-number" id="profit-display">0.00</div></div>
+                        <div class="stat-item"><div class="stat-label">Bets</div><div class="stat-number" id="bets-display">0</div></div>
+                        <div class="stat-item"><div class="stat-label">Win Rate</div><div class="stat-number" id="winrate-display">0%</div></div>
+                        <div class="stat-item"><div class="stat-label">Wins</div><div class="stat-number" id="wins-display">0</div></div>
+                        <div class="stat-item"><div class="stat-label">Losses</div><div class="stat-number" id="losses-display">0</div></div>
+                        <div class="stat-item"><div class="stat-label">Max Drop</div><div class="stat-number" id="maxdrop-display">0.00</div></div>
+                        <div class="stat-item"><div class="stat-label">Drop %</div><div class="stat-number" id="maxdrop-percent-display">0%</div></div>
                     </div>
                     
                     <!-- Currency Selector -->
                     <select id="currency-select" class="currency-select"></select>
                     
-                    <!-- Wager Mode Card -->
-                    <div class="wager-card">
-                        <div style="display: flex; justify-content: space-between; margin-bottom: 16px;">
-                            <span style="font-weight: 700; color: #38BDF8;">🎲 WAGER MODE</span>
-                            <span style="color: #94A3B8; font-size: 11px;">99.5% | 1.0001x</span>
+                    <!-- SECTION 1: WAGER MODE -->
+                    <div class="section-card">
+                        <div class="section-title">🎲 WAGER MODE</div>
+                        
+                        <div class="setting-row">
+                            <span class="setting-label">Game Mode</span>
+                            <select id="wager-mode-select" style="background:rgba(10,5,20,0.7); color:#F0E9FF; border:1px solid #6B21A5; border-radius:10px; padding:8px;">
+                                <option value="dice" ${bot.wagerMode.mode === 'dice' ? 'selected' : ''}>Dice</option>
+                                <option value="limbo" ${bot.wagerMode.mode === 'limbo' ? 'selected' : ''}>Limbo</option>
+                            </select>
                         </div>
                         
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 8px;">
-                            <div>
-                                <div style="color: #94A3B8; font-size: 11px; margin-bottom: 4px;">BET %</div>
-                                <input type="number" id="wager-betpercent" class="number-input" value="${bot.wagerMode.betPercent}" min="0.1" max="5" step="0.1" style="width: 100%;">
-                            </div>
-                            <div>
-                                <div style="color: #94A3B8; font-size: 11px; margin-bottom: 4px;">MIN BET</div>
-                                <input type="number" id="minbet-input" class="number-input" value="${bot.globalMinBet}" min="0.000001" step="0.000001" style="width: 100%;">
-                            </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Bet Percent</span>
+                            <input type="number" id="wager-betpercent" class="number-input" value="${bot.wagerMode.betPercent}" min="0.1" max="5" step="0.1">
+                        </div>
+                        
+                        <div class="setting-row">
+                            <span class="setting-label">Dice Chance</span>
+                            <input type="number" id="wager-chance" class="number-input" value="${bot.wagerMode.diceChance}" min="1" max="99" step="0.1">
+                        </div>
+                        
+                        <div class="setting-row">
+                            <span class="setting-label">Limbo Multiplier</span>
+                            <input type="number" id="wager-multiplier" class="number-input" value="${bot.wagerMode.limboMultiplier}" min="1.0001" max="100" step="0.0001">
+                        </div>
+                        
+                        <div class="setting-row">
+                            <span class="setting-label">Min Bet</span>
+                            <input type="number" id="minbet-input" class="number-input" value="${bot.globalMinBet}" min="0.000001" step="0.000001">
+                        </div>
+                        
+                        <div class="setting-row">
+                            <span class="setting-label">Switch Cycles</span>
+                            <input type="number" id="wager-cycles" class="number-input" value="${bot.wagerMode.cyclesBetweenSwitch}" min="1" max="50" step="1">
                         </div>
                     </div>
                     
-                    <!-- Seuntai Recovery Card -->
-                    <div class="seuntai-card">
-                        <div class="seuntai-header">
-                            <span class="seuntai-icon">⚡</span>
-                            <span class="seuntai-title">SEUNTAI RECOVERY ENGINE</span>
-                            <span style="margin-left: auto;" id="seuntai-layer-badge" class="layer-badge">INACTIVE</span>
+                    <!-- SECTION 2: Z RECOVERY TRIGGER -->
+                    <div class="zrec-card">
+                        <div class="zrec-title">⚡ Z RECOVERY</div>
+                        
+                        <div class="setting-row">
+                            <span class="setting-label">Dropdown %</span>
+                            <input type="number" id="zrec-dropdown-percent" class="number-input" value="${bot.zRec.trigger.dropdownPercent}" min="0.1" max="20" step="0.1">
                         </div>
                         
-                        <!-- TRIGGER SETTINGS -->
-                        <div style="margin-bottom: 16px;">
-                            <div style="color: #C4B5FD; font-size: 12px; font-weight: 600; margin-bottom: 12px;">⚙️ TRIGGER</div>
-                            
-                            <div class="trigger-row">
-                                <span class="trigger-label">Drawdown Trigger</span>
-                                <div class="trigger-control">
-                                    <label class="switch">
-                                        <input type="checkbox" id="seuntai-use-drop" ${bot.seuntai.useDropTrigger ? 'checked' : ''}>
-                                        <span class="slider"></span>
-                                    </label>
-                                    <input type="number" id="seuntai-drop-percent" class="number-input" value="${bot.seuntai.triggerDropPercent}" min="0.1" max="20" step="0.1">
-                                    <span style="color: #94A3B8;">%</span>
-                                </div>
-                            </div>
-                            
-                            <div class="trigger-row">
-                                <span class="trigger-label">Loss Streak Trigger</span>
-                                <div class="trigger-control">
-                                    <label class="switch">
-                                        <input type="checkbox" id="seuntai-use-loss" ${bot.seuntai.useLossTrigger ? 'checked' : ''}>
-                                        <span class="slider"></span>
-                                    </label>
-                                    <input type="number" id="seuntai-loss-count" class="number-input" value="${bot.seuntai.triggerConsecutiveLosses}" min="1" max="20" step="1">
-                                    <span style="color: #94A3B8;">x</span>
-                                </div>
-                            </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Time Trigger (sec)</span>
+                            <input type="number" id="zrec-time-seconds" class="number-input" value="${bot.zRec.trigger.timeSeconds}" min="5" max="300" step="5">
                         </div>
                         
-                        <!-- LAYER 1 -->
-                        <div style="margin-bottom: 16px;">
-                            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
-                                <span style="color: #C4B5FD; font-size: 12px; font-weight: 600;">📊 LAYER 1 - STANDARD</span>
-                                <label class="switch" style="width: 36px; height: 20px;">
-                                    <input type="checkbox" id="seuntai-layer1-enabled" ${bot.seuntai.layer1Enabled ? 'checked' : ''}>
-                                    <span class="slider" style="height: 20px;"></span>
-                                </label>
-                            </div>
-                            
-                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                                <div>
-                                    <div style="color: #94A3B8; font-size: 11px;">Chance Min</div>
-                                    <input type="number" id="seuntai-layer1-chance-min" class="number-input" value="${bot.seuntai.layer1ChanceMin}" min="30" max="80" step="1" style="width: 100%;">
-                                </div>
-                                <div>
-                                    <div style="color: #94A3B8; font-size: 11px;">Chance Max</div>
-                                    <input type="number" id="seuntai-layer1-chance-max" class="number-input" value="${bot.seuntai.layer1ChanceMax}" min="40" max="90" step="1" style="width: 100%;">
-                                </div>
-                            </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Chance Min</span>
+                            <input type="number" id="zrec-chance-min" class="number-input" value="${bot.zRec.chance.min}" min="1" max="50" step="0.1">
                         </div>
                         
-                        <!-- LAYER 2 -->
-                        <div style="margin-bottom: 16px;">
-                            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
-                                <span style="color: #C4B5FD; font-size: 12px; font-weight: 600;">🔥 LAYER 2 - AGGRESSIVE</span>
-                                <label class="switch" style="width: 36px; height: 20px;">
-                                    <input type="checkbox" id="seuntai-layer2-enabled" ${bot.seuntai.layer2Enabled ? 'checked' : ''}>
-                                    <span class="slider" style="height: 20px;"></span>
-                                </label>
-                            </div>
-                            
-                            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;">
-                                <div>
-                                    <div style="color: #94A3B8; font-size: 11px;">Chance Min</div>
-                                    <input type="number" id="seuntai-layer2-chance-min" class="number-input" value="${bot.seuntai.layer2ChanceMin}" min="20" max="50" step="1" style="width: 100%;">
-                                </div>
-                                <div>
-                                    <div style="color: #94A3B8; font-size: 11px;">Chance Max</div>
-                                    <input type="number" id="seuntai-layer2-chance-max" class="number-input" value="${bot.seuntai.layer2ChanceMax}" min="30" max="60" step="1" style="width: 100%;">
-                                </div>
-                                <div>
-                                    <div style="color: #94A3B8; font-size: 11px;">Trigger %</div>
-                                    <input type="number" id="seuntai-layer2-trigger" class="number-input" value="${bot.seuntai.layer2TriggerDrawdown}" min="1" max="20" step="0.5" style="width: 100%;">
-                                </div>
-                            </div>
-                            <div style="margin-top: 8px;">
-                                <div style="color: #94A3B8; font-size: 11px;">Multiplier</div>
-                                <input type="number" id="seuntai-layer2-multiplier" class="number-input" value="${bot.seuntai.layer2Multiplier}" min="1" max="3" step="0.1" style="width: 100%;">
-                            </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Chance Max</span>
+                            <input type="number" id="zrec-chance-max" class="number-input" value="${bot.zRec.chance.max}" min="5" max="60" step="0.1">
                         </div>
                         
-                        <!-- SAFETY -->
-                        <div>
-                            <div style="color: #C4B5FD; font-size: 12px; font-weight: 600; margin-bottom: 12px;">🛡️ SAFETY</div>
-                            
-                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-                                <div>
-                                    <div style="color: #94A3B8; font-size: 11px;">Max Attempts</div>
-                                    <input type="number" id="seuntai-max-attempts" class="number-input" value="${bot.seuntai.maxAttempts}" min="5" max="50" step="5" style="width: 100%;">
-                                </div>
-                                <div>
-                                    <div style="color: #94A3B8; font-size: 11px;">Max Bet %</div>
-                                    <input type="number" id="seuntai-max-bet" class="number-input" value="${bot.seuntai.maxBetPercent}" min="5" max="30" step="5" style="width: 100%;">
-                                </div>
-                                <div>
-                                    <div style="color: #94A3B8; font-size: 11px;">Cut Loss %</div>
-                                    <input type="number" id="seuntai-cutloss" class="number-input" value="${bot.seuntai.cutLossPercent}" min="5" max="30" step="5" style="width: 100%;">
-                                </div>
-                            </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Max Steps</span>
+                            <input type="number" id="zrec-max-steps" class="number-input" value="${bot.zRec.maxSteps}" min="10" max="500" step="10">
                         </div>
                     </div>
                     
-                    <!-- Telegram Milestone -->
-                    <div style="background: rgba(15, 23, 42, 0.3); border-radius: 16px; padding: 16px; margin-bottom: 20px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-                            <span style="font-weight: 700; color: #38BDF8;">📱 TELEGRAM</span>
-                            <label class="switch" style="width: 36px; height: 20px;">
-                                <input type="checkbox" id="telegram-enabled" ${CONFIG.telegram.enabled ? 'checked' : ''}>
-                                <span class="slider" style="height: 20px;"></span>
+                    <!-- SECTION 3: TRAIL SETTINGS -->
+                    <div class="section-card">
+                        <div class="section-title">🛡️ TRAIL SETTINGS</div>
+                        
+                        <div class="setting-row">
+                            <span class="setting-label">Enable Trail</span>
+                            <label style="position:relative; display:inline-block; width:44px; height:22px;">
+                                <input type="checkbox" id="zrec-trail-enabled" ${bot.zRec.trail.enabled ? 'checked' : ''} style="opacity:0; width:0; height:0;">
+                                <span style="position:absolute; cursor:pointer; top:0; left:0; right:0; bottom:0; background-color:#2D1B4A; transition:.3s; border-radius:22px; border:1px solid #A855F7;"></span>
+                                <span style="position:absolute; content:''; height:18px; width:18px; left:2px; bottom:2px; background: linear-gradient(135deg, #C084FC, #A855F7); transition:.3s; border-radius:50%; transform:${bot.zRec.trail.enabled ? 'translateX(22px)' : 'none'}; box-shadow:0 0 8px #A855F7;"></span>
                             </label>
                         </div>
-                        <div style="display: flex; gap: 12px; align-items: center;">
-                            <div style="flex: 1;">
-                                <div style="color: #94A3B8; font-size: 11px;">Milestone Step</div>
-                                <input type="number" id="telegram-milestone-step" class="number-input" value="${bot.telegramWagerTracker.milestoneStep}" min="10" max="1000" step="10" style="width: 100%;">
+                        
+                        <div class="setting-row">
+                            <span class="setting-label">Activation %</span>
+                            <input type="number" id="zrec-trail-activation" class="number-input" value="${bot.zRec.trail.activationPercent}" min="0.1" max="10" step="0.1">
+                        </div>
+                        
+                        <div class="setting-row">
+                            <span class="setting-label">Level 1 Gap %</span>
+                            <input type="number" id="zrec-gap-level1" class="number-input" value="${bot.zRec.trail.level1Gap}" min="0.1" max="2" step="0.05">
+                        </div>
+                        
+                        <div class="setting-row">
+                            <span class="setting-label">Level 2 Gap %</span>
+                            <input type="number" id="zrec-gap-level2" class="number-input" value="${bot.zRec.trail.level2Gap}" min="0.05" max="1" step="0.05">
+                        </div>
+                        
+                        <div class="setting-row">
+                            <span class="setting-label">Level 3 Gap %</span>
+                            <input type="number" id="zrec-gap-level3" class="number-input" value="${bot.zRec.trail.level3Gap}" min="0.025" max="0.5" step="0.025">
+                        </div>
+                        
+                        <hr>
+                        
+                        <!-- Recovery Status -->
+                        <div class="recovery-status">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                                <span style="color: #C4B5FD;">Status: <span id="zrec-badge" class="badge">INACTIVE</span></span>
+                                <span style="color: #C4B5FD;">Trail: <span id="trail-status" style="color: #F0E9FF;">Inactive</span></span>
                             </div>
-                            <div>
-                                <div style="color: #94A3B8; font-size: 11px;">Last Report</div>
-                                <div style="font-weight: 600; color: #E2E8F0;" id="telegram-last-report">0.00</div>
+                            <div style="display: flex; justify-content: space-between; font-size: 12px;">
+                                <span style="color: #9CA3AF;">Target: <span style="color: #F0E9FF;" id="rec-target">0.00</span></span>
+                                <span style="color: #9CA3AF;">Current: <span style="color: #F0E9FF;" id="rec-progress">0.00</span></span>
+                                <span style="color: #9CA3AF;">Left: <span style="color: #F0E9FF;" id="rec-left">0.00</span></span>
                             </div>
                         </div>
                     </div>
                     
                     <!-- Control Buttons -->
                     <div class="control-buttons">
-                        <button id="start-btn" class="btn btn-start">
-                            <span>▶</span> START
-                        </button>
-                        <button id="stop-btn" class="btn btn-stop">
-                            <span>⏹</span> STOP
-                        </button>
+                        <button id="start-btn" class="btn btn-start">▶ START</button>
+                        <button id="stop-btn" class="btn btn-stop">⏹ STOP</button>
                     </div>
                     
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px;">
-                        <button id="manual-recovery-btn" class="btn btn-secondary">
-                            <span>⚡</span> MANUAL SEUNTAI
-                        </button>
-                        <button id="new-session-btn" class="btn btn-secondary">
-                            <span>🔄</span> NEW SESSION
-                        </button>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px;">
+                        <button id="manual-zrec-btn" class="btn btn-secondary">⚡ MANUAL Z REC</button>
+                        <button id="new-session-btn" class="btn btn-secondary">🔄 NEW SESSION</button>
                     </div>
-                    
-                    <!-- Seuntai Stats (removed as requested - live log bottom removed) -->
                 </div>
             </div>
         `;
 
         document.body.insertAdjacentHTML('beforeend', html);
         
-        // Setup event listeners
         setupEventListeners();
-        
-        // Initial UI update
         updateUI();
         
-        // Sync account setelah UI ready
         setTimeout(() => {
             API.syncOnce();
             updateTimer();
@@ -1632,7 +1630,6 @@
 
     // =============== EVENT LISTENERS ===============
     function setupEventListeners() {
-        // Mode switch
         document.querySelectorAll('.mode-option').forEach(btn => {
             btn.addEventListener('click', function() {
                 document.querySelectorAll('.mode-option').forEach(b => b.classList.remove('active'));
@@ -1641,118 +1638,96 @@
             });
         });
 
-        // Wager settings
+        document.getElementById('wager-mode-select')?.addEventListener('change', function() {
+            bot.wagerMode.mode = this.value;
+        });
+
         document.getElementById('wager-betpercent')?.addEventListener('change', function() {
             bot.wagerMode.betPercent = parseFloat(this.value) || 0.5;
+        });
+        
+        document.getElementById('wager-chance')?.addEventListener('change', function() {
+            bot.wagerMode.diceChance = parseFloat(this.value) || 99.5;
+        });
+        
+        document.getElementById('wager-multiplier')?.addEventListener('change', function() {
+            bot.wagerMode.limboMultiplier = parseFloat(this.value) || 1.0001;
+        });
+        
+        document.getElementById('wager-cycles')?.addEventListener('change', function() {
+            bot.wagerMode.cyclesBetweenSwitch = parseInt(this.value) || 10;
         });
         
         document.getElementById('minbet-input')?.addEventListener('change', function() {
             bot.globalMinBet = parseFloat(this.value) || 0.000123;
         });
 
-        // Currency
         document.getElementById('currency-select')?.addEventListener('change', function() {
             bot.selectedCurrency = this.value;
             updateUI();
         });
 
-        // Seuntai triggers
-        document.getElementById('seuntai-use-drop')?.addEventListener('change', function() {
-            bot.seuntai.useDropTrigger = this.checked;
+        document.getElementById('zrec-dropdown-percent')?.addEventListener('change', function() {
+            bot.zRec.trigger.dropdownPercent = parseFloat(this.value) || 5.0;
         });
         
-        document.getElementById('seuntai-drop-percent')?.addEventListener('change', function() {
-            bot.seuntai.triggerDropPercent = parseFloat(this.value) || 8.0;
+        document.getElementById('zrec-time-seconds')?.addEventListener('change', function() {
+            bot.zRec.trigger.timeSeconds = parseInt(this.value) || 60;
         });
         
-        document.getElementById('seuntai-use-loss')?.addEventListener('change', function() {
-            bot.seuntai.useLossTrigger = this.checked;
+        document.getElementById('zrec-chance-min')?.addEventListener('change', function() {
+            bot.zRec.chance.min = parseFloat(this.value) || 10.0;
         });
         
-        document.getElementById('seuntai-loss-count')?.addEventListener('change', function() {
-            bot.seuntai.triggerConsecutiveLosses = parseInt(this.value) || 10;
+        document.getElementById('zrec-chance-max')?.addEventListener('change', function() {
+            bot.zRec.chance.max = parseFloat(this.value) || 25.0;
         });
         
-        // Layer 1
-        document.getElementById('seuntai-layer1-enabled')?.addEventListener('change', function() {
-            bot.seuntai.layer1Enabled = this.checked;
+        document.getElementById('zrec-max-steps')?.addEventListener('change', function() {
+            bot.zRec.maxSteps = parseInt(this.value) || 100;
         });
         
-        document.getElementById('seuntai-layer1-chance-min')?.addEventListener('change', function() {
-            bot.seuntai.layer1ChanceMin = parseInt(this.value) || 65;
+        document.getElementById('zrec-trail-enabled')?.addEventListener('change', function() {
+            bot.zRec.trail.enabled = this.checked;
+            const slider = this.nextElementSibling.nextElementSibling;
+            if (slider) {
+                slider.style.transform = this.checked ? 'translateX(22px)' : 'none';
+            }
         });
         
-        document.getElementById('seuntai-layer1-chance-max')?.addEventListener('change', function() {
-            bot.seuntai.layer1ChanceMax = parseInt(this.value) || 75;
+        document.getElementById('zrec-trail-activation')?.addEventListener('change', function() {
+            bot.zRec.trail.activationPercent = parseFloat(this.value) || 2.0;
         });
         
-        // Layer 2
-        document.getElementById('seuntai-layer2-enabled')?.addEventListener('change', function() {
-            bot.seuntai.layer2Enabled = this.checked;
+        document.getElementById('zrec-gap-level1')?.addEventListener('change', function() {
+            bot.zRec.trail.level1Gap = parseFloat(this.value) || 0.5;
         });
         
-        document.getElementById('seuntai-layer2-chance-min')?.addEventListener('change', function() {
-            bot.seuntai.layer2ChanceMin = parseInt(this.value) || 50;
+        document.getElementById('zrec-gap-level2')?.addEventListener('change', function() {
+            bot.zRec.trail.level2Gap = parseFloat(this.value) || 0.25;
         });
         
-        document.getElementById('seuntai-layer2-chance-max')?.addEventListener('change', function() {
-            bot.seuntai.layer2ChanceMax = parseInt(this.value) || 60;
+        document.getElementById('zrec-gap-level3')?.addEventListener('change', function() {
+            bot.zRec.trail.level3Gap = parseFloat(this.value) || 0.125;
         });
         
-        document.getElementById('seuntai-layer2-trigger')?.addEventListener('change', function() {
-            bot.seuntai.layer2TriggerDrawdown = parseFloat(this.value) || 15.0;
-        });
-        
-        document.getElementById('seuntai-layer2-multiplier')?.addEventListener('change', function() {
-            bot.seuntai.layer2Multiplier = parseFloat(this.value) || 1.0;
-        });
-        
-        // Safety
-        document.getElementById('seuntai-max-attempts')?.addEventListener('change', function() {
-            bot.seuntai.maxAttempts = parseInt(this.value) || 8;
-        });
-        
-        document.getElementById('seuntai-max-bet')?.addEventListener('change', function() {
-            bot.seuntai.maxBetPercent = parseFloat(this.value) || 2.5;
-        });
-        
-        document.getElementById('seuntai-cutloss')?.addEventListener('change', function() {
-            bot.seuntai.cutLossPercent = parseFloat(this.value) || 10;
-        });
-        
-        // Telegram
-        document.getElementById('telegram-enabled')?.addEventListener('change', function() {
-            CONFIG.telegram.enabled = this.checked;
-            bot.telegramWagerTracker.enabled = this.checked;
-        });
-        
-        document.getElementById('telegram-milestone-step')?.addEventListener('change', function() {
-            bot.telegramWagerTracker.milestoneStep = parseFloat(this.value) || 100;
-        });
-        
-        // Manual recovery
-        document.getElementById('manual-recovery-btn')?.addEventListener('click', function() {
+        document.getElementById('manual-zrec-btn')?.addEventListener('click', function() {
             if (!bot.isRunning) {
                 alert('Start bot dulu!');
                 return;
             }
-            if (bot.seuntai.active) {
-                alert('Seuntai sudah aktif!');
+            if (bot.zRec.active) {
+                alert('Z Rec sudah aktif!');
                 return;
             }
-            bot.seuntai.peakAtTrigger = Math.max(bot.stats.peakBalance, bot.stats.currentBal);
-            bot.seuntai.drawdownAtTrigger = bot.seuntai.peakAtTrigger - bot.stats.currentBal;
-            activateSeuntai();
+            bot.zRec.balancePeak = Math.max(bot.stats.peakBalance, bot.stats.currentBal);
+            activateZRec();
         });
         
-        // New session
         document.getElementById('new-session-btn')?.addEventListener('click', function() {
-            if (bot.isRunning) {
-                startNewSession();
-            }
+            if (bot.isRunning) startNewSession();
         });
 
-        // Start button
         document.getElementById('start-btn')?.addEventListener('click', async () => {
             if (bot.isRunning) return;
 
@@ -1813,26 +1788,20 @@
                 peakResetCounter: 0
             };
 
-            bot.seuntai.active = false;
-            bot.seuntai.layer = 0;
-            bot.seuntai.attempts = 0;
-            bot.seuntai.startBalance = 0;
-            bot.seuntai.targetBalance = 0;
-            
-            bot.telegramWagerTracker.lastReportedWagered = 0;
+            bot.zRec.active = false;
+            bot.zRec.trail.isActive = false;
+            bot.zRec.lastWinTime = Date.now();
 
             if (CONFIG.telegram.enabled && CONFIG.telegram.sendOnStart) {
                 TelegramAPI.sendStartReport();
             }
 
             updateUI();
-            setTimeout(runLoop, 100);
+            setTimeout(runLoop, 0); // Langsung start tanpa delay
         });
 
-        // Stop button
         document.getElementById('stop-btn')?.addEventListener('click', () => {
             bot.isRunning = false;
-            console.log("🛑 STOPPED");
             updateUI();
             if (CONFIG.telegram.enabled && CONFIG.telegram.sendOnStop) {
                 TelegramAPI.sendStopReport("Manual Stop");
@@ -1840,109 +1809,81 @@
         });
     }
 
-    // =============== UI UPDATE FUNCTIONS ===============
     function updateTimer() {
         const runtime = bot.stats.startTime ? Math.floor((Date.now() - bot.stats.startTime) / 1000) : 0;
-        const h = Math.floor(runtime / 3600).toString().padStart(2, '0');
-        const m = Math.floor((runtime % 3600) / 60).toString().padStart(2, '0');
+        const m = Math.floor(runtime / 60).toString().padStart(2, '0');
         const s = (runtime % 60).toString().padStart(2, '0');
         const runtimeEl = document.getElementById('runtime-status');
-        if (runtimeEl) {
-            runtimeEl.textContent = bot.isRunning ? `${h}:${m}:${s}` : '00:00:00';
-        }
+        if (runtimeEl) runtimeEl.textContent = bot.isRunning ? `${m}:${s}` : '00:00';
     }
 
     function updateDashboard() {
-        // Balance
-        const balanceEl = document.getElementById('balance-display');
-        if (balanceEl) balanceEl.textContent = bot.stats.currentBal.toFixed(8);
+        document.getElementById('balance-display').textContent = bot.stats.currentBal.toFixed(8);
+        document.getElementById('peak-display').textContent = bot.stats.peakBalance.toFixed(8);
+        document.getElementById('wagered-display').textContent = bot.stats.wagered.toFixed(4);
+        document.getElementById('profit-display').textContent = (bot.stats.profit > 0 ? '+' : '') + bot.stats.profit.toFixed(4);
+        document.getElementById('bets-display').textContent = bot.stats.bets;
+        document.getElementById('winrate-display').textContent = bot.stats.winRate.toFixed(1) + '%';
+        document.getElementById('wins-display').textContent = bot.stats.wins;
+        document.getElementById('losses-display').textContent = bot.stats.loss;
+        document.getElementById('maxdrop-display').textContent = bot.stats.maxDrawdown.toFixed(4);
+        document.getElementById('maxdrop-percent-display').textContent = bot.stats.maxDrawdownPercent.toFixed(2) + '%';
+        document.getElementById('username-display').textContent = bot.stakeUser;
         
-        const peakEl = document.getElementById('peak-display');
-        if (peakEl) peakEl.textContent = bot.stats.peakBalance.toFixed(8);
-        
-        // Stats
-        const wageredEl = document.getElementById('wagered-display');
-        if (wageredEl) wageredEl.textContent = bot.stats.wagered.toFixed(8);
-        
-        const profitEl = document.getElementById('profit-display');
-        if (profitEl) {
-            profitEl.textContent = (bot.stats.profit > 0 ? '+' : '') + bot.stats.profit.toFixed(8);
-            profitEl.className = `stat-number ${bot.stats.profit > 0 ? 'positive' : bot.stats.profit < 0 ? 'negative' : ''}`;
-        }
-        
-        const betsEl = document.getElementById('bets-display');
-        if (betsEl) betsEl.textContent = bot.stats.bets;
-        
-        const winrateEl = document.getElementById('winrate-display');
-        if (winrateEl) winrateEl.textContent = bot.stats.winRate.toFixed(1) + '%';
-        
-        // Max drawdown
-        const maxdropEl = document.getElementById('maxdrop-display');
-        if (maxdropEl) maxdropEl.textContent = bot.stats.maxDrawdown.toFixed(8);
-        
-        const maxdropPercentEl = document.getElementById('maxdrop-percent-display');
-        if (maxdropPercentEl) maxdropPercentEl.textContent = bot.stats.maxDrawdownPercent.toFixed(2) + '%';
-        
-        const usernameEl = document.getElementById('username-display');
-        if (usernameEl) usernameEl.textContent = bot.stakeUser;
-        
-        // Mode
         const modeBadge = document.querySelector('#mode-display .status-badge');
         if (modeBadge) {
-            if (bot.seuntai.active) {
+            if (bot.zRec.active) {
                 modeBadge.className = 'status-badge recovery';
-                modeBadge.innerHTML = `⚡ SEUNTAI L${bot.seuntai.layer}`;
-            } else if (bot.isRunning) {
-                modeBadge.className = 'status-badge';
-                modeBadge.innerHTML = `🎲 ${bot.wagerMode.mode === 'dice' ? 'DICE' : 'LIMBO'}`;
+                modeBadge.innerHTML = '⚡ Z REC';
             } else {
                 modeBadge.className = 'status-badge';
-                modeBadge.innerHTML = '⏹ STOPPED';
+                modeBadge.innerHTML = '🎲 WAGER';
             }
         }
-        
-        // Live badge
+
         const liveBadge = document.getElementById('live-mode-badge');
         if (liveBadge) {
             liveBadge.textContent = bot.isRunning ? '🟢 RUNNING' : '⏹ STOPPED';
-            liveBadge.style.background = bot.isRunning ? 'rgba(16, 185, 129, 0.15)' : 'rgba(100, 116, 139, 0.15)';
-            liveBadge.style.color = bot.isRunning ? '#10B981' : '#94A3B8';
         }
-        
-        // Seuntai layer badge
-        const layerBadge = document.getElementById('seuntai-layer-badge');
-        if (layerBadge) {
-            if (bot.seuntai.active) {
-                layerBadge.textContent = `ACTIVE L${bot.seuntai.layer}`;
-                layerBadge.style.background = 'rgba(139, 92, 246, 0.2)';
-                layerBadge.style.color = '#C4B5FD';
-            } else {
-                layerBadge.textContent = 'INACTIVE';
-                layerBadge.style.background = 'rgba(100, 116, 139, 0.2)';
-                layerBadge.style.color = '#94A3B8';
-            }
+
+        const zrecBadge = document.getElementById('zrec-badge');
+        if (zrecBadge) {
+            zrecBadge.textContent = bot.zRec.active ? 'ACTIVE' : 'INACTIVE';
         }
-        
-        // Currency dropdown
+
+        const trailStatus = document.getElementById('trail-status');
+        if (trailStatus) {
+            trailStatus.textContent = bot.zRec.trail.isActive ? 'Active' : 'Inactive';
+        }
+
+        const recTarget = document.getElementById('rec-target');
+        if (recTarget && bot.zRec.active) {
+            recTarget.textContent = bot.zRec.balanceStart.toFixed(4);
+        }
+
+        const recProgress = document.getElementById('rec-progress');
+        if (recProgress) {
+            recProgress.textContent = bot.stats.currentBal.toFixed(4);
+        }
+
+        const recLeft = document.getElementById('rec-left');
+        if (recLeft && bot.zRec.active) {
+            const left = bot.zRec.balanceStart - bot.stats.currentBal;
+            recLeft.textContent = left > 0 ? left.toFixed(4) : '0.0000';
+        }
+
         const currencySelect = document.getElementById('currency-select');
         if (currencySelect && bot.availableCurrencies.length > 0) {
-            const current = currencySelect.value;
             currencySelect.innerHTML = '';
             bot.availableCurrencies.forEach(currency => {
                 const option = document.createElement('option');
                 option.value = currency.code;
-                option.textContent = `${currency.icon} ${currency.name} (${currency.balance.toFixed(8)})`;
+                option.textContent = `${currency.icon} ${currency.name}`;
                 option.selected = currency.code === bot.selectedCurrency;
                 currencySelect.appendChild(option);
             });
-            
-            const currencyDisplay = document.getElementById('currency-display');
-            if (currencyDisplay) currencyDisplay.textContent = bot.selectedCurrency.toUpperCase();
+            document.getElementById('currency-display').textContent = bot.selectedCurrency.toUpperCase();
         }
-        
-        // Telegram last report
-        const telegramLastEl = document.getElementById('telegram-last-report');
-        if (telegramLastEl) telegramLastEl.textContent = bot.telegramWagerTracker.lastReportedWagered.toFixed(2);
     }
 
     function updateUI() {
@@ -1953,16 +1894,12 @@
         return [
             { code: "doge", name: "DOGE", icon: "🐕", balance: 0 },
             { code: "btc", name: "BTC", icon: "₿", balance: 0 },
-            { code: "eth", name: "ETH", icon: "Ξ", balance: 0 },
-            { code: "ltc", name: "LTC", icon: "Ł", balance: 0 }
+            { code: "eth", name: "ETH", icon: "Ξ", balance: 0 }
         ];
     }
 
     function getCurrencyIcon(code) {
-        const icons = {
-            'doge': '🐕', 'btc': '₿', 'eth': 'Ξ', 'ltc': 'Ł', 'xrp': '✕', 'ada': 'A',
-            'trx': 'T', 'usdt': '💵', 'usdc': '💲', 'sol': '◎', 'bnb': 'Ⓜ', 'matic': 'Ⓟ'
-        };
+        const icons = { 'doge': '🐕', 'btc': '₿', 'eth': 'Ξ', 'ltc': 'Ł' };
         return icons[code] || '💰';
     }
 
