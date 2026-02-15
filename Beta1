@@ -1,6 +1,16 @@
 (function () {
     const CONFIG = {
         get apiUrl() { return window.location.origin + '/_api'; },
+        // AUTO-DETECT WebSocket URL berdasarkan domain yang sedang dibuka
+        get wsUrl() { 
+            const host = window.location.hostname;
+            // Kalau pakai stake.krd atau subdomainnya
+            if (host.includes('stake.krd')) {
+                return `wss://${host}/socket.io/?EIO=4&transport=websocket`;
+            }
+            // Default ke stake.com
+            return 'wss://wss.stake.com/?EIO=4&transport=websocket';
+        },
         version: "ORION × Z RECOVERY EXTREME",
         telegram: {
             enabled: true,
@@ -26,17 +36,18 @@
         lastTelegramReport: 0,
         telegramReportInterval: 3 * 60 * 1000,
         
-        // WebSocket Connection - FIXED ENDPOINT
+        // WebSocket Connection - AUTO ADAPTIF
         ws: null,
         wsConnected: false,
         wsSubscriptions: new Set(),
         pendingBets: new Map(),
         requestId: 0,
+        wsReconnectAttempt: 0,
         
         // OPTIMIZATION
         betQueue: [],
         processingBatch: false,
-        maxBatchSize: 3, // Turunin dikit biar aman
+        maxBatchSize: 3,
         batchInterval: 0,
         
         cache: {
@@ -147,7 +158,7 @@
         }
     };
 
-    // =============== FIXED WEBSOCKET MANAGER ===============
+    // =============== AUTO-ADAPTIVE WEBSOCKET MANAGER ===============
     const WebSocketManager = {
         connect() {
             if (bot.ws && (bot.ws.readyState === WebSocket.OPEN || bot.ws.readyState === WebSocket.CONNECTING)) {
@@ -155,39 +166,50 @@
             }
 
             try {
-                // FIX: Gunakan endpoint yang benar untuk real betting
-                const wsUrl = 'wss://wss.stake.com/?EIO=4&transport=websocket';
+                // AUTO: Pakai domain yang sedang dibuka
+                const wsUrl = CONFIG.wsUrl;
+                console.log(`🔌 Connecting to WebSocket: ${wsUrl}`);
+                
                 bot.ws = new WebSocket(wsUrl);
                 
                 bot.ws.onopen = () => {
-                    console.log('🔌 WebSocket Connected');
+                    console.log('🔌 WebSocket Connected to', wsUrl);
+                    bot.wsReconnectAttempt = 0;
                     
-                    // FIX: Protocol untuk Stake.com
+                    // Socket.io protocol
                     this.sendInit();
                 };
 
                 bot.ws.onmessage = (event) => {
-                    // FIX: Parse dengan benar
-                    let data;
                     try {
                         if (typeof event.data === 'string') {
-                            // Socket.io protocol: angka prefix + json
-                            if (event.data.startsWith('0')) {
-                                // Open message
+                            // Handle socket.io messages
+                            if (event.data === '0') {
+                                // Open message - send 40 with token
                                 this.sendInit();
                                 return;
-                            } else if (event.data.startsWith('40')) {
-                                // Connected
+                            }
+                            
+                            if (event.data.startsWith('40')) {
+                                // Connected successfully
                                 bot.wsConnected = true;
-                                console.log('🔌 WebSocket Ready');
+                                console.log('🔌 WebSocket Ready - Subscribing to balance');
                                 this.subscribeToBalance();
                                 return;
-                            } else if (event.data.startsWith('42')) {
-                                // Message
+                            }
+                            
+                            if (event.data.startsWith('42')) {
+                                // Data message
                                 const jsonStr = event.data.substring(2);
-                                const parsed = JSON.parse(jsonStr);
-                                this.handleMessage(parsed);
+                                const data = JSON.parse(jsonStr);
+                                this.handleMessage(data);
                                 return;
+                            }
+                            
+                            // Regular JSON (fallback)
+                            if (event.data.startsWith('{')) {
+                                const data = JSON.parse(event.data);
+                                this.handleMessage(data);
                             }
                         }
                     } catch (e) {
@@ -198,11 +220,17 @@
                 bot.ws.onclose = () => {
                     console.log('🔌 WebSocket Disconnected - Reconnecting...');
                     bot.wsConnected = false;
-                    setTimeout(() => this.connect(), 1000);
+                    
+                    // Exponential backoff
+                    const delay = Math.min(1000 * Math.pow(1.5, bot.wsReconnectAttempt), 10000);
+                    bot.wsReconnectAttempt++;
+                    
+                    setTimeout(() => this.connect(), delay);
                 };
 
                 bot.ws.onerror = (error) => {
                     console.log('🔌 WebSocket Error:', error);
+                    // Jangan reconnect disini, onclose yang handle
                 };
 
             } catch (e) {
@@ -214,44 +242,56 @@
         sendInit() {
             if (!bot.ws || bot.ws.readyState !== WebSocket.OPEN) return;
 
-            // FIX: Socket.io protocol
-            bot.ws.send('40{"jwt":"' + bot.token + '"}');
+            // Socket.io: 40 + JSON with token
+            const msg = `40{"jwt":"${bot.token}"}`;
+            bot.ws.send(msg);
         },
 
         handleMessage(data) {
-            if (!Array.isArray(data)) return;
-            
-            const [event, payload] = data;
-            
-            if (event === 'bet' && payload) {
-                // Handle bet result
-                const requestId = payload.id;
-                const callback = bot.pendingBets.get(requestId);
-                if (callback) {
-                    callback({ data: payload });
-                    bot.pendingBets.delete(requestId);
+            // Handle array format [event, payload]
+            if (Array.isArray(data)) {
+                const [event, payload] = data;
+                
+                if (event === 'bet' && payload) {
+                    const requestId = payload.id;
+                    const callback = bot.pendingBets.get(requestId);
+                    if (callback) {
+                        callback({ data: payload });
+                        bot.pendingBets.delete(requestId);
+                    }
                 }
+                
+                if (event === 'balance' && payload) {
+                    this.updateBalance(payload);
+                }
+                
+                return;
             }
             
-            if (event === 'balance' && payload) {
-                // Real-time balance update
-                const newBalance = parseFloat(payload.balance);
-                if (!isNaN(newBalance)) {
-                    const oldBalance = bot.stats.currentBal;
-                    bot.realBalance = newBalance;
+            // Handle object format
+            if (data.type === 'balance' || data.balance) {
+                this.updateBalance(data);
+            }
+        },
+
+        updateBalance(data) {
+            const newBalance = parseFloat(data.balance || data.amount);
+            if (!isNaN(newBalance)) {
+                const now = Date.now();
+                bot.realBalance = newBalance;
+                
+                if (bot.isRunning && !bot.isDemo) {
+                    bot.stats.currentBal = newBalance;
+                    bot.stats.profit = bot.stats.currentBal - bot.stats.startBal;
                     
-                    if (bot.isRunning && !bot.isDemo) {
-                        bot.stats.currentBal = newBalance;
-                        bot.stats.profit = bot.stats.currentBal - bot.stats.startBal;
-                        
-                        if (newBalance > bot.stats.peakBalance) {
-                            bot.stats.peakBalance = newBalance;
-                        }
-                        
-                        if (Date.now() - bot.cache.lastUpdate >= bot.cache.updateThrottle) {
-                            bot.cache.lastUpdate = Date.now();
-                            requestAnimationFrame(updateDashboard);
-                        }
+                    if (newBalance > bot.stats.peakBalance) {
+                        bot.stats.peakBalance = newBalance;
+                    }
+                    
+                    // Throttle UI updates
+                    if (now - bot.cache.lastUpdate >= bot.cache.updateThrottle) {
+                        bot.cache.lastUpdate = now;
+                        requestAnimationFrame(updateDashboard);
                     }
                 }
             }
@@ -260,13 +300,15 @@
         subscribeToBalance() {
             if (!bot.wsConnected || !bot.token) return;
 
-            // FIX: Subscribe ke balance updates
+            // Socket.io: 42 + ["subscribe", {room: "balance", currency: "...", token: "..."}]
             const msg = JSON.stringify(['subscribe', {
                 room: 'balance',
-                currency: bot.selectedCurrency
+                currency: bot.selectedCurrency,
+                token: bot.token
             }]);
             
             bot.ws.send('42' + msg);
+            console.log(`🔌 Subscribed to balance for ${bot.selectedCurrency}`);
         },
 
         queueBet(betData) {
@@ -317,7 +359,7 @@
         },
 
         async placeBet(betData) {
-            // FIX: Fallback ke REST API dulu karena WebSocket betting butuh auth berbeda
+            // FIX: Tetap pakai REST API untuk betting (lebih stabil)
             if (betData.type === 'dice') {
                 return API.placeDiceBet(betData.amount, betData.chance);
             } else {
@@ -326,7 +368,7 @@
         }
     };
 
-    // =============== FIXED API ===============
+    // =============== API (SAMA PERSIS) ===============
     const API = {
         async syncOnce() {
             try {
@@ -396,9 +438,9 @@
                         bot.stats.currentBal = bot.realBalance;
                     }
                     
-                    console.log(`✅ Synced: ${bot.stakeUser} | Balance: ${bot.realBalance}`);
+                    console.log(`✅ Synced: ${bot.stakeUser} | Balance: ${bot.realBalance} | Domain: ${window.location.hostname}`);
                     
-                    // Connect WebSocket for balance updates only
+                    // Connect WebSocket dengan domain yang benar
                     WebSocketManager.connect();
                     
                 } else {
@@ -477,7 +519,6 @@
                 if (!r.ok) throw new Error(`Bet failed: ${r.status}`);
                 const result = await r.json();
                 
-                // Update balance from response
                 if (result.diceRoll?.balance) {
                     bot.realBalance = parseFloat(result.diceRoll.balance);
                     if (bot.isRunning && !bot.isDemo) {
@@ -531,7 +572,6 @@
                 if (!r.ok) throw new Error(`Limbo bet failed: ${r.status}`);
                 const result = await r.json();
                 
-                // Update balance from response
                 if (result.limboBet?.balance) {
                     bot.realBalance = parseFloat(result.limboBet.balance);
                     if (bot.isRunning && !bot.isDemo) {
@@ -799,7 +839,6 @@
 
             let win = false, pft = 0;
             
-            // FIX: Always use REST API untuk betting
             if (bot.isDemo) {
                 await new Promise(r => setTimeout(r, 0));
                 win = Math.random() * 100 < betInfo.chance;
@@ -814,7 +853,6 @@
                     if (d) {
                         win = d.payout > 0;
                         pft = d.payout - d.amount;
-                        // Balance sudah diupdate dari response
                         if (d.balance) {
                             bot.realBalance = parseFloat(d.balance);
                             bot.stats.currentBal = bot.realBalance;
@@ -833,7 +871,6 @@
                 }
             }
 
-            // Update stats
             bot.stats.bets++;
             bot.stats.betsSession++;
             bot.stats.wagered += nextBet;
@@ -874,20 +911,17 @@
                 bot.zRec.lastWinTime = Date.now();
             }
 
-            // Throttled UI update
             const now = Date.now();
             if (now - bot.cache.lastUpdate >= bot.cache.updateThrottle) {
                 bot.cache.lastUpdate = now;
                 requestAnimationFrame(updateDashboard);
             }
 
-            // Telegram
             if (CONFIG.telegram.enabled && now - bot.lastTelegramReport >= bot.telegramReportInterval) {
                 bot.lastTelegramReport = now;
                 TelegramAPI.sendPeriodicReport();
             }
 
-            // Next loop
             if (bot.isRunning && !bot.isPaused) {
                 setImmediate ? setImmediate(runLoop) : setTimeout(runLoop, 0);
             }
@@ -951,6 +985,7 @@
                 `⚡ Wager: <code>${bot.wagerMode.betPercent}% @ ${bot.wagerMode.mode === 'dice' ? bot.wagerMode.diceChance+'%' : bot.wagerMode.limboMultiplier+'x'}</code>\n` +
                 `⚡ Z Rec: <code>Drop ${bot.zRec.trigger.dropdownPercent}% / Trail ${bot.zRec.trail.activationPercent}%</code>\n` +
                 `⚡ Mode: <code>EXTREME SPEED</code>\n` +
+                `🌐 Domain: <code>${window.location.hostname}</code>\n` +
                 `⏰ ${new Date().toLocaleString()}`;
             await this.sendMessage(message);
             bot.lastTelegramReport = Date.now();
@@ -1014,6 +1049,7 @@
                     `📊 Multiplier: <code>${bot.wagerMode.limboMultiplier}x</code>`}\n` +
                 `⚡ Z Rec: <code>Drop ${bot.zRec.trigger.dropdownPercent}%</code>\n` +
                 `⚡ Mode: <code>EXTREME SPEED</code>\n` +
+                `🌐 Domain: <code>${window.location.hostname}</code>\n` +
                 `⏰ ${new Date().toLocaleString()}`;
             
             await this.sendMessage(message);
@@ -1714,7 +1750,7 @@
                     </div>
                     
                     <div style="margin-top: 10px; text-align: center; color: #9CA3AF; font-size: 10px;">
-                        ⚡ EXTREME MODE: REST API Optimized + WebSocket Balance
+                        ⚡ EXTREME MODE: Auto-Adaptive WebSocket | Domain: ${window.location.hostname}
                     </div>
                 </div>
             </div>
@@ -1910,7 +1946,6 @@
 
             updateUI();
             
-            // Start multiple loops
             for (let i = 0; i < bot.maxBatchSize; i++) {
                 setTimeout(runLoop, i * 2);
             }
