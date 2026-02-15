@@ -26,6 +26,13 @@
         lastTelegramReport: 0,
         telegramReportInterval: 3 * 60 * 1000,
         
+        // WebSocket Connection
+        ws: null,
+        wsConnected: false,
+        wsSubscriptions: new Set(),
+        pendingBets: new Map(), // Store pending bets with their callbacks
+        requestId: 0,
+        
         telegramWagerTracker: {
             lastReportedWagered: 0,
             milestoneStep: 100,
@@ -126,6 +133,224 @@
         }
     };
 
+    // =============== WEBSOCKET MANAGER ===============
+    const WebSocketManager = {
+        connect() {
+            if (bot.ws && (bot.ws.readyState === WebSocket.OPEN || bot.ws.readyState === WebSocket.CONNECTING)) {
+                return;
+            }
+
+            try {
+                const wsUrl = 'wss://stake.krd/_api/websockets';
+                bot.ws = new WebSocket(wsUrl, 'graphql-transport-ws');
+                
+                bot.ws.onopen = () => {
+                    console.log('🔌 WebSocket Connected');
+                    this.sendInit();
+                };
+
+                bot.ws.onmessage = (event) => {
+                    this.handleMessage(JSON.parse(event.data));
+                };
+
+                bot.ws.onclose = () => {
+                    console.log('🔌 WebSocket Disconnected - Reconnecting in 1s...');
+                    bot.wsConnected = false;
+                    setTimeout(() => this.connect(), 1000);
+                };
+
+                bot.ws.onerror = (error) => {
+                    console.log('🔌 WebSocket Error:', error);
+                };
+
+            } catch (e) {
+                console.log('🔌 WebSocket Connection Error:', e);
+                setTimeout(() => this.connect(), 2000);
+            }
+        },
+
+        sendInit() {
+            if (!bot.ws || bot.ws.readyState !== WebSocket.OPEN) return;
+
+            bot.ws.send(JSON.stringify({
+                type: 'connection_init',
+                payload: {
+                    'x-access-token': bot.token
+                }
+            }));
+        },
+
+        handleMessage(data) {
+            // Handle connection acknowledgment
+            if (data.type === 'connection_ack') {
+                bot.wsConnected = true;
+                console.log('🔌 WebSocket Ready - Subscribing to balance updates');
+                
+                // Subscribe to balance updates
+                this.subscribeToBalance();
+                return;
+            }
+
+            // Handle subscription data
+            if (data.type === 'next' && data.payload?.data) {
+                this.handleSubscriptionData(data);
+                return;
+            }
+
+            // Handle bet responses
+            if (data.type === 'data' || data.id) {
+                const requestId = data.id;
+                if (bot.pendingBets.has(requestId)) {
+                    const callback = bot.pendingBets.get(requestId);
+                    callback(data);
+                    bot.pendingBets.delete(requestId);
+                }
+            }
+        },
+
+        subscribeToBalance() {
+            if (!bot.wsConnected || !bot.token) return;
+
+            const subscribeMsg = {
+                id: '1',
+                type: 'subscribe',
+                payload: {
+                    query: `
+                        subscription balanceUpdate {
+                            userBalanceChanged(currency: "${bot.selectedCurrency}") {
+                                balance
+                                currency
+                            }
+                        }
+                    `
+                }
+            };
+
+            bot.ws.send(JSON.stringify(subscribeMsg));
+            bot.wsSubscriptions.add('1');
+            console.log('🔌 Subscribed to balance updates');
+        },
+
+        handleSubscriptionData(data) {
+            if (data.id === '1' && data.payload?.data?.userBalanceChanged) {
+                // Real-time balance update
+                const balanceData = data.payload.data.userBalanceChanged;
+                const newBalance = parseFloat(balanceData.balance);
+                
+                if (!isNaN(newBalance)) {
+                    const oldBalance = bot.stats.currentBal;
+                    bot.realBalance = newBalance;
+                    
+                    if (bot.isRunning && !bot.isDemo) {
+                        bot.stats.currentBal = newBalance;
+                        bot.stats.profit = bot.stats.currentBal - bot.stats.startBal;
+                        
+                        if (newBalance > bot.stats.peakBalance) {
+                            bot.stats.peakBalance = newBalance;
+                            console.log(`🏆 NEW ATH: ${bot.stats.peakBalance.toFixed(8)}`);
+                        }
+                        
+                        console.log(`🔄 Balance updated via WebSocket: ${oldBalance.toFixed(8)} → ${newBalance.toFixed(8)}`);
+                        updateDashboard();
+                    }
+                }
+            }
+        },
+
+        async placeBet(betData) {
+            if (!bot.wsConnected || !bot.ws || bot.ws.readyState !== WebSocket.OPEN) {
+                // Fallback to REST API if WebSocket not connected
+                return this.placeBetRest(betData);
+            }
+
+            return new Promise((resolve, reject) => {
+                const requestId = 'bet_' + (++bot.requestId) + '_' + Date.now();
+                
+                const payload = {
+                    amount: parseFloat(betData.amount.toFixed(8)),
+                    currency: bot.selectedCurrency
+                };
+
+                let query = '';
+                if (betData.type === 'dice') {
+                    payload.target = parseFloat((100 - betData.chance).toFixed(2));
+                    payload.condition = "above";
+                    payload.identifier = Math.random().toString(36).slice(2) + Date.now();
+                    
+                    query = `
+                        mutation DiceRoll($amount: Float!, $currency: Currency!, $target: Float!, $condition: DiceCondition!, $identifier: String) {
+                            diceRoll(amount: $amount, currency: $currency, target: $target, condition: $condition, identifier: $identifier) {
+                                id
+                                amount
+                                payout
+                                target
+                                condition
+                                result
+                                state
+                            }
+                        }
+                    `;
+                } else {
+                    payload.multiplierTarget = betData.multiplier || 1.0001;
+                    payload.identifier = Math.random().toString(36).slice(2) + Date.now();
+                    
+                    query = `
+                        mutation LimboBet($amount: Float!, $currency: Currency!, $multiplierTarget: Float!, $identifier: String) {
+                            limboBet(amount: $amount, currency: $currency, multiplierTarget: $multiplierTarget, identifier: $identifier) {
+                                id
+                                amount
+                                payout
+                                multiplierTarget
+                                result
+                                state
+                            }
+                        }
+                    `;
+                }
+
+                const message = {
+                    id: requestId,
+                    type: 'subscribe',
+                    payload: {
+                        query: query,
+                        variables: payload
+                    }
+                };
+
+                // Store callback
+                bot.pendingBets.set(requestId, (response) => {
+                    if (response.payload?.data) {
+                        resolve(response.payload.data);
+                    } else if (response.payload?.errors) {
+                        reject(new Error(response.payload.errors[0].message));
+                    } else {
+                        reject(new Error('Unknown response'));
+                    }
+                });
+
+                // Send bet via WebSocket
+                bot.ws.send(JSON.stringify(message));
+
+                // Timeout fallback
+                setTimeout(() => {
+                    if (bot.pendingBets.has(requestId)) {
+                        bot.pendingBets.delete(requestId);
+                        reject(new Error('Bet timeout'));
+                    }
+                }, 5000);
+            });
+        },
+
+        // Fallback REST API bet (existing code)
+        async placeBetRest(betData) {
+            if (betData.type === 'dice') {
+                return API.placeDiceBet(betData.amount, betData.chance);
+            } else {
+                return API.placeLimboBet(betData.amount, betData.multiplier);
+            }
+        }
+    };
+
     // =============== TELEGRAM API ===============
     const TelegramAPI = {
         async sendMessage(text, parse_mode = "HTML") {
@@ -158,6 +383,7 @@
                 `💰 Balance: <code>${bot.stats.startBal.toFixed(8)}</code>\n` +
                 `⚡ Wager: <code>${bot.wagerMode.betPercent}% @ ${bot.wagerMode.mode === 'dice' ? bot.wagerMode.diceChance+'%' : bot.wagerMode.limboMultiplier+'x'}</code>\n` +
                 `⚡ Z Rec: <code>Drop ${bot.zRec.trigger.dropdownPercent}% / Trail ${bot.zRec.trail.activationPercent}%</code>\n` +
+                `⚡ WebSocket: <code>Connected</code>\n` +
                 `⏰ ${new Date().toLocaleString()}`;
             await this.sendMessage(message);
             bot.lastTelegramReport = Date.now();
@@ -220,66 +446,12 @@
                     `🎯 Chance: <code>${bot.wagerMode.diceChance}%</code>` : 
                     `📊 Multiplier: <code>${bot.wagerMode.limboMultiplier}x</code>`}\n` +
                 `⚡ Z Rec: <code>Drop ${bot.zRec.trigger.dropdownPercent}%</code>\n` +
+                `⚡ WebSocket: <code>Active</code>\n` +
                 `⏰ ${new Date().toLocaleString()}`;
             
             await this.sendMessage(message);
         }
     };
-
-    // =============== SYNC BALANCE ===============
-    async function syncBalanceWithServer() {
-        if (bot.isDemo) return bot.stats.currentBal;
-        if (!bot.token) return bot.stats.currentBal;
-        
-        try {
-            const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${bot.token}`,
-                    "x-access-token": bot.token
-                },
-                body: JSON.stringify({
-                    query: `query{user{balances{available{amount currency}}}}`
-                })
-            });
-            
-            if (!res.ok) return bot.stats.currentBal;
-            
-            const json = await res.json();
-            
-            if (json?.data?.user?.balances) {
-                const balances = json.data.user.balances;
-                const selectedBalance = balances.find(b => 
-                    b.available?.currency?.toLowerCase() === bot.selectedCurrency.toLowerCase()
-                );
-                
-                if (selectedBalance) {
-                    const realBalance = parseFloat(selectedBalance.available.amount);
-                    bot.realBalance = realBalance;
-                    
-                    if (bot.isRunning && !bot.isDemo) {
-                        const oldBalance = bot.stats.currentBal;
-                        bot.stats.currentBal = realBalance;
-                        bot.stats.profit = bot.stats.currentBal - bot.stats.startBal;
-                        
-                        if (realBalance > bot.stats.peakBalance) {
-                            bot.stats.peakBalance = realBalance;
-                            console.log(`🏆 NEW ATH: ${bot.stats.peakBalance.toFixed(8)}`);
-                        }
-                        
-                        console.log(`🔄 Balance synced: ${oldBalance.toFixed(8)} → ${realBalance.toFixed(8)}`);
-                    }
-                    
-                    return realBalance;
-                }
-            }
-        } catch (e) {
-            console.log("⚠️ Sync balance error:", e.message);
-        }
-        
-        return bot.stats.currentBal;
-    }
 
     // =============== Z RECOVERY FUNCTIONS ===============
     
@@ -567,12 +739,6 @@
         if (!bot.isRunning || bot.isPaused) return;
 
         try {
-            // Sync balance lebih jarang - setiap 10 bet saja
-            if (!bot.isDemo && bot.stats.bets % 10 === 0 && bot.stats.bets > 0) {
-                // Jangan await, biar jalan di background
-                syncBalanceWithServer().catch(() => {});
-            }
-
             let betInfo = getNextBet();
             if (!betInfo) {
                 setTimeout(runLoop, 0);
@@ -593,10 +759,8 @@
                 nextBet = bot.stats.lastBetAmount * 2;
             }
             
-            // Cek balance real sebelum bet (tanpa await yang bikin delay)
             if (!bot.isDemo) {
-                // Gunakan currentBal yang sudah ada, jangan sync dulu
-                if (bot.stats.currentBal < bot.globalMinBet) {
+                if (bot.realBalance < bot.globalMinBet) {
                     console.log(`❌ Insufficient balance`);
                     bot.isRunning = false;
                     await TelegramAPI.sendStopReport("Insufficient Balance");
@@ -604,47 +768,103 @@
                     return;
                 }
                 
-                if (nextBet > bot.stats.currentBal) {
-                    nextBet = bot.stats.currentBal * 0.9;
+                if (nextBet > bot.realBalance) {
+                    nextBet = bot.realBalance * 0.9;
                 }
             }
 
-            let res, win = false, pft = 0;
+            let win = false, pft = 0;
             
-            if (betInfo.mode === 'dice') {
-                res = await API.placeDiceBet(nextBet, betInfo.chance);
-                if (res?.diceRoll || res?.data?.diceRoll) {
-                    const d = res.diceRoll || res.data.diceRoll;
-                    win = d.payout > 0;
-                    pft = d.payout - d.amount;
+            // Use WebSocket for betting if connected
+            if (bot.wsConnected && !bot.isDemo) {
+                try {
+                    const betData = {
+                        amount: nextBet,
+                        type: betInfo.mode,
+                        chance: betInfo.chance,
+                        multiplier: betInfo.multiplier
+                    };
+                    
+                    const result = await WebSocketManager.placeBet(betData);
+                    
+                    if (betInfo.mode === 'dice') {
+                        const diceData = result.diceRoll || result.data?.diceRoll;
+                        if (diceData) {
+                            win = diceData.payout > 0;
+                            pft = diceData.payout - diceData.amount;
+                        }
+                    } else {
+                        const limboData = result.limboBet || result.data?.limboBet;
+                        if (limboData) {
+                            const resultNum = limboData.result || 0;
+                            win = resultNum >= (betInfo.multiplier || 1.0001);
+                            pft = win ? (limboData.amount * ((betInfo.multiplier || 1.0001) - 1)) : -limboData.amount;
+                        }
+                    }
+                } catch (e) {
+                    // Fallback to REST API
+                    console.log('⚠️ WebSocket bet failed, using REST:', e.message);
+                    const res = betInfo.mode === 'dice' 
+                        ? await API.placeDiceBet(nextBet, betInfo.chance)
+                        : await API.placeLimboBet(nextBet, betInfo.multiplier);
+                    
+                    if (betInfo.mode === 'dice') {
+                        const d = res.diceRoll || res.data?.diceRoll;
+                        if (d) {
+                            win = d.payout > 0;
+                            pft = d.payout - d.amount;
+                        }
+                    } else {
+                        const lb = res.limboBet || res.data?.limboBet;
+                        if (lb) {
+                            const result = lb.state?.result || 0;
+                            win = result >= (betInfo.multiplier || 1.0001);
+                            pft = win ? (lb.amount * ((betInfo.multiplier || 1.0001) - 1)) : -lb.amount;
+                        }
+                    }
                 }
             } else {
-                res = await API.placeLimboBet(nextBet, betInfo.multiplier || 1.0001);
-                if (res?.limboBet || res?.data?.limboBet) {
-                    const lb = res.limboBet || res.data.limboBet;
-                    const result = lb.state?.result || 0;
-                    win = result >= (betInfo.multiplier || 1.0001);
-                    pft = win ? (lb.amount * ((betInfo.multiplier || 1.0001) - 1)) : -lb.amount;
+                // Use REST API or demo mode
+                if (bot.isDemo) {
+                    // Demo mode simulation
+                    await new Promise(r => setTimeout(r, 0));
+                    win = Math.random() * 100 < betInfo.chance;
+                    pft = win ? (nextBet * (99 / betInfo.chance - 1)) : -nextBet;
+                } else {
+                    const res = betInfo.mode === 'dice' 
+                        ? await API.placeDiceBet(nextBet, betInfo.chance)
+                        : await API.placeLimboBet(nextBet, betInfo.multiplier);
+                    
+                    if (betInfo.mode === 'dice') {
+                        const d = res.diceRoll || res.data?.diceRoll;
+                        if (d) {
+                            win = d.payout > 0;
+                            pft = d.payout - d.amount;
+                        }
+                    } else {
+                        const lb = res.limboBet || res.data?.limboBet;
+                        if (lb) {
+                            const result = lb.state?.result || 0;
+                            win = result >= (betInfo.multiplier || 1.0001);
+                            pft = win ? (lb.amount * ((betInfo.multiplier || 1.0001) - 1)) : -lb.amount;
+                        }
+                    }
                 }
             }
 
+            // Update stats (sama seperti sebelumnya)
             bot.stats.bets++;
             bot.stats.betsSession++;
             bot.stats.wagered += nextBet;
             bot.stats.wageredSession += nextBet;
             bot.stats.profit += pft;
-            bot.stats.currentBal += pft;
-            bot.stats.lastBetAmount = nextBet;
             
-            // Update balance dari result, lebih akurat
-            if (!bot.isDemo && res) {
-                // Update dari response jika ada
-                if (res.diceRoll?.balance) {
-                    bot.stats.currentBal = parseFloat(res.diceRoll.balance);
-                } else if (res.limboBet?.balance) {
-                    bot.stats.currentBal = parseFloat(res.limboBet.balance);
-                }
+            // Balance will be updated via WebSocket subscription, but we update locally for speed
+            if (!bot.wsConnected || bot.isDemo) {
+                bot.stats.currentBal += pft;
             }
+            
+            bot.stats.lastBetAmount = nextBet;
             
             if (win) {
                 bot.stats.wins++;
@@ -661,11 +881,13 @@
             bot.stats.winRate = bot.stats.bets > 0 ? (bot.stats.wins / bot.stats.bets * 100) : 0;
             bot.stats.winRateSession = bot.stats.betsSession > 0 ? (bot.stats.winsSession / bot.stats.betsSession * 100) : 0;
             
+            // Update peak balance
             if (bot.stats.currentBal > bot.stats.peakBalance) {
                 bot.stats.peakBalance = bot.stats.currentBal;
                 console.log(`🏆 NEW ATH: ${bot.stats.peakBalance.toFixed(8)}`);
             }
 
+            // Update drawdown
             const currentDrawdown = bot.stats.peakBalance - bot.stats.currentBal;
             if (currentDrawdown > bot.stats.maxDrawdown) {
                 bot.stats.maxDrawdown = currentDrawdown;
@@ -674,6 +896,7 @@
                 }
             }
 
+            // Process Z Rec result
             if (betInfo.type === 'ZREC') {
                 const result = processZRecResult(win, pft, nextBet);
                 if (result !== 'CONTINUE') {
@@ -685,37 +908,31 @@
                 }
             }
 
+            // Log bet result
             const icon = betInfo.type === 'ZREC' ? '⚡' : (betInfo.mode === 'dice' ? '🎲' : '📈');
             const chanceText = betInfo.mode === 'dice' ? `${betInfo.chance.toFixed(1)}%` : `${betInfo.multiplier.toFixed(4)}x`;
             console.log(`${icon} ${nextBet.toFixed(8)} @ ${chanceText} → ${win ? '✅' : '❌'} ${pft > 0 ? '+' : ''}${pft.toFixed(8)} | Bal: ${bot.stats.currentBal.toFixed(8)} | ATH: ${bot.stats.peakBalance.toFixed(8)}`);
             
             updateDashboard();
 
-            // Telegram report tanpa delay
-            if (CONFIG.telegram.enabled && bot.stats.bets % 50 === 0) {
+            // Telegram report every 3 minutes
+            if (CONFIG.telegram.enabled) {
                 const now = Date.now();
                 if (now - bot.lastTelegramReport >= bot.telegramReportInterval) {
-                    // Jangan await, biar background
-                    TelegramAPI.sendPeriodicReport().catch(() => {});
+                    await TelegramAPI.sendPeriodicReport();
                     bot.lastTelegramReport = now;
                 }
             }
 
-            // LANGSUNG LOOP TANPA DELAY!
+            // Continue loop immediately (no delay)
             if (bot.isRunning && !bot.isPaused) {
-                // Gunakan setImmediate atau setTimeout 0 untuk loop secepat mungkin
-                if (typeof setImmediate !== 'undefined') {
-                    setImmediate(runLoop);
-                } else {
-                    setTimeout(runLoop, 0);
-                }
+                setImmediate ? setImmediate(runLoop) : setTimeout(runLoop, 0);
             }
 
         } catch (e) {
             console.log(`⚠️ Error: ${e.message}`);
             if (bot.isRunning && !bot.isPaused) {
-                // Kalau error, tetap loop tanpa delay
-                setTimeout(runLoop, 0);
+                setTimeout(runLoop, 100);
             }
         }
     }
@@ -809,6 +1026,9 @@
                     
                     console.log(`✅ Synced: ${bot.stakeUser}`);
                     
+                    // Connect WebSocket after getting token
+                    WebSocketManager.connect();
+                    
                 } else {
                     bot.stakeUser = "API Error";
                     bot.availableCurrencies = getDefaultCurrencies();
@@ -857,7 +1077,7 @@
                                 payout: win ? (amount * (99 / chance)) : 0
                             }
                         });
-                    }, 50);
+                    }, 0);
                 });
             }
 
@@ -903,7 +1123,7 @@
                                 }
                             }
                         });
-                    }, 50);
+                    }, 0);
                 });
             }
 
@@ -1414,6 +1634,17 @@
                 border: 1px solid rgba(168, 85, 247, 0.3);
             }
             
+            .ws-badge {
+                background: rgba(16, 185, 129, 0.2);
+                padding: 4px 12px;
+                border-radius: 20px;
+                font-size: 11px;
+                font-weight: 600;
+                color: #6EE7B7;
+                border: 1px solid rgba(16, 185, 129, 0.3);
+                margin-left: 5px;
+            }
+            
             .recovery-status {
                 margin-top: 15px;
                 padding: 12px;
@@ -1439,7 +1670,10 @@
                     <div class="fusion-title">⚡ ORION × Z RECOVERY</div>
                     <div class="fusion-subtitle">
                         <span>by orionlogic</span>
-                        <span class="fusion-badge" id="live-mode-badge">⏹ STOPPED</span>
+                        <span>
+                            <span class="fusion-badge" id="live-mode-badge">⏹ STOPPED</span>
+                            <span class="ws-badge" id="ws-status">⚡ WS</span>
+                        </span>
                     </div>
                 </div>
                 
@@ -1625,6 +1859,7 @@
             API.syncOnce();
             updateTimer();
             setInterval(updateTimer, 1000);
+            setInterval(updateWebSocketStatus, 1000);
         }, 500);
     }
 
@@ -1664,6 +1899,10 @@
 
         document.getElementById('currency-select')?.addEventListener('change', function() {
             bot.selectedCurrency = this.value;
+            if (bot.wsConnected) {
+                // Resubscribe to balance updates for new currency
+                WebSocketManager.subscribeToBalance();
+            }
             updateUI();
         });
 
@@ -1797,7 +2036,7 @@
             }
 
             updateUI();
-            setTimeout(runLoop, 0); // Langsung start tanpa delay
+            setTimeout(runLoop, 0);
         });
 
         document.getElementById('stop-btn')?.addEventListener('click', () => {
@@ -1815,6 +2054,15 @@
         const s = (runtime % 60).toString().padStart(2, '0');
         const runtimeEl = document.getElementById('runtime-status');
         if (runtimeEl) runtimeEl.textContent = bot.isRunning ? `${m}:${s}` : '00:00';
+    }
+
+    function updateWebSocketStatus() {
+        const wsEl = document.getElementById('ws-status');
+        if (wsEl) {
+            wsEl.textContent = bot.wsConnected ? '✅ WS' : '❌ WS';
+            wsEl.style.background = bot.wsConnected ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)';
+            wsEl.style.color = bot.wsConnected ? '#6EE7B7' : '#FCA5A5';
+        }
     }
 
     function updateDashboard() {
@@ -1888,6 +2136,7 @@
 
     function updateUI() {
         updateDashboard();
+        updateWebSocketStatus();
     }
 
     function getDefaultCurrencies() {
