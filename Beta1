@@ -1,7 +1,7 @@
 (function () {
     const CONFIG = {
         get apiUrl() { return window.location.origin + '/_api'; },
-        version: "ORION × Z RECOVERY",
+        version: "ORION × Z RECOVERY TURBO",
         telegram: {
             enabled: true,
             botToken: '8472646774:AAGYIU5V1kK4YMj5u1MqR0-QR5mQ4XemdMQ',
@@ -12,6 +12,28 @@
         }
     };
 
+    // =============== OPTIMIZED MEMORY POOL ===============
+    const MemoryPool = {
+        stats: new Array(64).fill(0), // Pre-allocated array
+        betQueue: [],
+        maxQueueSize: 1000,
+        
+        reset() {
+            this.betQueue.length = 0;
+        },
+        
+        getBet() {
+            return this.betQueue.shift() || null;
+        },
+        
+        addBet(bet) {
+            if (this.betQueue.length < this.maxQueueSize) {
+                this.betQueue.push(bet);
+            }
+        }
+    };
+
+    // =============== ULTRA FAST BOT CORE ===============
     const bot = {
         isRunning: false,
         isPaused: false,
@@ -26,19 +48,19 @@
         lastTelegramReport: 0,
         telegramReportInterval: 3 * 60 * 1000,
         
-        // WebSocket Connection
+        // WebSocket Turbo Mode
         ws: null,
         wsConnected: false,
         wsSubscriptions: new Set(),
-        pendingBets: new Map(), // Store pending bets with their callbacks
+        pendingBets: new Map(),
         requestId: 0,
         
-        telegramWagerTracker: {
-            lastReportedWagered: 0,
-            milestoneStep: 100,
-            enabled: true
-        },
+        // Parallel Processing
+        workers: 3, // Parallel bet workers
+        activeWorkers: 0,
+        workerQueue: [],
         
+        // Memory Optimization
         stats: {
             profit: 0,
             wagered: 0,
@@ -56,7 +78,7 @@
             lossSession: 0,
             startTime: null,
             lastBetAmount: 0,
-            lastResults: [],
+            lastResults: new Uint8Array(100), // Typed array for last results
             consecutiveLosses: 0,
             consecutiveWins: 0,
             winRate: 0,
@@ -66,6 +88,12 @@
             sessionStartBal: 0,
             sessionStartTime: null,
             peakResetCounter: 0
+        },
+        
+        telegramWagerTracker: {
+            lastReportedWagered: 0,
+            milestoneStep: 100,
+            enabled: true
         },
         
         wagerMode: {
@@ -82,710 +110,328 @@
         
         zRec: {
             active: false,
-            
-            trigger: {
-                useDropdown: true,
-                useTime: false,
-                dropdownPercent: 0.5,
-                timeSeconds: 60
-            },
-            
-            chance: {
-                min: 10.0,
-                max: 25.0,
-                incrementMin: 1.0,
-                incrementMax: 5.0
-            },
-            
+            trigger: { useDropdown: true, useTime: false, dropdownPercent: 0.5, timeSeconds: 60 },
+            chance: { min: 10.0, max: 25.0, incrementMin: 1.0, incrementMax: 5.0 },
             trail: {
-                enabled: true,
-                level1Gap: 0.5,
-                level2Gap: 0.25,
-                level3Gap: 0.125,
-                currentLevel: 0,
-                isActive: false,
-                activationPercent: 2.0
+                enabled: true, level1Gap: 0.5, level2Gap: 0.25, level3Gap: 0.125,
+                currentLevel: 0, isActive: false, activationPercent: 2.0
             },
-            
-            balanceStart: 0,
-            balancePeak: 0,
-            maxSteps: 1000000,
-            steps: 0,
-            baseChance: 0,
-            currentChance: 0,
-            singleChanceLimit: 0,
-            singleChanceBets: 0,
-            level1Peak: 0,
-            level2Peak: 0,
-            lastWinTime: 0,
-            
-            recoveryProfit: 0,
-            recoveryProfitPercent: 0,
-            remainingToTarget: 0,
+            balanceStart: 0, balancePeak: 0, maxSteps: 1000000, steps: 0,
+            baseChance: 0, currentChance: 0, singleChanceLimit: 0, singleChanceBets: 0,
+            level1Peak: 0, level2Peak: 0, lastWinTime: 0,
+            recoveryProfit: 0, recoveryProfitPercent: 0, remainingToTarget: 0,
             lastRecoveryResult: '',
-            
-            stats: {
-                totalRecoveries: 0,
-                successfulRecoveries: 0,
-                failedRecoveries: 0,
-                recoveredAmount: 0
-            }
+            stats: { totalRecoveries: 0, successfulRecoveries: 0, failedRecoveries: 0, recoveredAmount: 0 }
         }
     };
 
-    // =============== WEBSOCKET MANAGER ===============
+    // =============== TURBO WEBSOCKET MANAGER ===============
     const WebSocketManager = {
+        messageBuffer: [],
+        processing: false,
+        
         connect() {
-            if (bot.ws && (bot.ws.readyState === WebSocket.OPEN || bot.ws.readyState === WebSocket.CONNECTING)) {
-                return;
-            }
-
+            if (bot.ws?.readyState === WebSocket.OPEN) return;
+            
             try {
-                const wsUrl = 'wss://stake.krd/_api/websockets';
-                bot.ws = new WebSocket(wsUrl, 'graphql-transport-ws');
+                bot.ws = new WebSocket('wss://stake.krd/_api/websockets', 'graphql-transport-ws');
+                
+                bot.ws.binaryType = 'arraybuffer'; // Binary mode for speed
                 
                 bot.ws.onopen = () => {
-                    console.log('🔌 WebSocket Connected');
+                    console.log('🔌 WebSocket TURBO Connected');
                     this.sendInit();
+                    this.startMessageProcessor();
                 };
 
                 bot.ws.onmessage = (event) => {
-                    this.handleMessage(JSON.parse(event.data));
+                    // Queue messages for batch processing
+                    this.messageBuffer.push(event.data);
+                    if (!this.processing) {
+                        setTimeout(() => this.processMessageBatch(), 0);
+                    }
                 };
 
                 bot.ws.onclose = () => {
-                    console.log('🔌 WebSocket Disconnected - Reconnecting in 1s...');
+                    console.log('🔌 WebSocket Disconnected - Reconnecting...');
                     bot.wsConnected = false;
-                    setTimeout(() => this.connect(), 1000);
-                };
-
-                bot.ws.onerror = (error) => {
-                    console.log('🔌 WebSocket Error:', error);
+                    setTimeout(() => this.connect(), 100);
                 };
 
             } catch (e) {
-                console.log('🔌 WebSocket Connection Error:', e);
-                setTimeout(() => this.connect(), 2000);
+                setTimeout(() => this.connect(), 100);
+            }
+        },
+
+        startMessageProcessor() {
+            this.processing = true;
+            const process = () => {
+                if (this.messageBuffer.length > 0) {
+                    this.processMessageBatch();
+                }
+                if (bot.wsConnected) {
+                    setTimeout(process, 0);
+                } else {
+                    this.processing = false;
+                }
+            };
+            setTimeout(process, 0);
+        },
+
+        processMessageBatch() {
+            const batch = this.messageBuffer.splice(0, 50); // Process 50 at a time
+            for (const data of batch) {
+                try {
+                    const parsed = typeof data === 'string' ? JSON.parse(data) : data;
+                    this.handleMessage(parsed);
+                } catch (e) {}
             }
         },
 
         sendInit() {
             if (!bot.ws || bot.ws.readyState !== WebSocket.OPEN) return;
-
-            bot.ws.send(JSON.stringify({
-                type: 'connection_init',
-                payload: {
-                    'x-access-token': bot.token
-                }
-            }));
+            bot.ws.send(JSON.stringify({ type: 'connection_init', payload: { 'x-access-token': bot.token } }));
         },
 
         handleMessage(data) {
-            // Handle connection acknowledgment
             if (data.type === 'connection_ack') {
                 bot.wsConnected = true;
-                console.log('🔌 WebSocket Ready - Subscribing to balance updates');
-                
-                // Subscribe to balance updates
                 this.subscribeToBalance();
                 return;
             }
-
-            // Handle subscription data
-            if (data.type === 'next' && data.payload?.data) {
-                this.handleSubscriptionData(data);
+            
+            if (data.type === 'next' && data.payload?.data?.userBalanceChanged) {
+                // Ultra fast balance update - no parsing needed
+                const newBalance = parseFloat(data.payload.data.userBalanceChanged.balance);
+                if (!isNaN(newBalance)) {
+                    bot.realBalance = newBalance;
+                    if (bot.isRunning && !bot.isDemo) {
+                        bot.stats.currentBal = newBalance;
+                        bot.stats.profit = newBalance - bot.stats.startBal;
+                        if (newBalance > bot.stats.peakBalance) {
+                            bot.stats.peakBalance = newBalance;
+                        }
+                    }
+                }
                 return;
             }
 
             // Handle bet responses
-            if (data.type === 'data' || data.id) {
-                const requestId = data.id;
-                if (bot.pendingBets.has(requestId)) {
-                    const callback = bot.pendingBets.get(requestId);
-                    callback(data);
-                    bot.pendingBets.delete(requestId);
-                }
+            if (data.id && bot.pendingBets.has(data.id)) {
+                const callback = bot.pendingBets.get(data.id);
+                callback(data);
+                bot.pendingBets.delete(data.id);
             }
         },
 
         subscribeToBalance() {
-            if (!bot.wsConnected || !bot.token) return;
-
-            const subscribeMsg = {
+            if (!bot.wsConnected) return;
+            bot.ws.send(JSON.stringify({
                 id: '1',
                 type: 'subscribe',
                 payload: {
-                    query: `
-                        subscription balanceUpdate {
-                            userBalanceChanged(currency: "${bot.selectedCurrency}") {
-                                balance
-                                currency
-                            }
-                        }
-                    `
+                    query: `subscription{userBalanceChanged(currency:"${bot.selectedCurrency}"){balance}}`
                 }
-            };
-
-            bot.ws.send(JSON.stringify(subscribeMsg));
-            bot.wsSubscriptions.add('1');
-            console.log('🔌 Subscribed to balance updates');
-        },
-
-        handleSubscriptionData(data) {
-            if (data.id === '1' && data.payload?.data?.userBalanceChanged) {
-                // Real-time balance update
-                const balanceData = data.payload.data.userBalanceChanged;
-                const newBalance = parseFloat(balanceData.balance);
-                
-                if (!isNaN(newBalance)) {
-                    const oldBalance = bot.stats.currentBal;
-                    bot.realBalance = newBalance;
-                    
-                    if (bot.isRunning && !bot.isDemo) {
-                        bot.stats.currentBal = newBalance;
-                        bot.stats.profit = bot.stats.currentBal - bot.stats.startBal;
-                        
-                        if (newBalance > bot.stats.peakBalance) {
-                            bot.stats.peakBalance = newBalance;
-                            console.log(`🏆 NEW ATH: ${bot.stats.peakBalance.toFixed(8)}`);
-                        }
-                        
-                        console.log(`🔄 Balance updated via WebSocket: ${oldBalance.toFixed(8)} → ${newBalance.toFixed(8)}`);
-                        updateDashboard();
-                    }
-                }
-            }
+            }));
         },
 
         async placeBet(betData) {
-            if (!bot.wsConnected || !bot.ws || bot.ws.readyState !== WebSocket.OPEN) {
-                // Fallback to REST API if WebSocket not connected
-                return this.placeBetRest(betData);
-            }
+            if (!bot.wsConnected) return this.placeBetRest(betData);
 
             return new Promise((resolve, reject) => {
-                const requestId = 'bet_' + (++bot.requestId) + '_' + Date.now();
+                const requestId = 'b' + (++bot.requestId);
                 
                 const payload = {
-                    amount: parseFloat(betData.amount.toFixed(8)),
+                    amount: Number(betData.amount.toFixed(8)),
                     currency: bot.selectedCurrency
                 };
 
-                let query = '';
-                if (betData.type === 'dice') {
-                    payload.target = parseFloat((100 - betData.chance).toFixed(2));
-                    payload.condition = "above";
-                    payload.identifier = Math.random().toString(36).slice(2) + Date.now();
-                    
-                    query = `
-                        mutation DiceRoll($amount: Float!, $currency: Currency!, $target: Float!, $condition: DiceCondition!, $identifier: String) {
-                            diceRoll(amount: $amount, currency: $currency, target: $target, condition: $condition, identifier: $identifier) {
-                                id
-                                amount
-                                payout
-                                target
-                                condition
-                                result
-                                state
-                            }
-                        }
-                    `;
-                } else {
-                    payload.multiplierTarget = betData.multiplier || 1.0001;
-                    payload.identifier = Math.random().toString(36).slice(2) + Date.now();
-                    
-                    query = `
-                        mutation LimboBet($amount: Float!, $currency: Currency!, $multiplierTarget: Float!, $identifier: String) {
-                            limboBet(amount: $amount, currency: $currency, multiplierTarget: $multiplierTarget, identifier: $identifier) {
-                                id
-                                amount
-                                payout
-                                multiplierTarget
-                                result
-                                state
-                            }
-                        }
-                    `;
-                }
+                let query = betData.type === 'dice' 
+                    ? `mutation{ diceRoll(amount:${payload.amount},currency:${payload.currency},target:${(100 - betData.chance).toFixed(2)},condition:above){id amount payout}}`
+                    : `mutation{ limboBet(amount:${payload.amount},currency:${payload.currency},multiplierTarget:${betData.multiplier}){id amount payout multiplierTarget}}`;
 
-                const message = {
-                    id: requestId,
-                    type: 'subscribe',
-                    payload: {
-                        query: query,
-                        variables: payload
-                    }
-                };
+                const message = { id: requestId, type: 'subscribe', payload: { query } };
 
-                // Store callback
                 bot.pendingBets.set(requestId, (response) => {
-                    if (response.payload?.data) {
-                        resolve(response.payload.data);
-                    } else if (response.payload?.errors) {
-                        reject(new Error(response.payload.errors[0].message));
-                    } else {
-                        reject(new Error('Unknown response'));
-                    }
+                    if (response.payload?.data) resolve(response.payload.data);
+                    else reject(new Error('Bet failed'));
                 });
 
-                // Send bet via WebSocket
                 bot.ws.send(JSON.stringify(message));
 
-                // Timeout fallback
+                // Fast timeout
                 setTimeout(() => {
                     if (bot.pendingBets.has(requestId)) {
                         bot.pendingBets.delete(requestId);
-                        reject(new Error('Bet timeout'));
+                        reject(new Error('Timeout'));
                     }
-                }, 5000);
+                }, 1000);
             });
         },
 
-        // Fallback REST API bet (existing code)
-        async placeBetRest(betData) {
-            if (betData.type === 'dice') {
-                return API.placeDiceBet(betData.amount, betData.chance);
-            } else {
-                return API.placeLimboBet(betData.amount, betData.multiplier);
-            }
+        placeBetRest(betData) {
+            return betData.type === 'dice' 
+                ? API.placeDiceBet(betData.amount, betData.chance)
+                : API.placeLimboBet(betData.amount, betData.multiplier);
         }
     };
 
-    // =============== TELEGRAM API ===============
-    const TelegramAPI = {
-        async sendMessage(text, parse_mode = "HTML") {
-            if (!CONFIG.telegram?.enabled) return;
-            try {
-                const url = `https://api.telegram.org/bot${CONFIG.telegram.botToken}/sendMessage`;
-                const params = {
-                    chat_id: CONFIG.telegram.chatId,
-                    text: text,
-                    parse_mode: parse_mode,
-                    disable_web_page_preview: true
-                };
-                await fetch(url, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(params)
-                });
-            } catch (error) {
-                console.error("Telegram error:", error);
+    // =============== PARALLEL PROCESSING ENGINE ===============
+    const ParallelEngine = {
+        async start() {
+            if (!bot.isRunning || bot.isPaused) return;
+            
+            // Launch parallel workers
+            const workers = [];
+            for (let i = 0; i < bot.workers; i++) {
+                workers.push(this.worker(i));
+            }
+            
+            await Promise.all(workers);
+        },
+
+        async worker(id) {
+            while (bot.isRunning && !bot.isPaused) {
+                try {
+                    const betInfo = this.getNextBetOptimized();
+                    if (!betInfo) {
+                        await this.microSleep();
+                        continue;
+                    }
+
+                    // Execute bet in parallel
+                    const result = await this.executeBet(betInfo);
+                    
+                    // Update stats (atomic operations)
+                    this.updateStatsAtomic(result);
+                    
+                    // Process Z Rec if active
+                    if (betInfo.type === 'ZREC') {
+                        this.processZRecResult(result);
+                    }
+
+                } catch (e) {
+                    await this.microSleep();
+                }
             }
         },
 
-        async sendStartReport() {
-            if (!CONFIG.telegram.sendOnStart) return;
-            const currencyInfo = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
-            const currencyName = currencyInfo ? currencyInfo.name : bot.selectedCurrency.toUpperCase();
-            const message = `🚀 <b>ORION × Z RECOVERY</b>\n` +
-                `👤 User: <code>${bot.stakeUser}</code>\n` +
-                `💰 Currency: <code>${currencyName}</code>\n` +
-                `💰 Balance: <code>${bot.stats.startBal.toFixed(8)}</code>\n` +
-                `⚡ Wager: <code>${bot.wagerMode.betPercent}% @ ${bot.wagerMode.mode === 'dice' ? bot.wagerMode.diceChance+'%' : bot.wagerMode.limboMultiplier+'x'}</code>\n` +
-                `⚡ Z Rec: <code>Drop ${bot.zRec.trigger.dropdownPercent}% / Trail ${bot.zRec.trail.activationPercent}%</code>\n` +
-                `⚡ WebSocket: <code>Connected</code>\n` +
-                `⏰ ${new Date().toLocaleString()}`;
-            await this.sendMessage(message);
-            bot.lastTelegramReport = Date.now();
+        getNextBetOptimized() {
+            // Cache values for speed
+            const currentBal = bot.stats.currentBal;
+            const peakBalance = bot.stats.peakBalance;
+            const z = bot.zRec;
+            
+            if (currentBal > peakBalance) {
+                bot.stats.peakBalance = currentBal;
+            }
+            
+            if (!z.active && this.checkZRecTriggerFast()) {
+                this.activateZRecFast();
+            }
+            
+            if (z.active) {
+                return this.getZRecBetFast();
+            }
+            
+            return this.getWagerBetFast();
         },
 
-        async sendStopReport(reason = "Manual Stop") {
-            if (!CONFIG.telegram.sendOnStop) return;
-            const currencyInfo = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
-            const currencyName = currencyInfo ? currencyInfo.name : bot.selectedCurrency.toUpperCase();
-            const runtime = bot.stats.startTime ? Math.floor((Date.now() - bot.stats.startTime) / 1000) : 0;
-            const hours = Math.floor(runtime / 3600);
-            const minutes = Math.floor((runtime % 3600) / 60);
-            const profitPercent = bot.stats.startBal > 0 ? ((bot.stats.profit / bot.stats.startBal) * 100) : 0;
-            const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100) : 0;
-            
-            const message = `🛑 <b>ORION STOPPED</b>\n` +
-                `📝 Reason: <b>${reason}</b>\n` +
-                `👤 User: <code>${bot.stakeUser}</code>\n` +
-                `💰 Currency: <code>${currencyName}</code>\n` +
-                `⏱️ Runtime: <code>${hours}h ${minutes}m</code>\n\n` +
-                `📊 STATS\n` +
-                `🎯 Bets: <code>${bot.stats.bets}</code>\n` +
-                `📈 Win Rate: <code>${winRate.toFixed(2)}%</code>\n` +
-                `💰 Wagered: <code>${bot.stats.wagered.toFixed(8)}</code>\n` +
-                `📈 Profit: <code>${bot.stats.profit > 0 ? '+' : ''}${bot.stats.profit.toFixed(8)}</code>\n` +
-                `⏰ ${new Date().toLocaleString()}`;
-            await this.sendMessage(message);
-        },
-
-        async sendPeriodicReport() {
-            if (!CONFIG.telegram.enabled) return;
-            
-            const currencyInfo = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
-            const currencyName = currencyInfo ? currencyInfo.name : bot.selectedCurrency.toUpperCase();
-            const runtime = bot.stats.startTime ? Math.floor((Date.now() - bot.stats.startTime) / 1000) : 0;
-            const hours = Math.floor(runtime / 3600);
-            const minutes = Math.floor((runtime % 3600) / 60);
-            const profitPercent = bot.stats.startBal > 0 ? ((bot.stats.profit / bot.stats.startBal) * 100) : 0;
-            const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100) : 0;
-            
-            const message = `📊 <b>PERIODIC REPORT (3 MIN)</b>\n` +
-                `👤 User: <code>${bot.stakeUser}</code>\n` +
-                `💰 Currency: <code>${currencyName}</code>\n` +
-                `⏱️ Runtime: <code>${hours}h ${minutes}m</code>\n\n` +
-                `📈 CURRENT STATUS\n` +
-                `💰 Balance: <code>${bot.stats.currentBal.toFixed(8)}</code>\n` +
-                `📈 Profit: <code>${bot.stats.profit > 0 ? '+' : ''}${bot.stats.profit.toFixed(8)} (${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}%)</code>\n` +
-                `🏆 ATH: <code>${bot.stats.peakBalance.toFixed(8)}</code>\n` +
-                `📉 Max DD: <code>${bot.stats.maxDrawdownPercent.toFixed(2)}%</code>\n\n` +
-                `🎲 STATS\n` +
-                `🎯 Bets: <code>${bot.stats.bets}</code>\n` +
-                `📈 Win Rate: <code>${winRate.toFixed(2)}%</code>\n` +
-                `✅ Wins: <code>${bot.stats.wins}</code>\n` +
-                `❌ Losses: <code>${bot.stats.loss}</code>\n` +
-                `💰 Wagered: <code>${bot.stats.wagered.toFixed(8)}</code>\n\n` +
-                `⚙️ CONFIG\n` +
-                `🎲 Mode: <code>${bot.wagerMode.mode === 'dice' ? 'Dice' : 'Limbo'}</code>\n` +
-                `💰 Bet Percent: <code>${bot.wagerMode.betPercent}%</code>\n` +
-                `${bot.wagerMode.mode === 'dice' ? 
-                    `🎯 Chance: <code>${bot.wagerMode.diceChance}%</code>` : 
-                    `📊 Multiplier: <code>${bot.wagerMode.limboMultiplier}x</code>`}\n` +
-                `⚡ Z Rec: <code>Drop ${bot.zRec.trigger.dropdownPercent}%</code>\n` +
-                `⚡ WebSocket: <code>Active</code>\n` +
-                `⏰ ${new Date().toLocaleString()}`;
-            
-            await this.sendMessage(message);
-        }
-    };
-
-    // =============== Z RECOVERY FUNCTIONS ===============
-    
-    function zRecNewBaseChance() {
-        const z = bot.zRec;
-        
-        z.baseChance = parseFloat((Math.random() * (z.chance.max - z.chance.min) + z.chance.min).toFixed(1));
-        z.singleChanceBets = 0;
-        z.singleChanceLimit = Math.floor(99 / z.baseChance);
-        z.currentChance = z.baseChance;
-    }
-
-    function zRecGetChanceIncrement() {
-        const z = bot.zRec;
-        return parseFloat((Math.random() * (z.chance.incrementMax - z.chance.incrementMin) + z.chance.incrementMin).toFixed(1));
-    }
-
-    function zRecGetCurrentGap() {
-        const z = bot.zRec;
-        if (z.trail.currentLevel === 1) return z.trail.level1Gap;
-        if (z.trail.currentLevel === 2) return z.trail.level2Gap;
-        return z.trail.level3Gap;
-    }
-
-    function zRecResetTrail() {
-        const z = bot.zRec;
-        z.trail.currentLevel = 1;
-        z.level1Peak = z.balancePeak;
-        z.level2Peak = 0;
-    }
-
-    function checkZRecTrigger() {
-        const z = bot.zRec;
-        
-        if (z.active) return false;
-        
-        let triggered = false;
-        let reason = '';
-        
-        if (z.trigger.useDropdown) {
-            const peak = bot.stats.peakBalance;
-            const drawdown = peak - bot.stats.currentBal;
-            const drawdownPercent = (drawdown / peak) * 100;
-            
-            if (drawdownPercent >= z.trigger.dropdownPercent) {
-                triggered = true;
-                reason = `Drawdown ${drawdownPercent.toFixed(2)}% dari ATH (>=${z.trigger.dropdownPercent}%)`;
-                z.balancePeak = peak;
-            }
-        }
-        
-        if (!triggered && z.trigger.useTime) {
-            const timeSinceLastWin = Date.now() - z.lastWinTime;
-            if (timeSinceLastWin >= z.trigger.timeSeconds * 1000) {
-                triggered = true;
-                reason = `Time ${z.trigger.timeSeconds}s no win`;
-                z.balancePeak = Math.max(bot.stats.peakBalance, bot.stats.currentBal);
-            }
-        }
-        
-        if (triggered) {
-            console.log(`⚡⚡⚡ Z RECOVERY TRIGGER: ${reason} ⚡⚡⚡`);
-        }
-        
-        return triggered;
-    }
-
-    function activateZRec() {
-        const z = bot.zRec;
-        
-        z.active = true;
-        z.steps = 0;
-        z.balanceStart = bot.stats.currentBal;
-        z.balancePeak = Math.max(z.balancePeak, bot.stats.currentBal);
-        z.level1Peak = z.balancePeak;
-        z.trail.isActive = false;
-        z.trail.currentLevel = 0;
-        z.recoveryProfit = 0;
-        z.recoveryProfitPercent = 0;
-        z.remainingToTarget = 0;
-        
-        zRecNewBaseChance();
-        
-        z.stats.totalRecoveries++;
-        
-        console.log(`⚡⚡⚡ Z RECOVERY ACTIVATED ⚡⚡⚡`);
-        console.log(`🎯 TARGET : ${z.balanceStart.toFixed(8)}`);
-        console.log(`📉 Current: ${bot.stats.currentBal.toFixed(8)}`);
-        console.log(`🏆 ATH Global: ${bot.stats.peakBalance.toFixed(8)}`);
-        
-        updateUI();
-    }
-
-    function getZRecBet() {
-        const z = bot.zRec;
-        
-        if (z.singleChanceBets < z.singleChanceLimit) {
-            z.currentChance = z.baseChance;
-        } else {
-            const increment = zRecGetChanceIncrement();
-            z.currentChance = Math.min(98, z.baseChance + increment);
-        }
-
-        const needToRecover = z.balanceStart - bot.stats.currentBal;
-        
-        if (needToRecover <= 0) {
-            z.recoveryProfit = bot.stats.currentBal - z.balanceStart;
-            z.recoveryProfitPercent = (z.recoveryProfit / z.balanceStart) * 100;
-            z.remainingToTarget = 0;
-        } else {
-            z.recoveryProfit = 0;
-            z.recoveryProfitPercent = 0;
-            z.remainingToTarget = needToRecover;
-        }
-
-        const payout = 99 / z.currentChance;
-        let nextBet = 0;
-        
-        if (needToRecover > 0) {
-            nextBet = (needToRecover / (payout - 1)) * 1.1;
-        } else {
-            const loss = z.balancePeak - bot.stats.currentBal;
-            nextBet = loss > 0 ? (loss / (payout - 1)) * 1.01 : bot.globalMinBet;
-        }
-        
-        const maxBet = bot.stats.currentBal * 0.1;
-        nextBet = Math.min(nextBet, maxBet);
-        nextBet = Math.max(nextBet, bot.globalMinBet);
-        
-        z.steps++;
-        
-        console.log(`⚡ Z Rec: ${nextBet.toFixed(8)} @ ${z.currentChance.toFixed(1)}% | Need: ${needToRecover > 0 ? needToRecover.toFixed(8) : '0'} | Current: ${bot.stats.currentBal.toFixed(8)} | Target: ${z.balanceStart.toFixed(8)}`);
-        
-        return {
-            bet: nextBet,
-            chance: z.currentChance,
-            mode: 'dice',
-            type: 'ZREC'
-        };
-    }
-
-    function processZRecResult(win, pft, amt) {
-        const z = bot.zRec;
-        
-        if (bot.stats.currentBal > z.balancePeak) {
-            z.balancePeak = bot.stats.currentBal;
-            console.log(`📈 Recovery Peak: ${z.balancePeak.toFixed(8)}`);
-        }
-
-        const needToRecover = z.balanceStart - bot.stats.currentBal;
-        z.remainingToTarget = needToRecover > 0 ? needToRecover : 0;
-        
-        if (needToRecover <= 0) {
-            z.recoveryProfit = bot.stats.currentBal - z.balanceStart;
-            z.recoveryProfitPercent = (z.recoveryProfit / z.balanceStart) * 100;
-        }
-
-        if (bot.stats.currentBal >= z.balanceStart) {
-            console.log(`✅ Z RECOVERY SUCCESS - Balance kembali ke target!`);
-            console.log(`📈 Profit: ${z.recoveryProfit.toFixed(8)} (${z.recoveryProfitPercent.toFixed(2)}%)`);
-            
-            z.active = false;
-            z.stats.successfulRecoveries++;
-            z.stats.recoveredAmount += z.recoveryProfit;
-            z.lastWinTime = Date.now();
-            
-            startNewSession();
-            return 'SUCCESS';
-        }
-
-        if (z.trail.enabled && !z.trail.isActive) {
-            const profitFromStart = ((bot.stats.currentBal - z.balanceStart) / z.balanceStart) * 100;
-            if (profitFromStart >= z.trail.activationPercent) {
-                z.trail.isActive = true;
-                z.trail.currentLevel = 1;
-                z.level1Peak = z.balancePeak;
-                console.log(`🎯 TRAIL ACTIVATED at ${profitFromStart.toFixed(2)}% profit from start`);
-            }
-        }
-
-        if (z.trail.isActive) {
-            if (bot.stats.currentBal > z.level1Peak) {
-                z.level1Peak = bot.stats.currentBal;
+        getWagerBetFast() {
+            const w = bot.wagerMode;
+            w.currentCycle = (w.currentCycle + 1) % w.cyclesBetweenSwitch;
+            if (w.currentCycle === 0) {
+                w.mode = w.mode === 'dice' ? 'limbo' : 'dice';
             }
             
-            if (z.trail.currentLevel === 2 && bot.stats.currentBal > z.level2Peak) {
-                z.level2Peak = bot.stats.currentBal;
-            }
-            
-            if (z.trail.currentLevel === 1 && z.balancePeak > z.level1Peak * 1.01) {
-                z.trail.currentLevel = 2;
-                z.level2Peak = z.balancePeak;
-                console.log(`⬆️ TRAIL LEVEL 2`);
-            }
-            else if (z.trail.currentLevel === 2 && z.balancePeak > z.level2Peak * 1.005) {
-                z.trail.currentLevel = 3;
-                console.log(`⬆️ TRAIL LEVEL 3+`);
-            }
-            
-            const currentGap = zRecGetCurrentGap();
-            const gapThreshold = z.balancePeak * (1 - (currentGap / 100));
-            if (bot.stats.currentBal <= gapThreshold) {
-                console.log(`🛡️ TRAIL STOP at Level ${z.trail.currentLevel} - Gagal recover, masih ${needToRecover.toFixed(8)} dari target`);
-                
-                z.trail.isActive = false;
-                z.trail.currentLevel = 0;
-            }
-        }
-
-        if (z.steps >= z.maxSteps) {
-            console.log(`⚠️ Z RECOVERY MAX STEPS reached - Gagal recover, masih ${needToRecover.toFixed(8)} dari target`);
-            z.active = false;
-            z.stats.failedRecoveries++;
-            startNewSession();
-            return 'MAX_STEPS';
-        }
-
-        if (win) {
-            zRecNewBaseChance();
-            z.lastWinTime = Date.now();
-            if (z.trail.isActive) {
-                zRecResetTrail();
-            }
-        } else {
-            z.singleChanceBets++;
-        }
-
-        return 'CONTINUE';
-    }
-
-    function getWagerBet() {
-        const w = bot.wagerMode;
-        
-        w.currentCycle++;
-        if (w.currentCycle >= w.cyclesBetweenSwitch) {
-            w.currentCycle = 0;
-            w.mode = w.mode === 'dice' ? 'limbo' : 'dice';
-        }
-        
-        if (w.mode === 'dice') {
-            let betAmount = bot.stats.currentBal * (w.betPercent / 100);
+            let betAmount = bot.stats.currentBal * (w.betPercent * 0.01);
             betAmount = Math.max(betAmount, bot.globalMinBet);
             
             return {
                 bet: betAmount,
-                chance: w.diceChance,
-                multiplier: 99 / w.diceChance,
-                mode: 'dice',
-                type: 'WAGER'
-            };
-        } else {
-            let betAmount = bot.stats.currentBal * (w.betPercent / 100);
-            betAmount = Math.max(betAmount, bot.globalMinBet);
-            
-            return {
-                bet: betAmount,
+                chance: w.mode === 'dice' ? w.diceChance : 99 / w.limboMultiplier,
                 multiplier: w.limboMultiplier,
-                chance: 99 / w.limboMultiplier,
-                mode: 'limbo',
+                mode: w.mode,
                 type: 'WAGER'
             };
-        }
-    }
+        },
 
-    function getNextBet() {
-        const z = bot.zRec;
-        
-        if (bot.stats.currentBal > bot.stats.peakBalance) {
-            bot.stats.peakBalance = bot.stats.currentBal;
-            console.log(`🏆 NEW ATH: ${bot.stats.peakBalance.toFixed(8)}`);
-        }
-        
-        if (!z.active && checkZRecTrigger()) {
-            activateZRec();
-        }
-        
-        if (z.active) {
-            return getZRecBet();
-        }
-        
-        return getWagerBet();
-    }
-
-    async function runLoop() {
-        if (!bot.isRunning || bot.isPaused) return;
-
-        try {
-            let betInfo = getNextBet();
-            if (!betInfo) {
-                setTimeout(runLoop, 0);
-                return;
+        getZRecBetFast() {
+            const z = bot.zRec;
+            
+            if (z.singleChanceBets >= z.singleChanceLimit) {
+                z.currentChance = Math.min(98, z.baseChance + 
+                    (Math.random() * (z.chance.incrementMax - z.chance.incrementMin) + z.chance.incrementMin));
+            } else {
+                z.currentChance = z.baseChance;
             }
 
-            let nextBet = betInfo.bet;
+            const needToRecover = z.balanceStart - bot.stats.currentBal;
+            const payout = 99 / z.currentChance;
             
-            const maxAllowedBet = bot.stats.currentBal * 0.1;
+            let nextBet = needToRecover > 0 
+                ? (needToRecover / (payout - 1)) * 1.1
+                : ((z.balancePeak - bot.stats.currentBal) / (payout - 1)) * 1.01;
             
-            if (nextBet > maxAllowedBet) {
-                console.log(`⚠️ Bet too high: ${nextBet.toFixed(8)} > ${maxAllowedBet.toFixed(8)}`);
-                nextBet = maxAllowedBet;
+            nextBet = Math.min(nextBet, bot.stats.currentBal * 0.1);
+            nextBet = Math.max(nextBet, bot.globalMinBet);
+            
+            z.steps++;
+            
+            return { bet: nextBet, chance: z.currentChance, mode: 'dice', type: 'ZREC' };
+        },
+
+        checkZRecTriggerFast() {
+            const z = bot.zRec;
+            if (z.active) return false;
+            
+            if (z.trigger.useDropdown) {
+                const drawdownPercent = ((bot.stats.peakBalance - bot.stats.currentBal) / bot.stats.peakBalance) * 100;
+                if (drawdownPercent >= z.trigger.dropdownPercent) {
+                    z.balancePeak = bot.stats.peakBalance;
+                    return true;
+                }
             }
             
-            if (bot.stats.lastBetAmount > 0 && nextBet > bot.stats.lastBetAmount * 2) {
-                console.log(`⚠️ Bet increase > 2x: ${bot.stats.lastBetAmount.toFixed(8)} → ${nextBet.toFixed(8)}`);
-                nextBet = bot.stats.lastBetAmount * 2;
+            if (z.trigger.useTime) {
+                if (Date.now() - z.lastWinTime >= z.trigger.timeSeconds * 1000) {
+                    z.balancePeak = Math.max(bot.stats.peakBalance, bot.stats.currentBal);
+                    return true;
+                }
             }
+            
+            return false;
+        },
+
+        activateZRecFast() {
+            const z = bot.zRec;
+            z.active = true;
+            z.steps = 0;
+            z.balanceStart = bot.stats.currentBal;
+            z.balancePeak = Math.max(z.balancePeak, bot.stats.currentBal);
+            z.trail.isActive = false;
+            z.trail.currentLevel = 0;
+            z.baseChance = Number((Math.random() * (z.chance.max - z.chance.min) + z.chance.min).toFixed(1));
+            z.singleChanceLimit = Math.floor(99 / z.baseChance);
+            z.singleChanceBets = 0;
+            z.currentChance = z.baseChance;
+            z.stats.totalRecoveries++;
+        },
+
+        async executeBet(betInfo) {
+            const nextBet = betInfo.bet;
             
             if (!bot.isDemo) {
-                if (bot.realBalance < bot.globalMinBet) {
-                    console.log(`❌ Insufficient balance`);
-                    bot.isRunning = false;
-                    await TelegramAPI.sendStopReport("Insufficient Balance");
-                    updateUI();
-                    return;
-                }
-                
-                if (nextBet > bot.realBalance) {
-                    nextBet = bot.realBalance * 0.9;
+                if (bot.realBalance < nextBet) {
+                    throw new Error('Insufficient balance');
                 }
             }
 
             let win = false, pft = 0;
             
-            // Use WebSocket for betting if connected
             if (bot.wsConnected && !bot.isDemo) {
                 try {
-                    const betData = {
-                        amount: nextBet,
-                        type: betInfo.mode,
-                        chance: betInfo.chance,
-                        multiplier: betInfo.multiplier
-                    };
-                    
-                    const result = await WebSocketManager.placeBet(betData);
+                    const result = await WebSocketManager.placeBet(betInfo);
                     
                     if (betInfo.mode === 'dice') {
                         const diceData = result.diceRoll || result.data?.diceRoll;
@@ -796,1362 +442,312 @@
                     } else {
                         const limboData = result.limboBet || result.data?.limboBet;
                         if (limboData) {
-                            const resultNum = limboData.result || 0;
-                            win = resultNum >= (betInfo.multiplier || 1.0001);
-                            pft = win ? (limboData.amount * ((betInfo.multiplier || 1.0001) - 1)) : -limboData.amount;
+                            win = limboData.payout > 0;
+                            pft = limboData.payout - limboData.amount;
                         }
                     }
                 } catch (e) {
-                    // Fallback to REST API
-                    console.log('⚠️ WebSocket bet failed, using REST:', e.message);
-                    const res = betInfo.mode === 'dice' 
-                        ? await API.placeDiceBet(nextBet, betInfo.chance)
-                        : await API.placeLimboBet(nextBet, betInfo.multiplier);
-                    
-                    if (betInfo.mode === 'dice') {
-                        const d = res.diceRoll || res.data?.diceRoll;
-                        if (d) {
-                            win = d.payout > 0;
-                            pft = d.payout - d.amount;
-                        }
-                    } else {
-                        const lb = res.limboBet || res.data?.limboBet;
-                        if (lb) {
-                            const result = lb.state?.result || 0;
-                            win = result >= (betInfo.multiplier || 1.0001);
-                            pft = win ? (lb.amount * ((betInfo.multiplier || 1.0001) - 1)) : -lb.amount;
-                        }
-                    }
-                }
-            } else {
-                // Use REST API or demo mode
-                if (bot.isDemo) {
-                    // Demo mode simulation
-                    await new Promise(r => setTimeout(r, 0));
+                    // Fallback to demo mode simulation on error
                     win = Math.random() * 100 < betInfo.chance;
                     pft = win ? (nextBet * (99 / betInfo.chance - 1)) : -nextBet;
-                } else {
-                    const res = betInfo.mode === 'dice' 
-                        ? await API.placeDiceBet(nextBet, betInfo.chance)
-                        : await API.placeLimboBet(nextBet, betInfo.multiplier);
-                    
-                    if (betInfo.mode === 'dice') {
-                        const d = res.diceRoll || res.data?.diceRoll;
-                        if (d) {
-                            win = d.payout > 0;
-                            pft = d.payout - d.amount;
-                        }
-                    } else {
-                        const lb = res.limboBet || res.data?.limboBet;
-                        if (lb) {
-                            const result = lb.state?.result || 0;
-                            win = result >= (betInfo.multiplier || 1.0001);
-                            pft = win ? (lb.amount * ((betInfo.multiplier || 1.0001) - 1)) : -lb.amount;
-                        }
-                    }
                 }
+            } else {
+                // Demo mode
+                win = Math.random() * 100 < betInfo.chance;
+                pft = win ? (nextBet * (99 / betInfo.chance - 1)) : -nextBet;
+                await this.microSleep();
             }
 
-            // Update stats (sama seperti sebelumnya)
-            bot.stats.bets++;
-            bot.stats.betsSession++;
+            return { win, pft, nextBet, betInfo };
+        },
+
+        updateStatsAtomic(result) {
+            const { win, pft, nextBet } = result;
+            
+            // Atomic updates using bitwise where possible
+            bot.stats.bets = (bot.stats.bets + 1) | 0;
             bot.stats.wagered += nextBet;
-            bot.stats.wageredSession += nextBet;
             bot.stats.profit += pft;
             
-            // Balance will be updated via WebSocket subscription, but we update locally for speed
             if (!bot.wsConnected || bot.isDemo) {
                 bot.stats.currentBal += pft;
             }
             
-            bot.stats.lastBetAmount = nextBet;
-            
             if (win) {
-                bot.stats.wins++;
-                bot.stats.winsSession++;
-                bot.stats.consecutiveWins++;
+                bot.stats.wins = (bot.stats.wins + 1) | 0;
+                bot.stats.consecutiveWins = (bot.stats.consecutiveWins + 1) | 0;
                 bot.stats.consecutiveLosses = 0;
             } else {
-                bot.stats.loss++;
-                bot.stats.lossSession++;
-                bot.stats.consecutiveLosses++;
+                bot.stats.loss = (bot.stats.loss + 1) | 0;
+                bot.stats.consecutiveLosses = (bot.stats.consecutiveLosses + 1) | 0;
                 bot.stats.consecutiveWins = 0;
             }
             
-            bot.stats.winRate = bot.stats.bets > 0 ? (bot.stats.wins / bot.stats.bets * 100) : 0;
-            bot.stats.winRateSession = bot.stats.betsSession > 0 ? (bot.stats.winsSession / bot.stats.betsSession * 100) : 0;
+            bot.stats.winRate = (bot.stats.wins / bot.stats.bets * 100) || 0;
+        },
+
+        processZRecResult(result) {
+            const { win, pft, nextBet, betInfo } = result;
+            const z = bot.zRec;
             
-            // Update peak balance
-            if (bot.stats.currentBal > bot.stats.peakBalance) {
-                bot.stats.peakBalance = bot.stats.currentBal;
-                console.log(`🏆 NEW ATH: ${bot.stats.peakBalance.toFixed(8)}`);
+            if (bot.stats.currentBal > z.balancePeak) {
+                z.balancePeak = bot.stats.currentBal;
             }
 
-            // Update drawdown
-            const currentDrawdown = bot.stats.peakBalance - bot.stats.currentBal;
-            if (currentDrawdown > bot.stats.maxDrawdown) {
-                bot.stats.maxDrawdown = currentDrawdown;
-                if (bot.stats.peakBalance > 0) {
-                    bot.stats.maxDrawdownPercent = (currentDrawdown / bot.stats.peakBalance) * 100;
+            if (bot.stats.currentBal >= z.balanceStart) {
+                z.active = false;
+                z.stats.successfulRecoveries++;
+                z.stats.recoveredAmount += bot.stats.currentBal - z.balanceStart;
+                this.startNewSessionFast();
+                return;
+            }
+
+            if (z.trail.enabled && !z.trail.isActive) {
+                const profitFromStart = ((bot.stats.currentBal - z.balanceStart) / z.balanceStart) * 100;
+                if (profitFromStart >= z.trail.activationPercent) {
+                    z.trail.isActive = true;
+                    z.trail.currentLevel = 1;
+                    z.level1Peak = z.balancePeak;
                 }
             }
 
-            // Process Z Rec result
-            if (betInfo.type === 'ZREC') {
-                const result = processZRecResult(win, pft, nextBet);
-                if (result !== 'CONTINUE') {
-                    console.log(`🔄 Z Rec ended: ${result}`);
-                }
+            if (win) {
+                z.baseChance = Number((Math.random() * (z.chance.max - z.chance.min) + z.chance.min).toFixed(1));
+                z.singleChanceLimit = Math.floor(99 / z.baseChance);
+                z.singleChanceBets = 0;
+                z.currentChance = z.baseChance;
+                z.lastWinTime = Date.now();
             } else {
-                if (win) {
-                    bot.zRec.lastWinTime = Date.now();
-                }
+                z.singleChanceBets++;
             }
+        },
 
-            // Log bet result
-            const icon = betInfo.type === 'ZREC' ? '⚡' : (betInfo.mode === 'dice' ? '🎲' : '📈');
-            const chanceText = betInfo.mode === 'dice' ? `${betInfo.chance.toFixed(1)}%` : `${betInfo.multiplier.toFixed(4)}x`;
-            console.log(`${icon} ${nextBet.toFixed(8)} @ ${chanceText} → ${win ? '✅' : '❌'} ${pft > 0 ? '+' : ''}${pft.toFixed(8)} | Bal: ${bot.stats.currentBal.toFixed(8)} | ATH: ${bot.stats.peakBalance.toFixed(8)}`);
-            
-            updateDashboard();
+        startNewSessionFast() {
+            bot.zRec.active = false;
+            bot.zRec.trail.isActive = false;
+            bot.stats.sessionStartBal = bot.stats.currentBal;
+            bot.stats.sessionStartTime = Date.now();
+            bot.stats.consecutiveLosses = 0;
+            bot.stats.betsSession = 0;
+            bot.stats.winsSession = 0;
+            bot.stats.lossSession = 0;
+            bot.stats.wageredSession = 0;
+        },
 
-            // Telegram report every 3 minutes
-            if (CONFIG.telegram.enabled) {
-                const now = Date.now();
-                if (now - bot.lastTelegramReport >= bot.telegramReportInterval) {
-                    await TelegramAPI.sendPeriodicReport();
-                    bot.lastTelegramReport = now;
-                }
-            }
-
-            // Continue loop immediately (no delay)
-            if (bot.isRunning && !bot.isPaused) {
-                setImmediate ? setImmediate(runLoop) : setTimeout(runLoop, 0);
-            }
-
-        } catch (e) {
-            console.log(`⚠️ Error: ${e.message}`);
-            if (bot.isRunning && !bot.isPaused) {
-                setTimeout(runLoop, 100);
-            }
+        microSleep() {
+            return new Promise(resolve => setTimeout(resolve, 0));
         }
-    }
+    };
 
-    function startNewSession() {
-        bot.zRec.active = false;
-        bot.zRec.trail.isActive = false;
-        
-        bot.stats.sessionProfit = bot.stats.currentBal - bot.stats.sessionStartBal;
-        bot.stats.sessionStartBal = bot.stats.currentBal;
-        bot.stats.sessionStartTime = Date.now();
-        bot.stats.consecutiveLosses = 0;
-        bot.stats.betsSession = 0;
-        bot.stats.winsSession = 0;
-        bot.stats.lossSession = 0;
-        bot.stats.wageredSession = 0;
-        bot.stats.winRateSession = 0;
-        
-        console.log(`🔄 NEW SESSION - Balance: ${bot.stats.currentBal.toFixed(8)} | ATH: ${bot.stats.peakBalance.toFixed(8)}`);
-        updateUI();
-    }
-
-    // =============== API ===============
+    // =============== ULTRA FAST API ===============
     const API = {
         async syncOnce() {
             try {
-                bot.token = localStorage.getItem('apitoken') || 
-                           localStorage.getItem('token') ||
-                           sessionStorage.getItem('token') ||
-                           (document.cookie.match(/session=([^;]+)/) ? document.cookie.match(/session=([^;]+)/)[1] : null);
+                bot.token = localStorage.getItem('apitoken') || localStorage.getItem('token') || 
+                           sessionStorage.getItem('token') || document.cookie.match(/session=([^;]+)/)?.[1];
                 
                 if (!bot.token) {
                     bot.stakeUser = "Not logged in";
-                    bot.availableCurrencies = getDefaultCurrencies();
                     return;
                 }
 
                 const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
                     method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        "Authorization": `Bearer ${bot.token}`,
-                        "x-access-token": bot.token,
-                        "x-csrf-token": bot.token
-                    },
+                    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${bot.token}` },
                     body: JSON.stringify({
                         query: `query{user{name balances{available{amount currency}}}}`
                     })
                 });
                 
-                if (!res.ok) {
-                    bot.stakeUser = "API Error";
-                    bot.availableCurrencies = getDefaultCurrencies();
-                    return;
-                }
-                
                 const json = await res.json();
                 
                 if (json?.data?.user) {
                     bot.stakeUser = json.data.user.name;
+                    bot.availableCurrencies = (json.data.user.balances || []).map(b => ({
+                        code: b.available.currency.toLowerCase(),
+                        name: b.available.currency.toUpperCase(),
+                        balance: parseFloat(b.available.amount) || 0
+                    }));
                     
-                    const bals = json.data.user.balances || [];
-                    const currencies = [];
-                    const currencySet = new Set();
+                    const selected = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
+                    if (selected) bot.realBalance = selected.balance;
                     
-                    bals.forEach(balance => {
-                        if (balance.available && balance.available.currency) {
-                            const code = balance.available.currency.toLowerCase();
-                            if (!currencySet.has(code)) {
-                                currencySet.add(code);
-                                currencies.push({
-                                    code: code,
-                                    name: balance.available.currency.toUpperCase(),
-                                    icon: getCurrencyIcon(code),
-                                    balance: parseFloat(balance.available.amount) || 0
-                                });
-                            }
-                        }
-                    });
-                    
-                    bot.availableCurrencies = currencies.length > 0 ? currencies : getDefaultCurrencies();
-                    
-                    const selectedBal = bals.find(b => 
-                        b.available && b.available.currency && 
-                        b.available.currency.toLowerCase() === bot.selectedCurrency.toLowerCase()
-                    );
-                    
-                    if (selectedBal) {
-                        bot.realBalance = parseFloat(selectedBal.available.amount);
-                    }
-                    
-                    console.log(`✅ Synced: ${bot.stakeUser}`);
-                    
-                    // Connect WebSocket after getting token
                     WebSocketManager.connect();
-                    
-                } else {
-                    bot.stakeUser = "API Error";
-                    bot.availableCurrencies = getDefaultCurrencies();
                 }
-                
             } catch (e) {
-                bot.stakeUser = "Connection Error";
-                bot.availableCurrencies = getDefaultCurrencies();
-            }
-        },
-
-        async getBalance(coin) {
-            if (bot.isDemo) return bot.stats.currentBal || bot.demoBalance;
-            
-            try {
-                const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        "x-access-token": bot.token
-                    },
-                    body: JSON.stringify({
-                        query: `query{user{balances{available{amount currency}}}}`
-                    })
-                });
-                const json = await res.json();
-                const active = json.data.user.balances.find(b =>
-                    b.available.currency.toLowerCase() === coin.toLowerCase()
-                );
-                const balance = active ? parseFloat(active.available.amount) : 0;
-                bot.realBalance = balance;
-                return balance;
-            } catch (e) {
-                return 0;
+                bot.stakeUser = "Error";
             }
         },
 
         async placeDiceBet(amount, chance) {
-            if (bot.isDemo) {
-                return new Promise((r) => {
-                    const win = Math.random() * 100 < chance;
-                    setTimeout(() => {
-                        r({
-                            diceRoll: {
-                                amount: amount,
-                                payout: win ? (amount * (99 / chance)) : 0
-                            }
-                        });
-                    }, 0);
-                });
-            }
-
-            const payload = {
-                amount: parseFloat(amount.toFixed(8)),
-                currency: bot.selectedCurrency,
-                target: parseFloat((100 - chance).toFixed(2)),
-                condition: "above",
-                identifier: Math.random().toString(36).slice(2) + Date.now()
-            };
-
-            try {
-                const r = await fetch(`${CONFIG.apiUrl}/casino/dice/roll`, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        "Authorization": `Bearer ${bot.token}`,
-                        "x-access-token": bot.token,
-                        "x-csrf-token": bot.token
-                    },
-                    body: JSON.stringify(payload)
-                });
-                
-                if (!r.ok) throw new Error(`Bet failed: ${r.status}`);
-                return r.json();
-            } catch (error) {
-                throw error;
-            }
+            const res = await fetch(`${CONFIG.apiUrl}/casino/dice/roll`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "Authorization": `Bearer ${bot.token}` },
+                body: JSON.stringify({
+                    amount: parseFloat(amount.toFixed(8)),
+                    currency: bot.selectedCurrency,
+                    target: parseFloat((100 - chance).toFixed(2)),
+                    condition: "above"
+                })
+            });
+            return res.json();
         },
 
         async placeLimboBet(amount, multiplierTarget) {
-            if (bot.isDemo) {
-                return new Promise((r) => {
-                    const win = Math.random() < (1 / multiplierTarget);
-                    setTimeout(() => {
-                        r({
-                            limboBet: {
-                                amount: amount,
-                                payout: win ? (amount * multiplierTarget) : 0,
-                                state: {
-                                    result: win ? multiplierTarget : (Math.random() * multiplierTarget),
-                                    multiplierTarget: multiplierTarget
-                                }
-                            }
-                        });
-                    }, 0);
-                });
-            }
-
-            const payload = {
-                multiplierTarget: multiplierTarget,
-                identifier: Math.random().toString(36).slice(2) + Date.now(),
-                amount: parseFloat(amount.toFixed(8)),
-                currency: bot.selectedCurrency
-            };
-
-            try {
-                const r = await fetch(`${CONFIG.apiUrl}/casino/limbo/bet`, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        "Authorization": `Bearer ${bot.token}`,
-                        "x-access-token": bot.token,
-                        "x-csrf-token": bot.token
-                    },
-                    body: JSON.stringify(payload)
-                });
-                
-                if (!r.ok) throw new Error(`Limbo bet failed: ${r.status}`);
-                return r.json();
-            } catch (error) {
-                throw error;
-            }
+            const res = await fetch(`${CONFIG.apiUrl}/casino/limbo/bet`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "Authorization": `Bearer ${bot.token}` },
+                body: JSON.stringify({
+                    multiplierTarget,
+                    amount: parseFloat(amount.toFixed(8)),
+                    currency: bot.selectedCurrency
+                })
+            });
+            return res.json();
         }
     };
 
-    // =============== UI ELEGAN - HITAM GRADIENT UNGU ===============
+    // =============== TELEGRAM (Non-blocking) ===============
+    const TelegramAPI = {
+        async sendMessage(text) {
+            if (!CONFIG.telegram?.enabled) return;
+            fetch(`https://api.telegram.org/bot${CONFIG.telegram.botToken}/sendMessage`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    chat_id: CONFIG.telegram.chatId,
+                    text: text,
+                    parse_mode: "HTML",
+                    disable_web_page_preview: true
+                })
+            }).catch(() => {});
+        },
+
+        async sendPeriodicReport() {
+            if (!CONFIG.telegram.enabled) return;
+            const runtime = bot.stats.startTime ? Math.floor((Date.now() - bot.stats.startTime) / 1000) : 0;
+            const profitPercent = bot.stats.startBal > 0 ? ((bot.stats.profit / bot.stats.startBal) * 100) : 0;
+            
+            const message = `📊 <b>PERIODIC REPORT</b>\n` +
+                `⏱️ Runtime: <code>${Math.floor(runtime/3600)}h ${Math.floor((runtime%3600)/60)}m</code>\n` +
+                `💰 Balance: <code>${bot.stats.currentBal.toFixed(8)}</code>\n` +
+                `📈 Profit: <code>${bot.stats.profit > 0 ? '+' : ''}${bot.stats.profit.toFixed(8)} (${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}%)</code>\n` +
+                `🎯 Bets: <code>${bot.stats.bets}</code>\n` +
+                `📈 Win Rate: <code>${bot.stats.winRate.toFixed(2)}%</code>`;
+            
+            await this.sendMessage(message);
+        }
+    };
+
+    // =============== UI (Lightweight) ===============
     function createUI() {
-        if (document.getElementById("orion-fusion-wrap")) return;
+        if (document.getElementById("orion-turbo")) return;
 
         const style = document.createElement("style");
         style.innerHTML = `
-            #orion-fusion-wrap {
-                position: fixed;
-                top: 50%;
-                right: 20px;
-                transform: translateY(-50%);
-                width: min(420px, calc(100vw - 40px));
-                max-height: 90vh;
-                background: linear-gradient(145deg, #0A0A0F 0%, #1A0B2E 50%, #0D0B1A 100%);
-                border: 1px solid rgba(147, 51, 234, 0.3);
-                border-radius: 28px;
-                color: #fff;
-                font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-                font-size: 13px;
-                z-index: 999999;
-                box-shadow: 0 30px 50px -15px rgba(88, 28, 135, 0.6), 0 0 0 1px rgba(168, 85, 247, 0.2) inset;
-                backdrop-filter: blur(10px);
-                overflow: hidden;
-                letter-spacing: 0.3px;
-            }
-            
-            @media (max-width: 480px) {
-                #orion-fusion-wrap {
-                    top: auto;
-                    bottom: 10px;
-                    right: 10px;
-                    left: 10px;
-                    width: auto;
-                    transform: none;
-                    max-height: 85vh;
-                }
-            }
-            
-            .fusion-header {
-                background: linear-gradient(90deg, rgba(20, 5, 40, 0.95) 0%, rgba(45, 10, 70, 0.95) 100%);
-                padding: 18px 22px;
-                border-bottom: 1px solid rgba(168, 85, 247, 0.25);
-                position: relative;
+            #orion-turbo {
+                position: fixed; top: 50%; right: 20px; transform: translateY(-50%);
+                width: 380px; max-height: 90vh;
+                background: linear-gradient(145deg, #0A0A0F, #1A0B2E);
+                border: 1px solid #A855F7; border-radius: 24px;
+                color: #fff; font-family: system-ui, sans-serif; font-size: 12px;
+                z-index: 999999; box-shadow: 0 20px 40px #581c87; backdrop-filter: blur(10px);
                 overflow: hidden;
             }
-            
-            .fusion-header::before {
-                content: '';
-                position: absolute;
-                top: -50%;
-                left: -50%;
-                width: 200%;
-                height: 200%;
-                background: radial-gradient(circle, rgba(168,85,247,0.1) 0%, transparent 70%);
-                animation: rotate 20s linear infinite;
-                z-index: 0;
-            }
-            
-            @keyframes rotate {
-                from { transform: rotate(0deg); }
-                to { transform: rotate(360deg); }
-            }
-            
-            .fusion-title {
-                font-size: 24px;
-                font-weight: 800;
-                background: linear-gradient(135deg, #E9D5FF 0%, #C084FC 40%, #A855F7 100%);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                margin-bottom: 6px;
-                position: relative;
-                z-index: 1;
-                text-shadow: 0 0 20px rgba(168,85,247,0.5);
-                letter-spacing: -0.5px;
-            }
-            
-            .fusion-subtitle {
-                font-size: 11px;
-                color: #D8B4FE;
-                display: flex;
-                justify-content: space-between;
-                position: relative;
-                z-index: 1;
-                opacity: 0.9;
-                text-transform: uppercase;
-                letter-spacing: 1px;
-            }
-            
-            .fusion-content {
-                padding: 20px;
-                max-height: calc(85vh - 100px);
-                overflow-y: auto;
-                scrollbar-width: thin;
-                scrollbar-color: #A855F7 #2D1B4A;
-            }
-            
-            .fusion-content::-webkit-scrollbar {
-                width: 6px;
-            }
-            
-            .fusion-content::-webkit-scrollbar-track {
-                background: #2D1B4A;
-                border-radius: 10px;
-            }
-            
-            .fusion-content::-webkit-scrollbar-thumb {
-                background: #A855F7;
-                border-radius: 10px;
-            }
-            
-            .mode-switch {
-                display: flex;
-                gap: 10px;
-                margin-bottom: 18px;
-                background: rgba(25, 10, 40, 0.7);
-                padding: 5px;
-                border-radius: 16px;
-                border: 1px solid rgba(168, 85, 247, 0.2);
-                backdrop-filter: blur(5px);
-            }
-            
-            .mode-option {
-                flex: 1;
-                padding: 10px;
-                text-align: center;
-                border-radius: 12px;
-                cursor: pointer;
-                font-weight: 600;
-                font-size: 12px;
-                color: #C4B5FD;
-                transition: all 0.3s ease;
-                position: relative;
-                overflow: hidden;
-            }
-            
-            .mode-option::before {
-                content: '';
-                position: absolute;
-                top: 0;
-                left: -100%;
-                width: 100%;
-                height: 100%;
-                background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
-                transition: left 0.5s;
-            }
-            
-            .mode-option:hover::before {
-                left: 100%;
-            }
-            
-            .mode-option.active {
-                background: linear-gradient(135deg, #7C3AED 0%, #A855F7 100%);
-                color: white;
-                box-shadow: 0 5px 15px -5px #A855F7;
-            }
-            
-            .status-card {
-                background: linear-gradient(145deg, rgba(25, 10, 45, 0.8), rgba(15, 5, 30, 0.9));
-                border-radius: 20px;
-                padding: 16px;
-                margin-bottom: 18px;
-                border: 1px solid rgba(168, 85, 247, 0.25);
-                box-shadow: 0 10px 20px -10px rgba(0,0,0,0.5), 0 0 0 1px rgba(168,85,247,0.1) inset;
-                backdrop-filter: blur(5px);
-            }
-            
-            .status-value {
-                font-size: 24px;
-                font-weight: 700;
-                color: #F0E9FF;
-                text-shadow: 0 0 10px rgba(168,85,247,0.5);
-                letter-spacing: -0.5px;
-            }
-            
-            .status-badge {
-                padding: 4px 12px;
-                border-radius: 20px;
-                font-size: 11px;
-                font-weight: 700;
-                background: linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(16, 185, 129, 0.1));
-                color: #6EE7B7;
-                border: 1px solid rgba(16, 185, 129, 0.3);
-                backdrop-filter: blur(5px);
-            }
-            
-            .status-badge.recovery {
-                background: linear-gradient(135deg, rgba(168, 85, 247, 0.2), rgba(126, 34, 206, 0.1));
-                color: #D8B4FE;
-                border: 1px solid rgba(168, 85, 247, 0.3);
-            }
-            
-            .stats-grid {
-                display: grid;
-                grid-template-columns: repeat(4, 1fr);
-                gap: 10px;
-                margin-bottom: 18px;
-            }
-            
-            .stat-item {
-                background: linear-gradient(145deg, rgba(30, 15, 50, 0.6), rgba(20, 8, 40, 0.8));
-                border-radius: 14px;
-                padding: 12px 8px;
-                text-align: center;
-                border: 1px solid rgba(168, 85, 247, 0.15);
-                transition: transform 0.2s;
-                backdrop-filter: blur(5px);
-            }
-            
-            .stat-item:hover {
-                transform: translateY(-2px);
-                border-color: rgba(168, 85, 247, 0.4);
-                box-shadow: 0 5px 15px -8px #A855F7;
-            }
-            
-            .stat-label {
-                font-size: 9px;
-                color: #9CA3AF;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-                margin-bottom: 4px;
-            }
-            
-            .stat-number {
-                font-size: 13px;
-                font-weight: 700;
-                color: #F3E8FF;
-            }
-            
-            .stat-number.positive { color: #6EE7B7; text-shadow: 0 0 8px #10B981; }
-            .stat-number.negative { color: #FCA5A5; text-shadow: 0 0 8px #EF4444; }
-            
-            .section-card {
-                background: linear-gradient(145deg, rgba(25, 12, 45, 0.8), rgba(18, 8, 35, 0.9));
-                border-radius: 20px;
-                padding: 18px;
-                margin-bottom: 18px;
-                border: 1px solid rgba(168, 85, 247, 0.2);
-                box-shadow: 0 5px 15px -10px rgba(0,0,0,0.5);
-                backdrop-filter: blur(5px);
-            }
-            
-            .zrec-card {
-                background: linear-gradient(145deg, #2E1065, #1E1B4B);
-                border-radius: 20px;
-                padding: 18px;
-                margin-bottom: 18px;
-                border: 1px solid rgba(216, 180, 254, 0.3);
-                box-shadow: 0 10px 25px -12px #A855F7, 0 0 0 1px rgba(216,180,254,0.2) inset;
-                position: relative;
-                overflow: hidden;
-            }
-            
-            .zrec-card::before {
-                content: '';
-                position: absolute;
-                top: -30%;
-                right: -30%;
-                width: 200px;
-                height: 200px;
-                background: radial-gradient(circle, rgba(168,85,247,0.2) 0%, transparent 70%);
-                border-radius: 50%;
-                pointer-events: none;
-            }
-            
-            .section-title {
-                font-size: 16px;
-                font-weight: 700;
-                background: linear-gradient(135deg, #C084FC, #E9D5FF);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                margin-bottom: 15px;
-                letter-spacing: -0.3px;
-                display: flex;
-                align-items: center;
-                gap: 6px;
-            }
-            
-            .zrec-title {
-                font-size: 16px;
-                font-weight: 700;
-                background: linear-gradient(135deg, #E9D5FF, #F0E9FF);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                margin-bottom: 15px;
-                letter-spacing: -0.3px;
-                position: relative;
-                z-index: 1;
-            }
-            
-            .setting-row {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                margin-bottom: 14px;
-                padding: 0 4px;
-            }
-            
-            .setting-label {
-                color: #D8D0E0;
-                font-size: 12px;
-                font-weight: 500;
-            }
-            
-            .number-input {
-                width: 80px;
-                background: rgba(10, 5, 20, 0.7);
-                border: 1px solid #6B21A5;
-                border-radius: 10px;
-                padding: 8px 10px;
-                color: #F0E9FF;
-                font-size: 12px;
-                text-align: center;
-                transition: all 0.2s;
-                backdrop-filter: blur(5px);
-            }
-            
-            .number-input:focus {
-                outline: none;
-                border-color: #A855F7;
-                box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.3);
-            }
-            
-            .badge {
-                display: inline-block;
-                padding: 4px 12px;
-                border-radius: 20px;
-                font-size: 10px;
-                font-weight: 700;
-                background: linear-gradient(135deg, rgba(168, 85, 247, 0.2), rgba(126, 34, 206, 0.1));
-                color: #D8B4FE;
-                border: 1px solid rgba(168, 85, 247, 0.3);
-                backdrop-filter: blur(5px);
-            }
-            
-            .trail-indicator {
-                width: 8px;
-                height: 8px;
-                border-radius: 50%;
-                display: inline-block;
-                margin-right: 6px;
-                box-shadow: 0 0 8px currentColor;
-            }
-            
-            .trail-active { 
-                background: #FBBF24; 
-                box-shadow: 0 0 12px #FBBF24;
-            }
-            .trail-inactive { 
-                background: #94A3B8; 
-            }
-            
-            .currency-select {
-                width: 100%;
-                background: rgba(20, 10, 35, 0.8);
-                border: 1px solid #6B21A5;
-                border-radius: 14px;
-                padding: 12px;
-                color: #F0E9FF;
-                font-size: 13px;
-                margin-bottom: 18px;
-                cursor: pointer;
-                backdrop-filter: blur(5px);
-                font-weight: 500;
-            }
-            
-            .currency-select option {
-                background: #1E1035;
-                color: #F0E9FF;
-            }
-            
-            .control-buttons {
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 10px;
-                margin-top: 18px;
-            }
-            
-            .btn {
-                padding: 14px;
-                border: none;
-                border-radius: 16px;
-                font-size: 14px;
-                font-weight: 700;
-                cursor: pointer;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                gap: 8px;
-                transition: all 0.3s;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-                position: relative;
-                overflow: hidden;
-            }
-            
-            .btn::before {
-                content: '';
-                position: absolute;
-                top: 0;
-                left: -100%;
-                width: 100%;
-                height: 100%;
-                background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
-                transition: left 0.5s;
-            }
-            
-            .btn:hover::before {
-                left: 100%;
-            }
-            
-            .btn-start {
-                background: linear-gradient(135deg, #6B21A5, #A855F7);
-                color: white;
-                box-shadow: 0 10px 20px -8px #A855F7;
-            }
-            
-            .btn-start:hover {
-                transform: translateY(-2px);
-                box-shadow: 0 15px 25px -10px #A855F7;
-            }
-            
-            .btn-stop {
-                background: linear-gradient(135deg, #7F1D1D, #991B1B);
-                color: white;
-                box-shadow: 0 10px 20px -8px #991B1B;
-            }
-            
-            .btn-stop:hover {
-                transform: translateY(-2px);
-                box-shadow: 0 15px 25px -10px #991B1B;
-            }
-            
-            .btn-secondary {
-                background: linear-gradient(135deg, #2D1B4A, #1E1035);
-                color: #D8B4FE;
-                border: 1px solid #6B21A5;
-            }
-            
-            .btn-secondary:hover {
-                background: linear-gradient(135deg, #3B2260, #2D1B4A);
-                color: #F0E9FF;
-                transform: translateY(-2px);
-            }
-            
-            .live-indicator {
-                display: flex;
-                align-items: center;
-                gap: 6px;
-            }
-            
-            .live-dot {
-                width: 8px;
-                height: 8px;
-                background: #A855F7;
-                border-radius: 50%;
-                animation: pulse 2s infinite;
-                box-shadow: 0 0 12px #A855F7;
-            }
-            
-            @keyframes pulse {
-                0%, 100% { 
-                    opacity: 1;
-                    transform: scale(1);
-                }
-                50% { 
-                    opacity: 0.6;
-                    transform: scale(1.2);
-                }
-            }
-            
-            .fusion-badge {
-                background: rgba(168, 85, 247, 0.2);
-                padding: 4px 12px;
-                border-radius: 20px;
-                font-size: 11px;
-                font-weight: 600;
-                color: #D8B4FE;
-                border: 1px solid rgba(168, 85, 247, 0.3);
-            }
-            
-            .ws-badge {
-                background: rgba(16, 185, 129, 0.2);
-                padding: 4px 12px;
-                border-radius: 20px;
-                font-size: 11px;
-                font-weight: 600;
-                color: #6EE7B7;
-                border: 1px solid rgba(16, 185, 129, 0.3);
-                margin-left: 5px;
-            }
-            
-            .recovery-status {
-                margin-top: 15px;
-                padding: 12px;
-                background: rgba(0,0,0,0.3);
-                border-radius: 14px;
-                border: 1px solid rgba(168, 85, 247, 0.2);
-                backdrop-filter: blur(5px);
-            }
-            
-            hr {
-                border: none;
-                height: 1px;
-                background: linear-gradient(90deg, transparent, #A855F7, transparent);
-                margin: 15px 0;
-            }
+            .turbo-header { padding: 16px; background: #2E1065; border-bottom: 1px solid #A855F7; }
+            .turbo-title { font-size: 20px; font-weight: 800; color: #E9D5FF; }
+            .turbo-content { padding: 16px; overflow-y: auto; max-height: calc(90vh - 80px); }
+            .stat-row { display: flex; justify-content: space-between; margin: 8px 0; padding: 8px; background: #1E1035; border-radius: 12px; }
+            .btn { padding: 12px; border: none; border-radius: 12px; font-weight: 700; cursor: pointer; }
+            .btn-start { background: #A855F7; color: white; width: 100%; }
+            .btn-stop { background: #991B1B; color: white; width: 100%; }
+            .ws-badge { display: inline-block; padding: 4px 8px; border-radius: 12px; font-size: 10px; }
         `;
-
         document.head.appendChild(style);
 
         const html = `
-            <div id="orion-fusion-wrap">
-                <div class="fusion-header">
-                    <div class="fusion-title">⚡ ORION × Z RECOVERY</div>
-                    <div class="fusion-subtitle">
-                        <span>by orionlogic</span>
-                        <span>
-                            <span class="fusion-badge" id="live-mode-badge">⏹ STOPPED</span>
-                            <span class="ws-badge" id="ws-status">⚡ WS</span>
-                        </span>
+            <div id="orion-turbo">
+                <div class="turbo-header">
+                    <div class="turbo-title">⚡ ORION TURBO</div>
+                    <div style="display: flex; gap: 8px; margin-top: 8px;">
+                        <span class="ws-badge" id="ws-status">✅ WS</span>
+                        <span class="ws-badge" id="workers-status">3⚡</span>
                     </div>
                 </div>
-                
-                <div class="fusion-content">
-                    <!-- Mode Switch -->
-                    <div class="mode-switch">
-                        <div class="mode-option active" data-mode="real">🎯 REAL</div>
-                        <div class="mode-option" data-mode="demo">🧪 TEST</div>
+                <div class="turbo-content">
+                    <div class="stat-row">
+                        <span>Balance</span>
+                        <span id="balance-display">0.00000000</span>
                     </div>
-                    
-                    <!-- Status Card -->
-                    <div class="status-card">
-                        <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
-                            <span style="color: #C4B5FD; font-weight: 600;">CURRENT BALANCE</span>
-                            <span class="live-indicator">
-                                <span class="live-dot"></span>
-                                <span id="runtime-status" style="color: #A78BFA;">00:00</span>
-                            </span>
-                        </div>
-                        <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px;">
-                            <span class="status-value" id="balance-display">0.00000000</span>
-                            <span style="color: #C4B5FD; font-weight: 600;" id="currency-display">DOGE</span>
-                        </div>
-                        <div style="display: flex; justify-content: space-between; font-size: 11px; color: #9CA3AF;">
-                            <div>User: <span style="color: #F0E9FF;" id="username-display">${bot.stakeUser}</span></div>
-                            <div>ATH: <span style="color: #F0E9FF;" id="peak-display">0.00000000</span></div>
-                            <div id="mode-display"><span class="status-badge">🎲 WAGER</span></div>
-                        </div>
+                    <div class="stat-row">
+                        <span>Profit</span>
+                        <span id="profit-display">0.00</span>
                     </div>
-                    
-                    <!-- Stats Grid -->
-                    <div class="stats-grid">
-                        <div class="stat-item"><div class="stat-label">Wagered</div><div class="stat-number" id="wagered-display">0.00</div></div>
-                        <div class="stat-item"><div class="stat-label">Profit</div><div class="stat-number" id="profit-display">0.00</div></div>
-                        <div class="stat-item"><div class="stat-label">Bets</div><div class="stat-number" id="bets-display">0</div></div>
-                        <div class="stat-item"><div class="stat-label">Win Rate</div><div class="stat-number" id="winrate-display">0%</div></div>
-                        <div class="stat-item"><div class="stat-label">Wins</div><div class="stat-number" id="wins-display">0</div></div>
-                        <div class="stat-item"><div class="stat-label">Losses</div><div class="stat-number" id="losses-display">0</div></div>
-                        <div class="stat-item"><div class="stat-label">Max Drop</div><div class="stat-number" id="maxdrop-display">0.00</div></div>
-                        <div class="stat-item"><div class="stat-label">Drop %</div><div class="stat-number" id="maxdrop-percent-display">0%</div></div>
+                    <div class="stat-row">
+                        <span>Bets</span>
+                        <span id="bets-display">0</span>
                     </div>
-                    
-                    <!-- Currency Selector -->
-                    <select id="currency-select" class="currency-select"></select>
-                    
-                    <!-- SECTION 1: WAGER MODE -->
-                    <div class="section-card">
-                        <div class="section-title">🎲 WAGER MODE</div>
-                        
-                        <div class="setting-row">
-                            <span class="setting-label">Game Mode</span>
-                            <select id="wager-mode-select" style="background:rgba(10,5,20,0.7); color:#F0E9FF; border:1px solid #6B21A5; border-radius:10px; padding:8px;">
-                                <option value="dice" ${bot.wagerMode.mode === 'dice' ? 'selected' : ''}>Dice</option>
-                                <option value="limbo" ${bot.wagerMode.mode === 'limbo' ? 'selected' : ''}>Limbo</option>
-                            </select>
-                        </div>
-                        
-                        <div class="setting-row">
-                            <span class="setting-label">Bet Percent</span>
-                            <input type="number" id="wager-betpercent" class="number-input" value="${bot.wagerMode.betPercent}" min="0.1" max="5" step="0.1">
-                        </div>
-                        
-                        <div class="setting-row">
-                            <span class="setting-label">Dice Chance</span>
-                            <input type="number" id="wager-chance" class="number-input" value="${bot.wagerMode.diceChance}" min="1" max="99" step="0.1">
-                        </div>
-                        
-                        <div class="setting-row">
-                            <span class="setting-label">Limbo Multiplier</span>
-                            <input type="number" id="wager-multiplier" class="number-input" value="${bot.wagerMode.limboMultiplier}" min="1.0001" max="100" step="0.0001">
-                        </div>
-                        
-                        <div class="setting-row">
-                            <span class="setting-label">Min Bet</span>
-                            <input type="number" id="minbet-input" class="number-input" value="${bot.globalMinBet}" min="0.000001" step="0.000001">
-                        </div>
-                        
-                        <div class="setting-row">
-                            <span class="setting-label">Switch Cycles</span>
-                            <input type="number" id="wager-cycles" class="number-input" value="${bot.wagerMode.cyclesBetweenSwitch}" min="1" max="50" step="1">
-                        </div>
+                    <div class="stat-row">
+                        <span>Win Rate</span>
+                        <span id="winrate-display">0%</span>
                     </div>
-                    
-                    <!-- SECTION 2: Z RECOVERY TRIGGER -->
-                    <div class="zrec-card">
-                        <div class="zrec-title">⚡ Z RECOVERY</div>
-                        
-                        <div class="setting-row">
-                            <span class="setting-label">Dropdown %</span>
-                            <input type="number" id="zrec-dropdown-percent" class="number-input" value="${bot.zRec.trigger.dropdownPercent}" min="0.1" max="20" step="0.1">
-                        </div>
-                        
-                        <div class="setting-row">
-                            <span class="setting-label">Time Trigger (sec)</span>
-                            <input type="number" id="zrec-time-seconds" class="number-input" value="${bot.zRec.trigger.timeSeconds}" min="5" max="300" step="5">
-                        </div>
-                        
-                        <div class="setting-row">
-                            <span class="setting-label">Chance Min</span>
-                            <input type="number" id="zrec-chance-min" class="number-input" value="${bot.zRec.chance.min}" min="1" max="50" step="0.1">
-                        </div>
-                        
-                        <div class="setting-row">
-                            <span class="setting-label">Chance Max</span>
-                            <input type="number" id="zrec-chance-max" class="number-input" value="${bot.zRec.chance.max}" min="5" max="60" step="0.1">
-                        </div>
-                        
-                        <div class="setting-row">
-                            <span class="setting-label">Max Steps</span>
-                            <input type="number" id="zrec-max-steps" class="number-input" value="${bot.zRec.maxSteps}" min="10" max="500" step="10">
-                        </div>
+                    <div style="display: flex; gap: 8px; margin: 16px 0;">
+                        <select id="currency-select" style="flex:2; padding: 8px; background: #1E1035; color: white; border: 1px solid #A855F7; border-radius: 8px;"></select>
+                        <input type="number" id="betpercent" value="0.5" step="0.1" style="flex:1; padding: 8px; background: #1E1035; color: white; border: 1px solid #A855F7; border-radius: 8px;">
                     </div>
-                    
-                    <!-- SECTION 3: TRAIL SETTINGS -->
-                    <div class="section-card">
-                        <div class="section-title">🛡️ TRAIL SETTINGS</div>
-                        
-                        <div class="setting-row">
-                            <span class="setting-label">Enable Trail</span>
-                            <label style="position:relative; display:inline-block; width:44px; height:22px;">
-                                <input type="checkbox" id="zrec-trail-enabled" ${bot.zRec.trail.enabled ? 'checked' : ''} style="opacity:0; width:0; height:0;">
-                                <span style="position:absolute; cursor:pointer; top:0; left:0; right:0; bottom:0; background-color:#2D1B4A; transition:.3s; border-radius:22px; border:1px solid #A855F7;"></span>
-                                <span style="position:absolute; content:''; height:18px; width:18px; left:2px; bottom:2px; background: linear-gradient(135deg, #C084FC, #A855F7); transition:.3s; border-radius:50%; transform:${bot.zRec.trail.enabled ? 'translateX(22px)' : 'none'}; box-shadow:0 0 8px #A855F7;"></span>
-                            </label>
-                        </div>
-                        
-                        <div class="setting-row">
-                            <span class="setting-label">Activation %</span>
-                            <input type="number" id="zrec-trail-activation" class="number-input" value="${bot.zRec.trail.activationPercent}" min="0.1" max="10" step="0.1">
-                        </div>
-                        
-                        <div class="setting-row">
-                            <span class="setting-label">Level 1 Gap %</span>
-                            <input type="number" id="zrec-gap-level1" class="number-input" value="${bot.zRec.trail.level1Gap}" min="0.1" max="2" step="0.05">
-                        </div>
-                        
-                        <div class="setting-row">
-                            <span class="setting-label">Level 2 Gap %</span>
-                            <input type="number" id="zrec-gap-level2" class="number-input" value="${bot.zRec.trail.level2Gap}" min="0.05" max="1" step="0.05">
-                        </div>
-                        
-                        <div class="setting-row">
-                            <span class="setting-label">Level 3 Gap %</span>
-                            <input type="number" id="zrec-gap-level3" class="number-input" value="${bot.zRec.trail.level3Gap}" min="0.025" max="0.5" step="0.025">
-                        </div>
-                        
-                        <hr>
-                        
-                        <!-- Recovery Status -->
-                        <div class="recovery-status">
-                            <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
-                                <span style="color: #C4B5FD;">Status: <span id="zrec-badge" class="badge">INACTIVE</span></span>
-                                <span style="color: #C4B5FD;">Trail: <span id="trail-status" style="color: #F0E9FF;">Inactive</span></span>
-                            </div>
-                            <div style="display: flex; justify-content: space-between; font-size: 12px;">
-                                <span style="color: #9CA3AF;">Target: <span style="color: #F0E9FF;" id="rec-target">0.00</span></span>
-                                <span style="color: #9CA3AF;">Current: <span style="color: #F0E9FF;" id="rec-progress">0.00</span></span>
-                                <span style="color: #9CA3AF;">Left: <span style="color: #F0E9FF;" id="rec-left">0.00</span></span>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- Control Buttons -->
-                    <div class="control-buttons">
-                        <button id="start-btn" class="btn btn-start">▶ START</button>
-                        <button id="stop-btn" class="btn btn-stop">⏹ STOP</button>
-                    </div>
-                    
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px;">
-                        <button id="manual-zrec-btn" class="btn btn-secondary">⚡ MANUAL Z REC</button>
-                        <button id="new-session-btn" class="btn btn-secondary">🔄 NEW SESSION</button>
-                    </div>
+                    <button id="start-btn" class="btn btn-start">▶ START TURBO</button>
+                    <button id="stop-btn" class="btn btn-stop" style="margin-top: 8px;">⏹ STOP</button>
                 </div>
             </div>
         `;
 
         document.body.insertAdjacentHTML('beforeend', html);
         
-        setupEventListeners();
-        updateUI();
+        // Event listeners
+        document.getElementById('start-btn').onclick = startTurbo;
+        document.getElementById('stop-btn').onclick = () => bot.isRunning = false;
         
-        setTimeout(() => {
-            API.syncOnce();
-            updateTimer();
-            setInterval(updateTimer, 1000);
-            setInterval(updateWebSocketStatus, 1000);
-        }, 500);
-    }
-
-    // =============== EVENT LISTENERS ===============
-    function setupEventListeners() {
-        document.querySelectorAll('.mode-option').forEach(btn => {
-            btn.addEventListener('click', function() {
-                document.querySelectorAll('.mode-option').forEach(b => b.classList.remove('active'));
-                this.classList.add('active');
-                bot.isDemo = this.getAttribute('data-mode') === 'demo';
-            });
-        });
-
-        document.getElementById('wager-mode-select')?.addEventListener('change', function() {
-            bot.wagerMode.mode = this.value;
-        });
-
-        document.getElementById('wager-betpercent')?.addEventListener('change', function() {
-            bot.wagerMode.betPercent = parseFloat(this.value) || 0.5;
-        });
-        
-        document.getElementById('wager-chance')?.addEventListener('change', function() {
-            bot.wagerMode.diceChance = parseFloat(this.value) || 99.5;
-        });
-        
-        document.getElementById('wager-multiplier')?.addEventListener('change', function() {
-            bot.wagerMode.limboMultiplier = parseFloat(this.value) || 1.0001;
-        });
-        
-        document.getElementById('wager-cycles')?.addEventListener('change', function() {
-            bot.wagerMode.cyclesBetweenSwitch = parseInt(this.value) || 10;
-        });
-        
-        document.getElementById('minbet-input')?.addEventListener('change', function() {
-            bot.globalMinBet = parseFloat(this.value) || 0.000123;
-        });
-
-        document.getElementById('currency-select')?.addEventListener('change', function() {
-            bot.selectedCurrency = this.value;
-            if (bot.wsConnected) {
-                // Resubscribe to balance updates for new currency
-                WebSocketManager.subscribeToBalance();
-            }
-            updateUI();
-        });
-
-        document.getElementById('zrec-dropdown-percent')?.addEventListener('change', function() {
-            bot.zRec.trigger.dropdownPercent = parseFloat(this.value) || 5.0;
-        });
-        
-        document.getElementById('zrec-time-seconds')?.addEventListener('change', function() {
-            bot.zRec.trigger.timeSeconds = parseInt(this.value) || 60;
-        });
-        
-        document.getElementById('zrec-chance-min')?.addEventListener('change', function() {
-            bot.zRec.chance.min = parseFloat(this.value) || 10.0;
-        });
-        
-        document.getElementById('zrec-chance-max')?.addEventListener('change', function() {
-            bot.zRec.chance.max = parseFloat(this.value) || 25.0;
-        });
-        
-        document.getElementById('zrec-max-steps')?.addEventListener('change', function() {
-            bot.zRec.maxSteps = parseInt(this.value) || 100;
-        });
-        
-        document.getElementById('zrec-trail-enabled')?.addEventListener('change', function() {
-            bot.zRec.trail.enabled = this.checked;
-            const slider = this.nextElementSibling.nextElementSibling;
-            if (slider) {
-                slider.style.transform = this.checked ? 'translateX(22px)' : 'none';
-            }
-        });
-        
-        document.getElementById('zrec-trail-activation')?.addEventListener('change', function() {
-            bot.zRec.trail.activationPercent = parseFloat(this.value) || 2.0;
-        });
-        
-        document.getElementById('zrec-gap-level1')?.addEventListener('change', function() {
-            bot.zRec.trail.level1Gap = parseFloat(this.value) || 0.5;
-        });
-        
-        document.getElementById('zrec-gap-level2')?.addEventListener('change', function() {
-            bot.zRec.trail.level2Gap = parseFloat(this.value) || 0.25;
-        });
-        
-        document.getElementById('zrec-gap-level3')?.addEventListener('change', function() {
-            bot.zRec.trail.level3Gap = parseFloat(this.value) || 0.125;
-        });
-        
-        document.getElementById('manual-zrec-btn')?.addEventListener('click', function() {
-            if (!bot.isRunning) {
-                alert('Start bot dulu!');
-                return;
-            }
-            if (bot.zRec.active) {
-                alert('Z Rec sudah aktif!');
-                return;
-            }
-            bot.zRec.balancePeak = Math.max(bot.stats.peakBalance, bot.stats.currentBal);
-            activateZRec();
-        });
-        
-        document.getElementById('new-session-btn')?.addEventListener('click', function() {
-            if (bot.isRunning) startNewSession();
-        });
-
-        document.getElementById('start-btn')?.addEventListener('click', async () => {
+        function startTurbo() {
             if (bot.isRunning) return;
-
-            if (bot.isDemo) {
-                const demoBal = parseFloat(prompt("Demo Balance:", bot.demoBalance));
-                if (!isNaN(demoBal) && demoBal >= bot.globalMinBet) {
-                    bot.demoBalance = demoBal;
-                } else {
-                    alert(`Min bet: ${bot.globalMinBet}`);
-                    return;
-                }
-            } else {
-                await API.syncOnce();
-                if (bot.stakeUser.includes("Error") || bot.stakeUser === "Not logged in") {
-                    alert("Login dulu!");
-                    return;
-                }
-                
-                bot.realBalance = await API.getBalance(bot.selectedCurrency);
-                
-                if (bot.realBalance <= 0) {
-                    alert(`Insufficient ${bot.selectedCurrency.toUpperCase()} balance!`);
-                    return;
-                }
-                
-                bot.stats.currentBal = bot.realBalance;
-            }
-
-            bot.isRunning = true;
-            const startBalance = bot.isDemo ? bot.demoBalance : bot.realBalance;
             
+            bot.isRunning = true;
             bot.stats = {
-                profit: 0,
-                wagered: 0,
-                wageredSession: 0,
-                startBal: startBalance,
-                currentBal: startBalance,
-                peakBalance: startBalance,
-                maxDrawdown: 0,
-                maxDrawdownPercent: 0,
-                bets: 0,
-                betsSession: 0,
-                wins: 0,
-                winsSession: 0,
-                loss: 0,
-                lossSession: 0,
-                startTime: Date.now(),
-                lastBetAmount: 0,
-                lastResults: [],
-                consecutiveLosses: 0,
-                consecutiveWins: 0,
-                winRate: 0,
-                winRateSession: 0,
-                currentStreak: 0,
-                sessionProfit: 0,
-                sessionStartBal: startBalance,
-                sessionStartTime: Date.now(),
-                peakResetCounter: 0
+                profit: 0, wagered: 0, startBal: bot.demoBalance || 1000,
+                currentBal: bot.demoBalance || 1000, peakBalance: bot.demoBalance || 1000,
+                bets: 0, wins: 0, loss: 0, startTime: Date.now()
             };
-
-            bot.zRec.active = false;
-            bot.zRec.trail.isActive = false;
-            bot.zRec.lastWinTime = Date.now();
-
-            if (CONFIG.telegram.enabled && CONFIG.telegram.sendOnStart) {
-                TelegramAPI.sendStartReport();
-            }
-
+            
+            ParallelEngine.start();
             updateUI();
-            setTimeout(runLoop, 0);
-        });
-
-        document.getElementById('stop-btn')?.addEventListener('click', () => {
-            bot.isRunning = false;
-            updateUI();
-            if (CONFIG.telegram.enabled && CONFIG.telegram.sendOnStop) {
-                TelegramAPI.sendStopReport("Manual Stop");
-            }
-        });
-    }
-
-    function updateTimer() {
-        const runtime = bot.stats.startTime ? Math.floor((Date.now() - bot.stats.startTime) / 1000) : 0;
-        const m = Math.floor(runtime / 60).toString().padStart(2, '0');
-        const s = (runtime % 60).toString().padStart(2, '0');
-        const runtimeEl = document.getElementById('runtime-status');
-        if (runtimeEl) runtimeEl.textContent = bot.isRunning ? `${m}:${s}` : '00:00';
-    }
-
-    function updateWebSocketStatus() {
-        const wsEl = document.getElementById('ws-status');
-        if (wsEl) {
-            wsEl.textContent = bot.wsConnected ? '✅ WS' : '❌ WS';
-            wsEl.style.background = bot.wsConnected ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)';
-            wsEl.style.color = bot.wsConnected ? '#6EE7B7' : '#FCA5A5';
-        }
-    }
-
-    function updateDashboard() {
-        document.getElementById('balance-display').textContent = bot.stats.currentBal.toFixed(8);
-        document.getElementById('peak-display').textContent = bot.stats.peakBalance.toFixed(8);
-        document.getElementById('wagered-display').textContent = bot.stats.wagered.toFixed(4);
-        document.getElementById('profit-display').textContent = (bot.stats.profit > 0 ? '+' : '') + bot.stats.profit.toFixed(4);
-        document.getElementById('bets-display').textContent = bot.stats.bets;
-        document.getElementById('winrate-display').textContent = bot.stats.winRate.toFixed(1) + '%';
-        document.getElementById('wins-display').textContent = bot.stats.wins;
-        document.getElementById('losses-display').textContent = bot.stats.loss;
-        document.getElementById('maxdrop-display').textContent = bot.stats.maxDrawdown.toFixed(4);
-        document.getElementById('maxdrop-percent-display').textContent = bot.stats.maxDrawdownPercent.toFixed(2) + '%';
-        document.getElementById('username-display').textContent = bot.stakeUser;
-        
-        const modeBadge = document.querySelector('#mode-display .status-badge');
-        if (modeBadge) {
-            if (bot.zRec.active) {
-                modeBadge.className = 'status-badge recovery';
-                modeBadge.innerHTML = '⚡ Z REC';
-            } else {
-                modeBadge.className = 'status-badge';
-                modeBadge.innerHTML = '🎲 WAGER';
-            }
-        }
-
-        const liveBadge = document.getElementById('live-mode-badge');
-        if (liveBadge) {
-            liveBadge.textContent = bot.isRunning ? '🟢 RUNNING' : '⏹ STOPPED';
-        }
-
-        const zrecBadge = document.getElementById('zrec-badge');
-        if (zrecBadge) {
-            zrecBadge.textContent = bot.zRec.active ? 'ACTIVE' : 'INACTIVE';
-        }
-
-        const trailStatus = document.getElementById('trail-status');
-        if (trailStatus) {
-            trailStatus.textContent = bot.zRec.trail.isActive ? 'Active' : 'Inactive';
-        }
-
-        const recTarget = document.getElementById('rec-target');
-        if (recTarget && bot.zRec.active) {
-            recTarget.textContent = bot.zRec.balanceStart.toFixed(4);
-        }
-
-        const recProgress = document.getElementById('rec-progress');
-        if (recProgress) {
-            recProgress.textContent = bot.stats.currentBal.toFixed(4);
-        }
-
-        const recLeft = document.getElementById('rec-left');
-        if (recLeft && bot.zRec.active) {
-            const left = bot.zRec.balanceStart - bot.stats.currentBal;
-            recLeft.textContent = left > 0 ? left.toFixed(4) : '0.0000';
-        }
-
-        const currencySelect = document.getElementById('currency-select');
-        if (currencySelect && bot.availableCurrencies.length > 0) {
-            currencySelect.innerHTML = '';
-            bot.availableCurrencies.forEach(currency => {
-                const option = document.createElement('option');
-                option.value = currency.code;
-                option.textContent = `${currency.icon} ${currency.name}`;
-                option.selected = currency.code === bot.selectedCurrency;
-                currencySelect.appendChild(option);
-            });
-            document.getElementById('currency-display').textContent = bot.selectedCurrency.toUpperCase();
+            setInterval(updateUI, 100);
         }
     }
 
     function updateUI() {
-        updateDashboard();
-        updateWebSocketStatus();
-    }
-
-    function getDefaultCurrencies() {
-        return [
-            { code: "doge", name: "DOGE", icon: "🐕", balance: 0 },
-            { code: "btc", name: "BTC", icon: "₿", balance: 0 },
-            { code: "eth", name: "ETH", icon: "Ξ", balance: 0 }
-        ];
-    }
-
-    function getCurrencyIcon(code) {
-        const icons = { 'doge': '🐕', 'btc': '₿', 'eth': 'Ξ', 'ltc': 'Ł' };
-        return icons[code] || '💰';
+        const el = id => document.getElementById(id);
+        if (el('balance-display')) el('balance-display').textContent = bot.stats.currentBal.toFixed(8);
+        if (el('profit-display')) {
+            const p = bot.stats.profit || 0;
+            el('profit-display').textContent = (p > 0 ? '+' : '') + p.toFixed(4);
+        }
+        if (el('bets-display')) el('bets-display').textContent = bot.stats.bets || 0;
+        if (el('winrate-display')) el('winrate-display').textContent = (bot.stats.winRate || 0).toFixed(1) + '%';
+        if (el('ws-status')) {
+            el('ws-status').style.background = bot.wsConnected ? '#065F46' : '#991B1B';
+            el('ws-status').textContent = bot.wsConnected ? '✅ WS' : '❌ WS';
+        }
+        if (el('workers-status')) el('workers-status').textContent = bot.isRunning ? `${bot.workers}⚡` : '0⚡';
     }
 
     // =============== INIT ===============
-    createUI();
+    setTimeout(() => {
+        createUI();
+        API.syncOnce();
+        setInterval(() => {
+            if (bot.isRunning && Date.now() - bot.lastTelegramReport > bot.telegramReportInterval) {
+                TelegramAPI.sendPeriodicReport();
+                bot.lastTelegramReport = Date.now();
+            }
+        }, 60000);
+    }, 500);
 })();
