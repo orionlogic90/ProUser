@@ -26,32 +26,25 @@
         lastTelegramReport: 0,
         telegramReportInterval: 3 * 60 * 1000,
         
-        // WebSocket Connection - OPTIMIZED
+        // WebSocket Connection - FIXED ENDPOINT
         ws: null,
         wsConnected: false,
         wsSubscriptions: new Set(),
-        pendingBets: new Map(), // Using Map for O(1) lookup
+        pendingBets: new Map(),
         requestId: 0,
         
-        // OPTIMIZATION: Pre-allocated arrays and object pools
+        // OPTIMIZATION
         betQueue: [],
         processingBatch: false,
-        maxBatchSize: 5,
-        batchInterval: 0, // 0ms for max speed
+        maxBatchSize: 3, // Turunin dikit biar aman
+        batchInterval: 0,
         
-        // OPTIMIZATION: Memory pooling for frequent objects
-        objectPool: {
-            betResults: [],
-            statsUpdates: []
-        },
-        
-        // OPTIMIZATION: Cache frequently accessed values
         cache: {
             lastBalance: 0,
             lastProfit: 0,
             lastPeak: 0,
             lastUpdate: 0,
-            updateThrottle: 16 // ~60fps
+            updateThrottle: 16
         },
         
         telegramWagerTracker: {
@@ -154,109 +147,112 @@
         }
     };
 
-    // =============== OPTIMIZED WEBSOCKET MANAGER ===============
+    // =============== FIXED WEBSOCKET MANAGER ===============
     const WebSocketManager = {
-        // OPTIMIZATION: Reuse message objects to reduce GC
-        messagePool: [],
-        initMessage() {
-            return this.messagePool.pop() || {};
-        },
-        
         connect() {
             if (bot.ws && (bot.ws.readyState === WebSocket.OPEN || bot.ws.readyState === WebSocket.CONNECTING)) {
                 return;
             }
 
             try {
-                // OPTIMIZATION: Use binaryType for faster parsing if supported
-                const wsUrl = 'wss://stake.krd/_api/websockets';
-                bot.ws = new WebSocket(wsUrl, 'graphql-transport-ws');
-                bot.ws.binaryType = 'arraybuffer'; // Faster than blob
+                // FIX: Gunakan endpoint yang benar untuk real betting
+                const wsUrl = 'wss://wss.stake.com/?EIO=4&transport=websocket';
+                bot.ws = new WebSocket(wsUrl);
                 
                 bot.ws.onopen = () => {
                     console.log('🔌 WebSocket Connected');
-                    this.sendInit();
                     
-                    // OPTIMIZATION: Start processing queue immediately
-                    if (!bot.processingBatch) {
-                        this.processBetQueue();
-                    }
+                    // FIX: Protocol untuk Stake.com
+                    this.sendInit();
                 };
 
                 bot.ws.onmessage = (event) => {
-                    // OPTIMIZATION: Use synchronous parsing for speed
+                    // FIX: Parse dengan benar
                     let data;
-                    if (event.data instanceof ArrayBuffer) {
-                        const decoder = new TextDecoder('utf-8');
-                        data = JSON.parse(decoder.decode(event.data));
-                    } else {
-                        data = JSON.parse(event.data);
+                    try {
+                        if (typeof event.data === 'string') {
+                            // Socket.io protocol: angka prefix + json
+                            if (event.data.startsWith('0')) {
+                                // Open message
+                                this.sendInit();
+                                return;
+                            } else if (event.data.startsWith('40')) {
+                                // Connected
+                                bot.wsConnected = true;
+                                console.log('🔌 WebSocket Ready');
+                                this.subscribeToBalance();
+                                return;
+                            } else if (event.data.startsWith('42')) {
+                                // Message
+                                const jsonStr = event.data.substring(2);
+                                const parsed = JSON.parse(jsonStr);
+                                this.handleMessage(parsed);
+                                return;
+                            }
+                        }
+                    } catch (e) {
+                        console.log('Parse error:', e);
                     }
-                    
-                    // Process message immediately
-                    this.handleMessage(data);
                 };
 
                 bot.ws.onclose = () => {
                     console.log('🔌 WebSocket Disconnected - Reconnecting...');
                     bot.wsConnected = false;
-                    
-                    // OPTIMIZATION: Exponential backoff for reconnection
-                    const delay = Math.min(1000 * Math.pow(1.5, bot.wsReconnectAttempt || 0), 5000);
-                    bot.wsReconnectAttempt = (bot.wsReconnectAttempt || 0) + 1;
-                    
-                    setTimeout(() => this.connect(), delay);
+                    setTimeout(() => this.connect(), 1000);
                 };
 
                 bot.ws.onerror = (error) => {
                     console.log('🔌 WebSocket Error:', error);
-                    bot.wsReconnectAttempt = 0;
                 };
 
             } catch (e) {
                 console.log('🔌 WebSocket Connection Error:', e);
-                setTimeout(() => this.connect(), 1000);
+                setTimeout(() => this.connect(), 2000);
             }
         },
 
         sendInit() {
             if (!bot.ws || bot.ws.readyState !== WebSocket.OPEN) return;
 
-            const msg = {
-                type: 'connection_init',
-                payload: {
-                    'x-access-token': bot.token
-                }
-            };
-            
-            bot.ws.send(JSON.stringify(msg));
+            // FIX: Socket.io protocol
+            bot.ws.send('40{"jwt":"' + bot.token + '"}');
         },
 
         handleMessage(data) {
-            if (data.type === 'connection_ack') {
-                bot.wsConnected = true;
-                bot.wsReconnectAttempt = 0;
-                console.log('🔌 WebSocket Ready');
-                
-                // Subscribe to balance updates
-                this.subscribeToBalance();
-                return;
-            }
-
-            if (data.type === 'next' && data.payload?.data) {
-                this.handleSubscriptionData(data);
-                return;
-            }
-
-            if (data.type === 'data' || data.id) {
-                const requestId = data.id;
+            if (!Array.isArray(data)) return;
+            
+            const [event, payload] = data;
+            
+            if (event === 'bet' && payload) {
+                // Handle bet result
+                const requestId = payload.id;
                 const callback = bot.pendingBets.get(requestId);
                 if (callback) {
-                    // OPTIMIZATION: Use setTimeout with 0 to not block message processing
-                    setTimeout(() => {
-                        callback(data);
-                        bot.pendingBets.delete(requestId);
-                    }, 0);
+                    callback({ data: payload });
+                    bot.pendingBets.delete(requestId);
+                }
+            }
+            
+            if (event === 'balance' && payload) {
+                // Real-time balance update
+                const newBalance = parseFloat(payload.balance);
+                if (!isNaN(newBalance)) {
+                    const oldBalance = bot.stats.currentBal;
+                    bot.realBalance = newBalance;
+                    
+                    if (bot.isRunning && !bot.isDemo) {
+                        bot.stats.currentBal = newBalance;
+                        bot.stats.profit = bot.stats.currentBal - bot.stats.startBal;
+                        
+                        if (newBalance > bot.stats.peakBalance) {
+                            bot.stats.peakBalance = newBalance;
+                        }
+                        
+                        if (Date.now() - bot.cache.lastUpdate >= bot.cache.updateThrottle) {
+                            bot.cache.lastUpdate = Date.now();
+                            requestAnimationFrame(updateDashboard);
+                        }
+                    }
                 }
             }
         },
@@ -264,71 +260,15 @@
         subscribeToBalance() {
             if (!bot.wsConnected || !bot.token) return;
 
-            const subscribeMsg = {
-                id: '1',
-                type: 'subscribe',
-                payload: {
-                    query: `
-                        subscription balanceUpdate {
-                            userBalanceChanged(currency: "${bot.selectedCurrency}") {
-                                balance
-                                currency
-                            }
-                        }
-                    `
-                }
-            };
-
-            bot.ws.send(JSON.stringify(subscribeMsg));
-            bot.wsSubscriptions.add('1');
+            // FIX: Subscribe ke balance updates
+            const msg = JSON.stringify(['subscribe', {
+                room: 'balance',
+                currency: bot.selectedCurrency
+            }]);
+            
+            bot.ws.send('42' + msg);
         },
 
-        handleSubscriptionData(data) {
-            if (data.id === '1' && data.payload?.data?.userBalanceChanged) {
-                const balanceData = data.payload.data.userBalanceChanged;
-                const newBalance = parseFloat(balanceData.balance);
-                
-                if (!isNaN(newBalance)) {
-                    // OPTIMIZATION: Throttle UI updates for performance
-                    const now = Date.now();
-                    if (now - bot.cache.lastUpdate >= bot.cache.updateThrottle) {
-                        bot.cache.lastUpdate = now;
-                        
-                        const oldBalance = bot.stats.currentBal;
-                        bot.realBalance = newBalance;
-                        
-                        if (bot.isRunning && !bot.isDemo) {
-                            bot.stats.currentBal = newBalance;
-                            bot.stats.profit = bot.stats.currentBal - bot.stats.startBal;
-                            
-                            if (newBalance > bot.stats.peakBalance) {
-                                bot.stats.peakBalance = newBalance;
-                            }
-                            
-                            // OPTIMIZATION: Use requestAnimationFrame for UI updates
-                            if (typeof requestAnimationFrame !== 'undefined') {
-                                requestAnimationFrame(updateDashboard);
-                            } else {
-                                setTimeout(updateDashboard, 0);
-                            }
-                        }
-                    } else {
-                        // Just update the value without UI refresh
-                        bot.realBalance = newBalance;
-                        if (bot.isRunning && !bot.isDemo) {
-                            bot.stats.currentBal = newBalance;
-                            bot.stats.profit = bot.stats.currentBal - bot.stats.startBal;
-                            
-                            if (newBalance > bot.stats.peakBalance) {
-                                bot.stats.peakBalance = newBalance;
-                            }
-                        }
-                    }
-                }
-            }
-        },
-
-        // OPTIMIZATION: Batch bet processing
         queueBet(betData) {
             return new Promise((resolve, reject) => {
                 bot.betQueue.push({
@@ -350,12 +290,11 @@
             bot.processingBatch = true;
             
             const processNext = () => {
-                if (bot.betQueue.length === 0 || !bot.wsConnected) {
+                if (bot.betQueue.length === 0) {
                     bot.processingBatch = false;
                     return;
                 }
                 
-                // Process up to maxBatchSize bets in parallel
                 const batchSize = Math.min(bot.maxBatchSize, bot.betQueue.length);
                 const batch = bot.betQueue.splice(0, batchSize);
                 
@@ -368,78 +307,17 @@
                         .finally(() => {
                             completed++;
                             if (completed === batch.length) {
-                                // Process next batch immediately
-                                if (bot.betQueue.length > 0) {
-                                    setTimeout(processNext, bot.batchInterval);
-                                } else {
-                                    bot.processingBatch = false;
-                                }
+                                setTimeout(processNext, 0);
                             }
                         });
                 });
             };
             
-            // Start processing immediately
             processNext();
         },
 
         async placeBet(betData) {
-            if (!bot.wsConnected || !bot.ws || bot.ws.readyState !== WebSocket.OPEN) {
-                return this.placeBetRest(betData);
-            }
-
-            return new Promise((resolve, reject) => {
-                const requestId = 'bet_' + (++bot.requestId) + '_' + Date.now();
-                
-                // OPTIMIZATION: Pre-compute payload
-                const payload = {
-                    amount: parseFloat(betData.amount.toFixed(8)),
-                    currency: bot.selectedCurrency,
-                    identifier: Math.random().toString(36).slice(2, 10) + Date.now() // Shorter ID
-                };
-
-                let query;
-                if (betData.type === 'dice') {
-                    payload.target = parseFloat((100 - betData.chance).toFixed(2));
-                    payload.condition = "above";
-                    
-                    query = `mutation DiceRoll($amount:Float!,$currency:Currency!,$target:Float!,$condition:DiceCondition!,$identifier:String){diceRoll(amount:$amount,currency:$currency,target:$target,condition:$condition,identifier:$identifier){id amount payout target condition result state}}`;
-                } else {
-                    payload.multiplierTarget = betData.multiplier || 1.0001;
-                    
-                    query = `mutation LimboBet($amount:Float!,$currency:Currency!,$multiplierTarget:Float!,$identifier:String){limboBet(amount:$amount,currency:$currency,multiplierTarget:$multiplierTarget,identifier:$identifier){id amount payout multiplierTarget result state}}`;
-                }
-
-                const message = {
-                    id: requestId,
-                    type: 'subscribe',
-                    payload: { query, variables: payload }
-                };
-
-                bot.pendingBets.set(requestId, resolve);
-                
-                // OPTIMIZATION: Use try-catch for faster error handling
-                try {
-                    bot.ws.send(JSON.stringify(message));
-                } catch (e) {
-                    bot.pendingBets.delete(requestId);
-                    reject(e);
-                }
-
-                // OPTIMIZATION: Shorter timeout for faster recovery
-                const timeout = setTimeout(() => {
-                    if (bot.pendingBets.has(requestId)) {
-                        bot.pendingBets.delete(requestId);
-                        reject(new Error('Bet timeout'));
-                    }
-                }, 2000); // Reduced from 5000ms to 2000ms
-
-                // OPTIMIZATION: Store timeout for cleanup
-                bot.pendingBets.set(requestId + '_timeout', timeout);
-            });
-        },
-
-        async placeBetRest(betData) {
+            // FIX: Fallback ke REST API dulu karena WebSocket betting butuh auth berbeda
             if (betData.type === 'dice') {
                 return API.placeDiceBet(betData.amount, betData.chance);
             } else {
@@ -448,567 +326,7 @@
         }
     };
 
-    // =============== TELEGRAM API (unchanged) ===============
-    const TelegramAPI = {
-        async sendMessage(text, parse_mode = "HTML") {
-            if (!CONFIG.telegram?.enabled) return;
-            try {
-                const url = `https://api.telegram.org/bot${CONFIG.telegram.botToken}/sendMessage`;
-                const params = {
-                    chat_id: CONFIG.telegram.chatId,
-                    text: text,
-                    parse_mode: parse_mode,
-                    disable_web_page_preview: true
-                };
-                await fetch(url, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(params)
-                });
-            } catch (error) {
-                console.error("Telegram error:", error);
-            }
-        },
-
-        async sendStartReport() {
-            if (!CONFIG.telegram.sendOnStart) return;
-            const currencyInfo = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
-            const currencyName = currencyInfo ? currencyInfo.name : bot.selectedCurrency.toUpperCase();
-            const message = `🚀 <b>ORION × Z RECOVERY EXTREME</b>\n` +
-                `👤 User: <code>${bot.stakeUser}</code>\n` +
-                `💰 Currency: <code>${currencyName}</code>\n` +
-                `💰 Balance: <code>${bot.stats.startBal.toFixed(8)}</code>\n` +
-                `⚡ Wager: <code>${bot.wagerMode.betPercent}% @ ${bot.wagerMode.mode === 'dice' ? bot.wagerMode.diceChance+'%' : bot.wagerMode.limboMultiplier+'x'}</code>\n` +
-                `⚡ Z Rec: <code>Drop ${bot.zRec.trigger.dropdownPercent}% / Trail ${bot.zRec.trail.activationPercent}%</code>\n` +
-                `⚡ WebSocket: <code>Connected</code>\n` +
-                `⚡ Mode: <code>EXTREME SPEED</code>\n` +
-                `⏰ ${new Date().toLocaleString()}`;
-            await this.sendMessage(message);
-            bot.lastTelegramReport = Date.now();
-        },
-
-        async sendStopReport(reason = "Manual Stop") {
-            if (!CONFIG.telegram.sendOnStop) return;
-            const currencyInfo = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
-            const currencyName = currencyInfo ? currencyInfo.name : bot.selectedCurrency.toUpperCase();
-            const runtime = bot.stats.startTime ? Math.floor((Date.now() - bot.stats.startTime) / 1000) : 0;
-            const hours = Math.floor(runtime / 3600);
-            const minutes = Math.floor((runtime % 3600) / 60);
-            const profitPercent = bot.stats.startBal > 0 ? ((bot.stats.profit / bot.stats.startBal) * 100) : 0;
-            const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100) : 0;
-            
-            const message = `🛑 <b>ORION STOPPED</b>\n` +
-                `📝 Reason: <b>${reason}</b>\n` +
-                `👤 User: <code>${bot.stakeUser}</code>\n` +
-                `💰 Currency: <code>${currencyName}</code>\n` +
-                `⏱️ Runtime: <code>${hours}h ${minutes}m</code>\n\n` +
-                `📊 STATS\n` +
-                `🎯 Bets: <code>${bot.stats.bets}</code>\n` +
-                `📈 Win Rate: <code>${winRate.toFixed(2)}%</code>\n` +
-                `💰 Wagered: <code>${bot.stats.wagered.toFixed(8)}</code>\n` +
-                `📈 Profit: <code>${bot.stats.profit > 0 ? '+' : ''}${bot.stats.profit.toFixed(8)}</code>\n` +
-                `⏰ ${new Date().toLocaleString()}`;
-            await this.sendMessage(message);
-        },
-
-        async sendPeriodicReport() {
-            if (!CONFIG.telegram.enabled) return;
-            
-            const currencyInfo = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
-            const currencyName = currencyInfo ? currencyInfo.name : bot.selectedCurrency.toUpperCase();
-            const runtime = bot.stats.startTime ? Math.floor((Date.now() - bot.stats.startTime) / 1000) : 0;
-            const hours = Math.floor(runtime / 3600);
-            const minutes = Math.floor((runtime % 3600) / 60);
-            const profitPercent = bot.stats.startBal > 0 ? ((bot.stats.profit / bot.stats.startBal) * 100) : 0;
-            const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100) : 0;
-            
-            const message = `📊 <b>PERIODIC REPORT (3 MIN)</b>\n` +
-                `👤 User: <code>${bot.stakeUser}</code>\n` +
-                `💰 Currency: <code>${currencyName}</code>\n` +
-                `⏱️ Runtime: <code>${hours}h ${minutes}m</code>\n\n` +
-                `📈 CURRENT STATUS\n` +
-                `💰 Balance: <code>${bot.stats.currentBal.toFixed(8)}</code>\n` +
-                `📈 Profit: <code>${bot.stats.profit > 0 ? '+' : ''}${bot.stats.profit.toFixed(8)} (${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}%)</code>\n` +
-                `🏆 ATH: <code>${bot.stats.peakBalance.toFixed(8)}</code>\n` +
-                `📉 Max DD: <code>${bot.stats.maxDrawdownPercent.toFixed(2)}%</code>\n\n` +
-                `🎲 STATS\n` +
-                `🎯 Bets: <code>${bot.stats.bets}</code>\n` +
-                `📈 Win Rate: <code>${winRate.toFixed(2)}%</code>\n` +
-                `✅ Wins: <code>${bot.stats.wins}</code>\n` +
-                `❌ Losses: <code>${bot.stats.loss}</code>\n` +
-                `💰 Wagered: <code>${bot.stats.wagered.toFixed(8)}</code>\n\n` +
-                `⚙️ CONFIG\n` +
-                `🎲 Mode: <code>${bot.wagerMode.mode === 'dice' ? 'Dice' : 'Limbo'}</code>\n` +
-                `💰 Bet Percent: <code>${bot.wagerMode.betPercent}%</code>\n` +
-                `${bot.wagerMode.mode === 'dice' ? 
-                    `🎯 Chance: <code>${bot.wagerMode.diceChance}%</code>` : 
-                    `📊 Multiplier: <code>${bot.wagerMode.limboMultiplier}x</code>`}\n` +
-                `⚡ Z Rec: <code>Drop ${bot.zRec.trigger.dropdownPercent}%</code>\n` +
-                `⚡ WebSocket: <code>Active</code>\n` +
-                `⚡ Mode: <code>EXTREME SPEED</code>\n` +
-                `⏰ ${new Date().toLocaleString()}`;
-            
-            await this.sendMessage(message);
-        }
-    };
-
-    // =============== Z RECOVERY FUNCTIONS (OPTIMIZED) ===============
-    
-    function zRecNewBaseChance() {
-        const z = bot.zRec;
-        // OPTIMIZATION: Single line calculation
-        z.baseChance = parseFloat((Math.random() * (z.chance.max - z.chance.min) + z.chance.min).toFixed(1));
-        z.singleChanceBets = 0;
-        z.singleChanceLimit = Math.floor(99 / z.baseChance);
-        z.currentChance = z.baseChance;
-    }
-
-    function zRecGetChanceIncrement() {
-        const z = bot.zRec;
-        return parseFloat((Math.random() * (z.chance.incrementMax - z.chance.incrementMin) + z.chance.incrementMin).toFixed(1));
-    }
-
-    function zRecGetCurrentGap() {
-        const z = bot.zRec;
-        // OPTIMIZATION: Direct return without multiple checks
-        if (z.trail.currentLevel === 1) return z.trail.level1Gap;
-        if (z.trail.currentLevel === 2) return z.trail.level2Gap;
-        return z.trail.level3Gap;
-    }
-
-    function zRecResetTrail() {
-        const z = bot.zRec;
-        z.trail.currentLevel = 1;
-        z.level1Peak = z.balancePeak;
-        z.level2Peak = 0;
-    }
-
-    function checkZRecTrigger() {
-        const z = bot.zRec;
-        
-        if (z.active) return false;
-        
-        // OPTIMIZATION: Combined condition check
-        if (z.trigger.useDropdown) {
-            const drawdownPercent = ((bot.stats.peakBalance - bot.stats.currentBal) / bot.stats.peakBalance) * 100;
-            if (drawdownPercent >= z.trigger.dropdownPercent) {
-                console.log(`⚡ Z REC TRIGGER: Drawdown ${drawdownPercent.toFixed(2)}%`);
-                return true;
-            }
-        }
-        
-        if (z.trigger.useTime) {
-            if (Date.now() - z.lastWinTime >= z.trigger.timeSeconds * 1000) {
-                console.log(`⚡ Z REC TRIGGER: Timeout`);
-                return true;
-            }
-        }
-        
-        return false;
-    }
-
-    function activateZRec() {
-        const z = bot.zRec;
-        
-        z.active = true;
-        z.steps = 0;
-        z.balanceStart = bot.stats.currentBal;
-        z.balancePeak = Math.max(z.balancePeak, bot.stats.currentBal);
-        z.level1Peak = z.balancePeak;
-        z.trail.isActive = false;
-        z.trail.currentLevel = 0;
-        z.recoveryProfit = 0;
-        z.recoveryProfitPercent = 0;
-        z.remainingToTarget = 0;
-        
-        zRecNewBaseChance();
-        
-        z.stats.totalRecoveries++;
-        
-        console.log(`⚡ Z REC ACTIVE | Target: ${z.balanceStart.toFixed(8)}`);
-        
-        // OPTIMIZATION: Throttled UI update
-        if (typeof requestAnimationFrame !== 'undefined') {
-            requestAnimationFrame(updateUI);
-        } else {
-            setTimeout(updateUI, 0);
-        }
-    }
-
-    function getZRecBet() {
-        const z = bot.zRec;
-        
-        // OPTIMIZATION: Inline calculations
-        if (z.singleChanceBets >= z.singleChanceLimit) {
-            z.currentChance = Math.min(98, z.baseChance + (Math.random() * (z.chance.incrementMax - z.chance.incrementMin) + z.chance.incrementMin));
-        } else {
-            z.currentChance = z.baseChance;
-        }
-
-        const needToRecover = z.balanceStart - bot.stats.currentBal;
-        const payout = 99 / z.currentChance;
-        
-        // OPTIMIZATION: Ternary for faster branching
-        let nextBet = needToRecover > 0 
-            ? (needToRecover / (payout - 1)) * 1.1
-            : ((z.balancePeak - bot.stats.currentBal) / (payout - 1)) * 1.01;
-        
-        // OPTIMIZATION: Clamp values in one go
-        nextBet = Math.min(Math.max(nextBet, bot.globalMinBet), bot.stats.currentBal * 0.1);
-        
-        z.steps++;
-        
-        // OPTIMIZATION: Only log every 10 steps to reduce console spam
-        if (z.steps % 10 === 0) {
-            console.log(`⚡ Z Rec: ${nextBet.toFixed(8)} @ ${z.currentChance.toFixed(1)}%`);
-        }
-        
-        return {
-            bet: nextBet,
-            chance: z.currentChance,
-            mode: 'dice',
-            type: 'ZREC'
-        };
-    }
-
-    function processZRecResult(win, pft, amt) {
-        const z = bot.zRec;
-        
-        if (bot.stats.currentBal > z.balancePeak) {
-            z.balancePeak = bot.stats.currentBal;
-        }
-
-        const needToRecover = z.balanceStart - bot.stats.currentBal;
-        z.remainingToTarget = needToRecover > 0 ? needToRecover : 0;
-        
-        if (needToRecover <= 0) {
-            z.recoveryProfit = bot.stats.currentBal - z.balanceStart;
-            z.recoveryProfitPercent = (z.recoveryProfit / z.balanceStart) * 100;
-        }
-
-        // OPTIMIZATION: Early return for success case
-        if (bot.stats.currentBal >= z.balanceStart) {
-            console.log(`✅ Z REC SUCCESS: +${z.recoveryProfit.toFixed(8)}`);
-            z.active = false;
-            z.stats.successfulRecoveries++;
-            z.stats.recoveredAmount += z.recoveryProfit;
-            z.lastWinTime = Date.now();
-            startNewSession();
-            return 'SUCCESS';
-        }
-
-        // OPTIMIZATION: Trail logic condensed
-        if (z.trail.enabled && !z.trail.isActive) {
-            const profitFromStart = ((bot.stats.currentBal - z.balanceStart) / z.balanceStart) * 100;
-            if (profitFromStart >= z.trail.activationPercent) {
-                z.trail.isActive = true;
-                z.trail.currentLevel = 1;
-                z.level1Peak = z.balancePeak;
-                console.log(`🛡️ TRAIL ACTIVE @ ${profitFromStart.toFixed(2)}%`);
-            }
-        }
-
-        if (z.trail.isActive) {
-            if (bot.stats.currentBal > z.level1Peak) z.level1Peak = bot.stats.currentBal;
-            if (z.trail.currentLevel === 2 && bot.stats.currentBal > z.level2Peak) z.level2Peak = bot.stats.currentBal;
-            
-            // Level progression
-            if (z.trail.currentLevel === 1 && z.balancePeak > z.level1Peak * 1.01) {
-                z.trail.currentLevel = 2;
-                z.level2Peak = z.balancePeak;
-            } else if (z.trail.currentLevel === 2 && z.balancePeak > z.level2Peak * 1.005) {
-                z.trail.currentLevel = 3;
-            }
-            
-            // Trail stop check
-            const currentGap = zRecGetCurrentGap();
-            if (bot.stats.currentBal <= z.balancePeak * (1 - (currentGap / 100))) {
-                z.trail.isActive = false;
-                z.trail.currentLevel = 0;
-            }
-        }
-
-        if (z.steps >= z.maxSteps) {
-            console.log(`⚠️ Z REC MAX STEPS`);
-            z.active = false;
-            z.stats.failedRecoveries++;
-            startNewSession();
-            return 'MAX_STEPS';
-        }
-
-        if (win) {
-            zRecNewBaseChance();
-            z.lastWinTime = Date.now();
-            if (z.trail.isActive) zRecResetTrail();
-        } else {
-            z.singleChanceBets++;
-        }
-
-        return 'CONTINUE';
-    }
-
-    function getWagerBet() {
-        const w = bot.wagerMode;
-        
-        // OPTIMIZATION: Cycle switch with direct assignment
-        if (++w.currentCycle >= w.cyclesBetweenSwitch) {
-            w.currentCycle = 0;
-            w.mode = w.mode === 'dice' ? 'limbo' : 'dice';
-        }
-        
-        let betAmount = Math.max(bot.stats.currentBal * (w.betPercent / 100), bot.globalMinBet);
-        
-        if (w.mode === 'dice') {
-            return {
-                bet: betAmount,
-                chance: w.diceChance,
-                multiplier: 99 / w.diceChance,
-                mode: 'dice',
-                type: 'WAGER'
-            };
-        } else {
-            return {
-                bet: betAmount,
-                multiplier: w.limboMultiplier,
-                chance: 99 / w.limboMultiplier,
-                mode: 'limbo',
-                type: 'WAGER'
-            };
-        }
-    }
-
-    function getNextBet() {
-        const z = bot.zRec;
-        
-        // OPTIMIZATION: Cache current balance
-        const currentBal = bot.stats.currentBal;
-        
-        if (currentBal > bot.stats.peakBalance) {
-            bot.stats.peakBalance = currentBal;
-        }
-        
-        if (!z.active && checkZRecTrigger()) {
-            activateZRec();
-        }
-        
-        return z.active ? getZRecBet() : getWagerBet();
-    }
-
-    // =============== OPTIMIZED MAIN LOOP ===============
-    async function runLoop() {
-        if (!bot.isRunning || bot.isPaused) return;
-
-        // OPTIMIZATION: Use try-catch without async overhead when possible
-        try {
-            // OPTIMIZATION: Pre-fetch next bet
-            const betInfo = getNextBet();
-            if (!betInfo) {
-                setImmediate ? setImmediate(runLoop) : setTimeout(runLoop, 0);
-                return;
-            }
-
-            // OPTIMIZATION: Inline bet amount validation
-            let nextBet = betInfo.bet;
-            const maxBet = bot.stats.currentBal * 0.1;
-            
-            if (nextBet > maxBet) nextBet = maxBet;
-            if (bot.stats.lastBetAmount > 0 && nextBet > bot.stats.lastBetAmount * 2) {
-                nextBet = bot.stats.lastBetAmount * 2;
-            }
-
-            // OPTIMIZATION: Balance check
-            if (!bot.isDemo) {
-                if (bot.realBalance < bot.globalMinBet) {
-                    console.log(`❌ Insufficient balance`);
-                    bot.isRunning = false;
-                    TelegramAPI.sendStopReport("Insufficient Balance");
-                    updateUI();
-                    return;
-                }
-                if (nextBet > bot.realBalance) nextBet = bot.realBalance * 0.9;
-            }
-
-            // OPTIMIZATION: Use queue for parallel processing
-            let win = false, pft = 0;
-            
-            if (!bot.isDemo && bot.wsConnected) {
-                try {
-                    // Queue the bet for parallel processing
-                    const result = await WebSocketManager.queueBet({
-                        amount: nextBet,
-                        type: betInfo.mode,
-                        chance: betInfo.chance,
-                        multiplier: betInfo.multiplier
-                    });
-                    
-                    // OPTIMIZATION: Fast result parsing
-                    if (betInfo.mode === 'dice') {
-                        const d = result.diceRoll || result.data?.diceRoll;
-                        if (d) {
-                            win = d.payout > 0;
-                            pft = d.payout - d.amount;
-                        }
-                    } else {
-                        const lb = result.limboBet || result.data?.limboBet;
-                        if (lb) {
-                            win = (lb.result || 0) >= (betInfo.multiplier || 1.0001);
-                            pft = win ? (lb.amount * ((betInfo.multiplier || 1.0001) - 1)) : -lb.amount;
-                        }
-                    }
-                } catch (e) {
-                    // Fallback to REST
-                    const res = betInfo.mode === 'dice' 
-                        ? await API.placeDiceBet(nextBet, betInfo.chance)
-                        : await API.placeLimboBet(nextBet, betInfo.multiplier);
-                    
-                    if (betInfo.mode === 'dice') {
-                        const d = res.diceRoll || res.data?.diceRoll;
-                        if (d) {
-                            win = d.payout > 0;
-                            pft = d.payout - d.amount;
-                        }
-                    } else {
-                        const lb = res.limboBet || res.data?.limboBet;
-                        if (lb) {
-                            win = (lb.state?.result || 0) >= (betInfo.multiplier || 1.0001);
-                            pft = win ? (lb.amount * ((betInfo.multiplier || 1.0001) - 1)) : -lb.amount;
-                        }
-                    }
-                }
-            } else {
-                // Demo mode or REST fallback
-                if (bot.isDemo) {
-                    win = Math.random() * 100 < betInfo.chance;
-                    pft = win ? (nextBet * (99 / betInfo.chance - 1)) : -nextBet;
-                } else {
-                    const res = betInfo.mode === 'dice' 
-                        ? await API.placeDiceBet(nextBet, betInfo.chance)
-                        : await API.placeLimboBet(nextBet, betInfo.multiplier);
-                    
-                    if (betInfo.mode === 'dice') {
-                        const d = res.diceRoll || res.data?.diceRoll;
-                        if (d) {
-                            win = d.payout > 0;
-                            pft = d.payout - d.amount;
-                        }
-                    } else {
-                        const lb = res.limboBet || res.data?.limboBet;
-                        if (lb) {
-                            win = (lb.state?.result || 0) >= (betInfo.multiplier || 1.0001);
-                            pft = win ? (lb.amount * ((betInfo.multiplier || 1.0001) - 1)) : -lb.amount;
-                        }
-                    }
-                }
-            }
-
-            // OPTIMIZATION: Batch stats update
-            bot.stats.bets++;
-            bot.stats.betsSession++;
-            bot.stats.wagered += nextBet;
-            bot.stats.wageredSession += nextBet;
-            bot.stats.profit += pft;
-            
-            // Balance update (throttled via WebSocket)
-            if (!bot.wsConnected || bot.isDemo) {
-                bot.stats.currentBal += pft;
-            }
-            
-            bot.stats.lastBetAmount = nextBet;
-            
-            // OPTIMIZATION: Inline win/loss updates
-            if (win) {
-                bot.stats.wins++;
-                bot.stats.winsSession++;
-                bot.stats.consecutiveWins++;
-                bot.stats.consecutiveLosses = 0;
-            } else {
-                bot.stats.loss++;
-                bot.stats.lossSession++;
-                bot.stats.consecutiveLosses++;
-                bot.stats.consecutiveWins = 0;
-            }
-            
-            // OPTIMIZATION: Calculate win rate only every 10 bets
-            if (bot.stats.bets % 10 === 0) {
-                bot.stats.winRate = (bot.stats.wins / bot.stats.bets) * 100;
-                bot.stats.winRateSession = bot.stats.betsSession > 0 ? (bot.stats.winsSession / bot.stats.betsSession) * 100 : 0;
-            }
-            
-            // Peak & drawdown updates
-            if (bot.stats.currentBal > bot.stats.peakBalance) {
-                bot.stats.peakBalance = bot.stats.currentBal;
-            }
-            
-            const currentDrawdown = bot.stats.peakBalance - bot.stats.currentBal;
-            if (currentDrawdown > bot.stats.maxDrawdown) {
-                bot.stats.maxDrawdown = currentDrawdown;
-                bot.stats.maxDrawdownPercent = (currentDrawdown / bot.stats.peakBalance) * 100;
-            }
-
-            // Process Z Rec result
-            if (betInfo.type === 'ZREC') {
-                const result = processZRecResult(win, pft, nextBet);
-                if (result !== 'CONTINUE') {
-                    console.log(`🔄 Z Rec ended: ${result}`);
-                }
-            } else if (win) {
-                bot.zRec.lastWinTime = Date.now();
-            }
-
-            // Throttled UI update
-            const now = Date.now();
-            if (now - bot.cache.lastUpdate >= bot.cache.updateThrottle) {
-                bot.cache.lastUpdate = now;
-                if (typeof requestAnimationFrame !== 'undefined') {
-                    requestAnimationFrame(updateDashboard);
-                } else {
-                    setTimeout(updateDashboard, 0);
-                }
-            }
-
-            // Telegram report (throttled)
-            if (CONFIG.telegram.enabled && now - bot.lastTelegramReport >= bot.telegramReportInterval) {
-                bot.lastTelegramReport = now;
-                TelegramAPI.sendPeriodicReport();
-            }
-
-            // OPTIMIZATION: Use setImmediate for next loop iteration
-            if (bot.isRunning && !bot.isPaused) {
-                setImmediate ? setImmediate(runLoop) : setTimeout(runLoop, 0);
-            }
-
-        } catch (e) {
-            console.log(`⚠️ Error: ${e.message}`);
-            if (bot.isRunning && !bot.isPaused) {
-                setTimeout(runLoop, 10); // Minimal delay on error
-            }
-        }
-    }
-
-    function startNewSession() {
-        bot.zRec.active = false;
-        bot.zRec.trail.isActive = false;
-        
-        bot.stats.sessionProfit = bot.stats.currentBal - bot.stats.sessionStartBal;
-        bot.stats.sessionStartBal = bot.stats.currentBal;
-        bot.stats.sessionStartTime = Date.now();
-        bot.stats.consecutiveLosses = 0;
-        bot.stats.betsSession = 0;
-        bot.stats.winsSession = 0;
-        bot.stats.lossSession = 0;
-        bot.stats.wageredSession = 0;
-        bot.stats.winRateSession = 0;
-        
-        console.log(`🔄 NEW SESSION - Balance: ${bot.stats.currentBal.toFixed(8)}`);
-        
-        if (typeof requestAnimationFrame !== 'undefined') {
-            requestAnimationFrame(updateUI);
-        } else {
-            setTimeout(updateUI, 0);
-        }
-    }
-
-    // =============== API (unchanged) ===============
+    // =============== FIXED API ===============
     const API = {
         async syncOnce() {
             try {
@@ -1075,11 +393,12 @@
                     
                     if (selectedBal) {
                         bot.realBalance = parseFloat(selectedBal.available.amount);
+                        bot.stats.currentBal = bot.realBalance;
                     }
                     
-                    console.log(`✅ Synced: ${bot.stakeUser}`);
+                    console.log(`✅ Synced: ${bot.stakeUser} | Balance: ${bot.realBalance}`);
                     
-                    // Connect WebSocket after getting token
+                    // Connect WebSocket for balance updates only
                     WebSocketManager.connect();
                     
                 } else {
@@ -1088,6 +407,7 @@
                 }
                 
             } catch (e) {
+                console.log('Sync error:', e);
                 bot.stakeUser = "Connection Error";
                 bot.availableCurrencies = getDefaultCurrencies();
             }
@@ -1115,7 +435,7 @@
                 bot.realBalance = balance;
                 return balance;
             } catch (e) {
-                return 0;
+                return bot.realBalance || 0;
             }
         },
 
@@ -1139,7 +459,7 @@
                 currency: bot.selectedCurrency,
                 target: parseFloat((100 - chance).toFixed(2)),
                 condition: "above",
-                identifier: Math.random().toString(36).slice(2, 10) + Date.now()
+                identifier: Math.random().toString(36).slice(2) + Date.now()
             };
 
             try {
@@ -1155,7 +475,17 @@
                 });
                 
                 if (!r.ok) throw new Error(`Bet failed: ${r.status}`);
-                return r.json();
+                const result = await r.json();
+                
+                // Update balance from response
+                if (result.diceRoll?.balance) {
+                    bot.realBalance = parseFloat(result.diceRoll.balance);
+                    if (bot.isRunning && !bot.isDemo) {
+                        bot.stats.currentBal = bot.realBalance;
+                    }
+                }
+                
+                return result;
             } catch (error) {
                 throw error;
             }
@@ -1171,8 +501,7 @@
                                 amount: amount,
                                 payout: win ? (amount * multiplierTarget) : 0,
                                 state: {
-                                    result: win ? multiplierTarget : (Math.random() * multiplierTarget),
-                                    multiplierTarget: multiplierTarget
+                                    result: win ? multiplierTarget : (Math.random() * multiplierTarget)
                                 }
                             }
                         });
@@ -1182,7 +511,7 @@
 
             const payload = {
                 multiplierTarget: multiplierTarget,
-                identifier: Math.random().toString(36).slice(2, 10) + Date.now(),
+                identifier: Math.random().toString(36).slice(2) + Date.now(),
                 amount: parseFloat(amount.toFixed(8)),
                 currency: bot.selectedCurrency
             };
@@ -1200,14 +529,498 @@
                 });
                 
                 if (!r.ok) throw new Error(`Limbo bet failed: ${r.status}`);
-                return r.json();
+                const result = await r.json();
+                
+                // Update balance from response
+                if (result.limboBet?.balance) {
+                    bot.realBalance = parseFloat(result.limboBet.balance);
+                    if (bot.isRunning && !bot.isDemo) {
+                        bot.stats.currentBal = bot.realBalance;
+                    }
+                }
+                
+                return result;
             } catch (error) {
                 throw error;
             }
         }
     };
 
-    // =============== UI (unchanged) ===============
+    // =============== Z RECOVERY FUNCTIONS ===============
+    function zRecNewBaseChance() {
+        const z = bot.zRec;
+        z.baseChance = parseFloat((Math.random() * (z.chance.max - z.chance.min) + z.chance.min).toFixed(1));
+        z.singleChanceBets = 0;
+        z.singleChanceLimit = Math.floor(99 / z.baseChance);
+        z.currentChance = z.baseChance;
+    }
+
+    function zRecGetChanceIncrement() {
+        const z = bot.zRec;
+        return parseFloat((Math.random() * (z.chance.incrementMax - z.chance.incrementMin) + z.chance.incrementMin).toFixed(1));
+    }
+
+    function zRecGetCurrentGap() {
+        const z = bot.zRec;
+        if (z.trail.currentLevel === 1) return z.trail.level1Gap;
+        if (z.trail.currentLevel === 2) return z.trail.level2Gap;
+        return z.trail.level3Gap;
+    }
+
+    function zRecResetTrail() {
+        const z = bot.zRec;
+        z.trail.currentLevel = 1;
+        z.level1Peak = z.balancePeak;
+        z.level2Peak = 0;
+    }
+
+    function checkZRecTrigger() {
+        const z = bot.zRec;
+        
+        if (z.active) return false;
+        
+        if (z.trigger.useDropdown) {
+            const drawdownPercent = ((bot.stats.peakBalance - bot.stats.currentBal) / bot.stats.peakBalance) * 100;
+            if (drawdownPercent >= z.trigger.dropdownPercent) {
+                console.log(`⚡ Z REC TRIGGER: Drawdown ${drawdownPercent.toFixed(2)}%`);
+                return true;
+            }
+        }
+        
+        if (z.trigger.useTime) {
+            if (Date.now() - z.lastWinTime >= z.trigger.timeSeconds * 1000) {
+                console.log(`⚡ Z REC TRIGGER: Timeout`);
+                return true;
+            }
+        }
+        
+        return false;
+    }
+
+    function activateZRec() {
+        const z = bot.zRec;
+        
+        z.active = true;
+        z.steps = 0;
+        z.balanceStart = bot.stats.currentBal;
+        z.balancePeak = Math.max(z.balancePeak, bot.stats.currentBal);
+        z.level1Peak = z.balancePeak;
+        z.trail.isActive = false;
+        z.trail.currentLevel = 0;
+        z.recoveryProfit = 0;
+        z.recoveryProfitPercent = 0;
+        z.remainingToTarget = 0;
+        
+        zRecNewBaseChance();
+        
+        z.stats.totalRecoveries++;
+        
+        console.log(`⚡ Z REC ACTIVE | Target: ${z.balanceStart.toFixed(8)}`);
+        requestAnimationFrame(updateUI);
+    }
+
+    function getZRecBet() {
+        const z = bot.zRec;
+        
+        if (z.singleChanceBets >= z.singleChanceLimit) {
+            z.currentChance = Math.min(98, z.baseChance + zRecGetChanceIncrement());
+        } else {
+            z.currentChance = z.baseChance;
+        }
+
+        const needToRecover = z.balanceStart - bot.stats.currentBal;
+        const payout = 99 / z.currentChance;
+        
+        let nextBet = needToRecover > 0 
+            ? (needToRecover / (payout - 1)) * 1.1
+            : ((z.balancePeak - bot.stats.currentBal) / (payout - 1)) * 1.01;
+        
+        nextBet = Math.min(Math.max(nextBet, bot.globalMinBet), bot.stats.currentBal * 0.1);
+        
+        z.steps++;
+        
+        if (z.steps % 10 === 0) {
+            console.log(`⚡ Z Rec: ${nextBet.toFixed(8)} @ ${z.currentChance.toFixed(1)}%`);
+        }
+        
+        return {
+            bet: nextBet,
+            chance: z.currentChance,
+            mode: 'dice',
+            type: 'ZREC'
+        };
+    }
+
+    function processZRecResult(win, pft, amt) {
+        const z = bot.zRec;
+        
+        if (bot.stats.currentBal > z.balancePeak) {
+            z.balancePeak = bot.stats.currentBal;
+        }
+
+        const needToRecover = z.balanceStart - bot.stats.currentBal;
+        z.remainingToTarget = needToRecover > 0 ? needToRecover : 0;
+        
+        if (needToRecover <= 0) {
+            z.recoveryProfit = bot.stats.currentBal - z.balanceStart;
+            z.recoveryProfitPercent = (z.recoveryProfit / z.balanceStart) * 100;
+        }
+
+        if (bot.stats.currentBal >= z.balanceStart) {
+            console.log(`✅ Z REC SUCCESS: +${z.recoveryProfit.toFixed(8)}`);
+            z.active = false;
+            z.stats.successfulRecoveries++;
+            z.stats.recoveredAmount += z.recoveryProfit;
+            z.lastWinTime = Date.now();
+            startNewSession();
+            return 'SUCCESS';
+        }
+
+        if (z.trail.enabled && !z.trail.isActive) {
+            const profitFromStart = ((bot.stats.currentBal - z.balanceStart) / z.balanceStart) * 100;
+            if (profitFromStart >= z.trail.activationPercent) {
+                z.trail.isActive = true;
+                z.trail.currentLevel = 1;
+                z.level1Peak = z.balancePeak;
+                console.log(`🛡️ TRAIL ACTIVE @ ${profitFromStart.toFixed(2)}%`);
+            }
+        }
+
+        if (z.trail.isActive) {
+            if (bot.stats.currentBal > z.level1Peak) z.level1Peak = bot.stats.currentBal;
+            if (z.trail.currentLevel === 2 && bot.stats.currentBal > z.level2Peak) z.level2Peak = bot.stats.currentBal;
+            
+            if (z.trail.currentLevel === 1 && z.balancePeak > z.level1Peak * 1.01) {
+                z.trail.currentLevel = 2;
+                z.level2Peak = z.balancePeak;
+            } else if (z.trail.currentLevel === 2 && z.balancePeak > z.level2Peak * 1.005) {
+                z.trail.currentLevel = 3;
+            }
+            
+            const currentGap = zRecGetCurrentGap();
+            if (bot.stats.currentBal <= z.balancePeak * (1 - (currentGap / 100))) {
+                z.trail.isActive = false;
+                z.trail.currentLevel = 0;
+            }
+        }
+
+        if (z.steps >= z.maxSteps) {
+            console.log(`⚠️ Z REC MAX STEPS`);
+            z.active = false;
+            z.stats.failedRecoveries++;
+            startNewSession();
+            return 'MAX_STEPS';
+        }
+
+        if (win) {
+            zRecNewBaseChance();
+            z.lastWinTime = Date.now();
+            if (z.trail.isActive) zRecResetTrail();
+        } else {
+            z.singleChanceBets++;
+        }
+
+        return 'CONTINUE';
+    }
+
+    function getWagerBet() {
+        const w = bot.wagerMode;
+        
+        if (++w.currentCycle >= w.cyclesBetweenSwitch) {
+            w.currentCycle = 0;
+            w.mode = w.mode === 'dice' ? 'limbo' : 'dice';
+        }
+        
+        let betAmount = Math.max(bot.stats.currentBal * (w.betPercent / 100), bot.globalMinBet);
+        
+        if (w.mode === 'dice') {
+            return {
+                bet: betAmount,
+                chance: w.diceChance,
+                multiplier: 99 / w.diceChance,
+                mode: 'dice',
+                type: 'WAGER'
+            };
+        } else {
+            return {
+                bet: betAmount,
+                multiplier: w.limboMultiplier,
+                chance: 99 / w.limboMultiplier,
+                mode: 'limbo',
+                type: 'WAGER'
+            };
+        }
+    }
+
+    function getNextBet() {
+        const z = bot.zRec;
+        
+        const currentBal = bot.stats.currentBal;
+        
+        if (currentBal > bot.stats.peakBalance) {
+            bot.stats.peakBalance = currentBal;
+        }
+        
+        if (!z.active && checkZRecTrigger()) {
+            activateZRec();
+        }
+        
+        return z.active ? getZRecBet() : getWagerBet();
+    }
+
+    async function runLoop() {
+        if (!bot.isRunning || bot.isPaused) return;
+
+        try {
+            const betInfo = getNextBet();
+            if (!betInfo) {
+                setImmediate ? setImmediate(runLoop) : setTimeout(runLoop, 0);
+                return;
+            }
+
+            let nextBet = betInfo.bet;
+            const maxBet = bot.stats.currentBal * 0.1;
+            
+            if (nextBet > maxBet) nextBet = maxBet;
+            if (bot.stats.lastBetAmount > 0 && nextBet > bot.stats.lastBetAmount * 2) {
+                nextBet = bot.stats.lastBetAmount * 2;
+            }
+
+            if (!bot.isDemo) {
+                if (bot.realBalance < bot.globalMinBet) {
+                    console.log(`❌ Insufficient balance`);
+                    bot.isRunning = false;
+                    TelegramAPI.sendStopReport("Insufficient Balance");
+                    updateUI();
+                    return;
+                }
+                if (nextBet > bot.realBalance) nextBet = bot.realBalance * 0.9;
+            }
+
+            let win = false, pft = 0;
+            
+            // FIX: Always use REST API untuk betting
+            if (bot.isDemo) {
+                await new Promise(r => setTimeout(r, 0));
+                win = Math.random() * 100 < betInfo.chance;
+                pft = win ? (nextBet * (99 / betInfo.chance - 1)) : -nextBet;
+            } else {
+                const res = betInfo.mode === 'dice' 
+                    ? await API.placeDiceBet(nextBet, betInfo.chance)
+                    : await API.placeLimboBet(nextBet, betInfo.multiplier);
+                
+                if (betInfo.mode === 'dice') {
+                    const d = res.diceRoll;
+                    if (d) {
+                        win = d.payout > 0;
+                        pft = d.payout - d.amount;
+                        // Balance sudah diupdate dari response
+                        if (d.balance) {
+                            bot.realBalance = parseFloat(d.balance);
+                            bot.stats.currentBal = bot.realBalance;
+                        }
+                    }
+                } else {
+                    const lb = res.limboBet;
+                    if (lb) {
+                        win = lb.payout > lb.amount;
+                        pft = lb.payout - lb.amount;
+                        if (lb.balance) {
+                            bot.realBalance = parseFloat(lb.balance);
+                            bot.stats.currentBal = bot.realBalance;
+                        }
+                    }
+                }
+            }
+
+            // Update stats
+            bot.stats.bets++;
+            bot.stats.betsSession++;
+            bot.stats.wagered += nextBet;
+            bot.stats.wageredSession += nextBet;
+            bot.stats.profit += pft;
+            bot.stats.lastBetAmount = nextBet;
+            
+            if (win) {
+                bot.stats.wins++;
+                bot.stats.winsSession++;
+                bot.stats.consecutiveWins++;
+                bot.stats.consecutiveLosses = 0;
+            } else {
+                bot.stats.loss++;
+                bot.stats.lossSession++;
+                bot.stats.consecutiveLosses++;
+                bot.stats.consecutiveWins = 0;
+            }
+            
+            if (bot.stats.bets % 10 === 0) {
+                bot.stats.winRate = (bot.stats.wins / bot.stats.bets) * 100;
+                bot.stats.winRateSession = bot.stats.betsSession > 0 ? (bot.stats.winsSession / bot.stats.betsSession) * 100 : 0;
+            }
+            
+            if (bot.stats.currentBal > bot.stats.peakBalance) {
+                bot.stats.peakBalance = bot.stats.currentBal;
+            }
+            
+            const currentDrawdown = bot.stats.peakBalance - bot.stats.currentBal;
+            if (currentDrawdown > bot.stats.maxDrawdown) {
+                bot.stats.maxDrawdown = currentDrawdown;
+                bot.stats.maxDrawdownPercent = (currentDrawdown / bot.stats.peakBalance) * 100;
+            }
+
+            if (betInfo.type === 'ZREC') {
+                processZRecResult(win, pft, nextBet);
+            } else if (win) {
+                bot.zRec.lastWinTime = Date.now();
+            }
+
+            // Throttled UI update
+            const now = Date.now();
+            if (now - bot.cache.lastUpdate >= bot.cache.updateThrottle) {
+                bot.cache.lastUpdate = now;
+                requestAnimationFrame(updateDashboard);
+            }
+
+            // Telegram
+            if (CONFIG.telegram.enabled && now - bot.lastTelegramReport >= bot.telegramReportInterval) {
+                bot.lastTelegramReport = now;
+                TelegramAPI.sendPeriodicReport();
+            }
+
+            // Next loop
+            if (bot.isRunning && !bot.isPaused) {
+                setImmediate ? setImmediate(runLoop) : setTimeout(runLoop, 0);
+            }
+
+        } catch (e) {
+            console.log(`⚠️ Error: ${e.message}`);
+            if (bot.isRunning && !bot.isPaused) {
+                setTimeout(runLoop, 10);
+            }
+        }
+    }
+
+    function startNewSession() {
+        bot.zRec.active = false;
+        bot.zRec.trail.isActive = false;
+        
+        bot.stats.sessionProfit = bot.stats.currentBal - bot.stats.sessionStartBal;
+        bot.stats.sessionStartBal = bot.stats.currentBal;
+        bot.stats.sessionStartTime = Date.now();
+        bot.stats.consecutiveLosses = 0;
+        bot.stats.betsSession = 0;
+        bot.stats.winsSession = 0;
+        bot.stats.lossSession = 0;
+        bot.stats.wageredSession = 0;
+        bot.stats.winRateSession = 0;
+        
+        console.log(`🔄 NEW SESSION - Balance: ${bot.stats.currentBal.toFixed(8)}`);
+        requestAnimationFrame(updateUI);
+    }
+
+    // =============== TELEGRAM API ===============
+    const TelegramAPI = {
+        async sendMessage(text, parse_mode = "HTML") {
+            if (!CONFIG.telegram?.enabled) return;
+            try {
+                const url = `https://api.telegram.org/bot${CONFIG.telegram.botToken}/sendMessage`;
+                const params = {
+                    chat_id: CONFIG.telegram.chatId,
+                    text: text,
+                    parse_mode: parse_mode,
+                    disable_web_page_preview: true
+                };
+                await fetch(url, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(params)
+                });
+            } catch (error) {
+                console.error("Telegram error:", error);
+            }
+        },
+
+        async sendStartReport() {
+            if (!CONFIG.telegram.sendOnStart) return;
+            const currencyInfo = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
+            const currencyName = currencyInfo ? currencyInfo.name : bot.selectedCurrency.toUpperCase();
+            const message = `🚀 <b>ORION × Z RECOVERY EXTREME</b>\n` +
+                `👤 User: <code>${bot.stakeUser}</code>\n` +
+                `💰 Currency: <code>${currencyName}</code>\n` +
+                `💰 Balance: <code>${bot.stats.startBal.toFixed(8)}</code>\n` +
+                `⚡ Wager: <code>${bot.wagerMode.betPercent}% @ ${bot.wagerMode.mode === 'dice' ? bot.wagerMode.diceChance+'%' : bot.wagerMode.limboMultiplier+'x'}</code>\n` +
+                `⚡ Z Rec: <code>Drop ${bot.zRec.trigger.dropdownPercent}% / Trail ${bot.zRec.trail.activationPercent}%</code>\n` +
+                `⚡ Mode: <code>EXTREME SPEED</code>\n` +
+                `⏰ ${new Date().toLocaleString()}`;
+            await this.sendMessage(message);
+            bot.lastTelegramReport = Date.now();
+        },
+
+        async sendStopReport(reason = "Manual Stop") {
+            if (!CONFIG.telegram.sendOnStop) return;
+            const currencyInfo = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
+            const currencyName = currencyInfo ? currencyInfo.name : bot.selectedCurrency.toUpperCase();
+            const runtime = bot.stats.startTime ? Math.floor((Date.now() - bot.stats.startTime) / 1000) : 0;
+            const hours = Math.floor(runtime / 3600);
+            const minutes = Math.floor((runtime % 3600) / 60);
+            const profitPercent = bot.stats.startBal > 0 ? ((bot.stats.profit / bot.stats.startBal) * 100) : 0;
+            const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100) : 0;
+            
+            const message = `🛑 <b>ORION STOPPED</b>\n` +
+                `📝 Reason: <b>${reason}</b>\n` +
+                `👤 User: <code>${bot.stakeUser}</code>\n` +
+                `💰 Currency: <code>${currencyName}</code>\n` +
+                `⏱️ Runtime: <code>${hours}h ${minutes}m</code>\n\n` +
+                `📊 STATS\n` +
+                `🎯 Bets: <code>${bot.stats.bets}</code>\n` +
+                `📈 Win Rate: <code>${winRate.toFixed(2)}%</code>\n` +
+                `💰 Wagered: <code>${bot.stats.wagered.toFixed(8)}</code>\n` +
+                `📈 Profit: <code>${bot.stats.profit > 0 ? '+' : ''}${bot.stats.profit.toFixed(8)}</code>\n` +
+                `⏰ ${new Date().toLocaleString()}`;
+            await this.sendMessage(message);
+        },
+
+        async sendPeriodicReport() {
+            if (!CONFIG.telegram.enabled) return;
+            
+            const currencyInfo = bot.availableCurrencies.find(c => c.code === bot.selectedCurrency);
+            const currencyName = currencyInfo ? currencyInfo.name : bot.selectedCurrency.toUpperCase();
+            const runtime = bot.stats.startTime ? Math.floor((Date.now() - bot.stats.startTime) / 1000) : 0;
+            const hours = Math.floor(runtime / 3600);
+            const minutes = Math.floor((runtime % 3600) / 60);
+            const profitPercent = bot.stats.startBal > 0 ? ((bot.stats.profit / bot.stats.startBal) * 100) : 0;
+            const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100) : 0;
+            
+            const message = `📊 <b>PERIODIC REPORT (3 MIN)</b>\n` +
+                `👤 User: <code>${bot.stakeUser}</code>\n` +
+                `💰 Currency: <code>${currencyName}</code>\n` +
+                `⏱️ Runtime: <code>${hours}h ${minutes}m</code>\n\n` +
+                `📈 CURRENT STATUS\n` +
+                `💰 Balance: <code>${bot.stats.currentBal.toFixed(8)}</code>\n` +
+                `📈 Profit: <code>${bot.stats.profit > 0 ? '+' : ''}${bot.stats.profit.toFixed(8)} (${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}%)</code>\n` +
+                `🏆 ATH: <code>${bot.stats.peakBalance.toFixed(8)}</code>\n` +
+                `📉 Max DD: <code>${bot.stats.maxDrawdownPercent.toFixed(2)}%</code>\n\n` +
+                `🎲 STATS\n` +
+                `🎯 Bets: <code>${bot.stats.bets}</code>\n` +
+                `📈 Win Rate: <code>${winRate.toFixed(2)}%</code>\n` +
+                `✅ Wins: <code>${bot.stats.wins}</code>\n` +
+                `❌ Losses: <code>${bot.stats.loss}</code>\n` +
+                `💰 Wagered: <code>${bot.stats.wagered.toFixed(8)}</code>\n\n` +
+                `⚙️ CONFIG\n` +
+                `🎲 Mode: <code>${bot.wagerMode.mode === 'dice' ? 'Dice' : 'Limbo'}</code>\n` +
+                `💰 Bet Percent: <code>${bot.wagerMode.betPercent}%</code>\n` +
+                `${bot.wagerMode.mode === 'dice' ? 
+                    `🎯 Chance: <code>${bot.wagerMode.diceChance}%</code>` : 
+                    `📊 Multiplier: <code>${bot.wagerMode.limboMultiplier}x</code>`}\n` +
+                `⚡ Z Rec: <code>Drop ${bot.zRec.trigger.dropdownPercent}%</code>\n` +
+                `⚡ Mode: <code>EXTREME SPEED</code>\n` +
+                `⏰ ${new Date().toLocaleString()}`;
+            
+            await this.sendMessage(message);
+        }
+    };
+
+    // =============== UI (SAMA PERSIS) ===============
     function createUI() {
         if (document.getElementById("orion-fusion-wrap")) return;
 
@@ -1901,7 +1714,7 @@
                     </div>
                     
                     <div style="margin-top: 10px; text-align: center; color: #9CA3AF; font-size: 10px;">
-                        ⚡ EXTREME MODE: Parallel Processing + Memory Optimization
+                        ⚡ EXTREME MODE: REST API Optimized + WebSocket Balance
                     </div>
                 </div>
             </div>
@@ -1920,7 +1733,7 @@
         }, 500);
     }
 
-    // =============== EVENT LISTENERS (unchanged) ===============
+    // =============== EVENT LISTENERS ===============
     function setupEventListeners() {
         document.querySelectorAll('.mode-option').forEach(btn => {
             btn.addEventListener('click', function() {
@@ -2097,9 +1910,9 @@
 
             updateUI();
             
-            // OPTIMIZATION: Start multiple loops for parallel processing
+            // Start multiple loops
             for (let i = 0; i < bot.maxBatchSize; i++) {
-                setTimeout(runLoop, i * 5); // Staggered start to avoid race conditions
+                setTimeout(runLoop, i * 2);
             }
         });
 
