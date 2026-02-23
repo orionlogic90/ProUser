@@ -12,10 +12,6 @@
         selectedCurrency: "doge", tg: 0, perStep: 0, baseChance: 0, currentChance: 0,
         singleChanceBets: 0, singleChanceLimit: 0, targetAbs: 0, stopLossAbs: 0,
         
-        currentSteps: 0,
-        maxSteps: 900000,
-        stepsResetCount: 0,
-        
         betSpeed: 0,
         lastSpeedUpdate: Date.now(),
         speedBetsCount: 0,
@@ -32,19 +28,29 @@
         chanceWager: 99.98,
         chanceRecovery: [85,80,75,70,65,60,58,56,54,52,48,46,44,42,40,38,36,34,32,30],
         
-        // RECOVERY SMOOTHING
-        recoveryMode: false,
-        recoveryStartLoss: 0,
-        recoveryBets: 0,
-        recoveryBaseBet: 0,
-        recoverySmoothingFactor: 0.3,
-        recoveryMaxBets: 20,
-        wasInWagerMode: false,
-        wasInRiskMode: false,
+        // AI LEARNING SYSTEM
+        aiLearning: {
+            enabled: false,
+            learningRate: 0.05,
+            adaptationSpeed: 0.1,
+            minChance: 30,
+            maxChance: 98,
+            performanceHistory: [],
+            successRate: {},
+            lastAdjustment: 0,
+            adjustmentInterval: 10, // Adjust every 10 recovery attempts
+            totalRecoveries: 0,
+            successfulRecoveries: 0,
+            recoveryAttempts: []
+        },
+        
+        // BASEBET SETTINGS
+        baseDivider: 10000,
+        baseBetManual: 0,
         
         // CHART REPORT TRACKING
         lastChartWagerAmount: 0,
-        chartReportInterval: 500, // Kirim report setiap 500 koin wagered
+        chartReportInterval: 500,
         
         lastTelegramTime: Date.now(),
         telegramInterval: 180000,
@@ -291,6 +297,10 @@
             const censoredUser = bot.stakeUser && bot.stakeUser !== "Loading..." ? 
                 bot.stakeUser.substring(0, 3) + "***" : "Loading...";
             
+            // Hitung AI stats
+            const aiSuccessRate = bot.aiLearning.totalRecoveries > 0 ? 
+                (bot.aiLearning.successfulRecoveries / bot.aiLearning.totalRecoveries * 100).toFixed(1) : "0";
+            
             // Generate chart URLs
             const charts = {
                 balance: this.generateBalanceChart(),
@@ -313,13 +323,18 @@
             caption += `▪️ Current : ${bot.stats.currentBal.toFixed(8)}\n`;
             caption += `▪️ P/L     : ${bot.stats.profit >= 0 ? '+' : ''}${bot.stats.profit.toFixed(8)} (${pnlPct}%)\n`;
             caption += `▪️ Mode    : ${bot.mode === 0 ? 'WAGER' : (bot.mode === 1 ? 'RECOVERY' : 'LOCKED')}\n`;
-            caption += `▪️ Step    : ${bot.step}/${bot.max_step}\n`;
             caption += `▪️ Max DD  : ${bot.stats.maxDD.toFixed(8)} (${bot.stats.maxDDPerc.toFixed(2)}%)\n`;
             caption += `\n`;
             caption += `🎲 STATISTICS\n`;
             caption += `▪️ Bets    : ${bot.stats.bets.toLocaleString()}\n`;
             caption += `▪️ W/L     : ${bot.stats.wins.toLocaleString()}/${bot.stats.loss.toLocaleString()}\n`;
             caption += `▪️ WinRate : ${winRate}%\n`;
+            
+            if (bot.aiLearning.enabled) {
+                caption += `\n🤖 AI LEARNING\n`;
+                caption += `▪️ Recoveries : ${bot.aiLearning.totalRecoveries}\n`;
+                caption += `▪️ Success    : ${bot.aiLearning.successfulRecoveries} (${aiSuccessRate}%)\n`;
+            }
             
             caption += `\n═══════════════════════════\n`;
             caption += `🕒 ${new Date().toLocaleString()}`;
@@ -374,6 +389,10 @@
             const censoredUser = bot.stakeUser && bot.stakeUser !== "Loading..." ? 
                 bot.stakeUser.substring(0, 3) + "***" : "Loading...";
             
+            // Hitung AI stats
+            const aiSuccessRate = bot.aiLearning.totalRecoveries > 0 ? 
+                (bot.aiLearning.successfulRecoveries / bot.aiLearning.totalRecoveries * 100).toFixed(1) : "0";
+            
             let message = "```\n";
             message += `⚡ ORION FAST WAGER REPORT ⚡\n`;
             message += `═══════════════════════════\n`;
@@ -389,13 +408,18 @@
             message += `▪️ Current : ${bot.stats.currentBal.toFixed(8)}\n`;
             message += `▪️ P/L     : ${bot.stats.profit >= 0 ? '+' : ''}${bot.stats.profit.toFixed(8)} (${pnlPct}%)\n`;
             message += `▪️ Mode    : ${bot.mode === 0 ? 'WAGER' : (bot.mode === 1 ? 'RECOVERY' : 'LOCKED')}\n`;
-            message += `▪️ Step    : ${bot.step}/${bot.max_step}\n`;
             message += `▪️ Max DD  : ${bot.stats.maxDD.toFixed(8)} (${bot.stats.maxDDPerc.toFixed(2)}%)\n`;
             message += `\n`;
             message += `🎲 STATISTICS\n`;
             message += `▪️ Bets    : ${bot.stats.bets.toLocaleString()}\n`;
             message += `▪️ W/L     : ${bot.stats.wins.toLocaleString()}/${bot.stats.loss.toLocaleString()}\n`;
             message += `▪️ WinRate : ${winRate}%\n`;
+            
+            if (bot.aiLearning.enabled) {
+                message += `\n🤖 AI LEARNING\n`;
+                message += `▪️ Recoveries : ${bot.aiLearning.totalRecoveries}\n`;
+                message += `▪️ Success    : ${bot.aiLearning.successfulRecoveries} (${aiSuccessRate}%)\n`;
+            }
             
             message += `\n`;
             message += `═══════════════════════════\n`;
@@ -417,24 +441,144 @@
         }
     };
 
+    // AI LEARNING FUNCTIONS
+    function initAILearning() {
+        bot.aiLearning.enabled = document.getElementById("p-ai-enable")?.checked || false;
+        bot.aiLearning.learningRate = parseFloat(document.getElementById("p-ai-learning-rate")?.value) || 0.05;
+        bot.aiLearning.adaptationSpeed = parseFloat(document.getElementById("p-ai-adapt-speed")?.value) || 0.1;
+        bot.aiLearning.minChance = parseFloat(document.getElementById("p-ai-min-chance")?.value) || 30;
+        bot.aiLearning.maxChance = parseFloat(document.getElementById("p-ai-max-chance")?.value) || 98;
+        bot.aiLearning.adjustmentInterval = parseInt(document.getElementById("p-ai-interval")?.value) || 10;
+    }
+    
+    function trackRecoveryAttempt(step, chance, success) {
+        if (!bot.aiLearning.enabled) return;
+        
+        bot.aiLearning.totalRecoveries++;
+        
+        // Track per step
+        if (!bot.aiLearning.successRate[step]) {
+            bot.aiLearning.successRate[step] = { attempts: 0, successes: 0 };
+        }
+        
+        bot.aiLearning.successRate[step].attempts++;
+        if (success) {
+            bot.aiLearning.successRate[step].successes++;
+            bot.aiLearning.successfulRecoveries++;
+        }
+        
+        // Store attempt details
+        bot.aiLearning.recoveryAttempts.push({
+            step: step,
+            chance: chance,
+            success: success,
+            timestamp: Date.now()
+        });
+        
+        // Keep only last 100 attempts
+        if (bot.aiLearning.recoveryAttempts.length > 100) {
+            bot.aiLearning.recoveryAttempts.shift();
+        }
+        
+        // Adjust chances periodically
+        bot.aiLearning.lastAdjustment++;
+        if (bot.aiLearning.lastAdjustment >= bot.aiLearning.adjustmentInterval) {
+            adjustRecoveryChances();
+            bot.aiLearning.lastAdjustment = 0;
+        }
+    }
+    
+    function adjustRecoveryChances() {
+        if (!bot.aiLearning.enabled || bot.aiLearning.totalRecoveries < 10) return;
+        
+        console.log("🤖 AI: Adjusting recovery chances based on performance...");
+        
+        for (let step = 1; step <= bot.max_step; step++) {
+            const stats = bot.aiLearning.successRate[step];
+            if (!stats || stats.attempts < 3) continue;
+            
+            const successRate = stats.successes / stats.attempts;
+            const currentChance = bot.chanceRecovery[step - 1];
+            
+            // Target success rate around 50-60% for optimal recovery
+            const targetRate = 0.55;
+            const error = successRate - targetRate;
+            
+            // Adjust chance based on error
+            let adjustment = error * bot.aiLearning.learningRate * 100;
+            
+            // More aggressive adjustment if performance is very bad
+            if (successRate < 0.3) {
+                adjustment = -bot.aiLearning.adaptationSpeed * 20;
+            } else if (successRate > 0.8) {
+                adjustment = bot.aiLearning.adaptationSpeed * 15;
+            }
+            
+            let newChance = currentChance - adjustment; // Invert because higher chance = more wins
+            
+            // Clamp to min/max
+            newChance = Math.max(bot.aiLearning.minChance, Math.min(bot.aiLearning.maxChance, newChance));
+            
+            // Apply with smoothing
+            bot.chanceRecovery[step - 1] = currentChance * (1 - bot.aiLearning.adaptationSpeed) + 
+                                           newChance * bot.aiLearning.adaptationSpeed;
+            
+            // Update UI
+            const input = document.getElementById(`p-recovery-${step}`);
+            if (input) {
+                input.value = bot.chanceRecovery[step - 1].toFixed(1);
+            }
+        }
+        
+        console.log("🤖 AI: Chances adjusted:", bot.chanceRecovery);
+    }
+    
+    function getOptimalChanceForStep(step) {
+        if (!bot.aiLearning.enabled) {
+            return bot.chanceRecovery[step - 1];
+        }
+        
+        const stats = bot.aiLearning.successRate[step];
+        if (!stats || stats.attempts < 5) {
+            return bot.chanceRecovery[step - 1];
+        }
+        
+        const successRate = stats.successes / stats.attempts;
+        const currentChance = bot.chanceRecovery[step - 1];
+        
+        // Jika success rate terlalu tinggi (>70%), turunkan chance untuk profit lebih besar
+        if (successRate > 0.7) {
+            return Math.max(bot.aiLearning.minChance, currentChance - bot.aiLearning.adaptationSpeed * 5);
+        }
+        
+        // Jika success rate terlalu rendah (<40%), naikkan chance untuk kurangi risiko
+        if (successRate < 0.4) {
+            return Math.min(bot.aiLearning.maxChance, currentChance + bot.aiLearning.adaptationSpeed * 8);
+        }
+        
+        return currentChance;
+    }
+
     function setNewBaseChance() {
-        // Tidak digunakan lagi, tapi dipertahankan untuk kompatibilitas
         bot.baseChance = bot.chanceWager;
         bot.currentChance = bot.baseChance;
         bot.singleChanceBets = 0;
         bot.singleChanceLimit = 0;
     }
 
-    function updateBaseBetFromSteps() {
-        if (bot.stats.startBal <= 0) return;
+    function calculateBaseBet() {
+        if (bot.stats.startBal <= 0) return 0;
         
-        // Basebet = floor(start_balance / 10000)
-        let baseBet = Math.floor(bot.stats.startBal / 10000);
         const minBet = parseFloat(document.getElementById("p-minbet")?.value) || 0.001;
+        const divider = parseFloat(document.getElementById("p-base-divider")?.value) || 10000;
+        
+        let baseBet = bot.stats.startBal / divider;
         if (baseBet < minBet) baseBet = minBet;
         
         const baseBetInput = document.getElementById("p-basebet");
-        if (baseBetInput) baseBetInput.value = baseBet.toFixed(8);
+        if (baseBetInput) {
+            baseBetInput.value = baseBet.toFixed(8);
+        }
         
         return baseBet;
     }
@@ -472,6 +616,20 @@
         }
     }
 
+    function updateRuntime() {
+        if (bot.stats.startTime) {
+            const runtime = Math.floor((Date.now() - bot.stats.startTime) / 1000);
+            bot.runtime.hours = Math.floor(runtime / 3600);
+            bot.runtime.minutes = Math.floor((runtime % 3600) / 60);
+            bot.runtime.seconds = runtime % 60;
+            
+            const runtimeElem = document.getElementById("st-runtime");
+            if (runtimeElem) {
+                runtimeElem.innerText = `${bot.runtime.hours}h ${bot.runtime.minutes}m ${bot.runtime.seconds}s`;
+            }
+        }
+    }
+
     async function runLoop() {
         if (!bot.isRunning) return;
         
@@ -484,7 +642,6 @@
             // LOCK MODE (MATI TOTAL)
             // =====================
             if (bot.mode === 2) {
-                // Tetap di lock mode, bet minimal
                 bot.currentChance = bot.chanceWager;
                 let nextBet = parseFloat(document.getElementById("p-minbet")?.value) || 0.001;
                 
@@ -494,6 +651,9 @@
                 if (d) {
                     processBetResult(d, nextBet, bot.currentChance);
                 }
+                
+                updateRuntime();
+                updateDisplay();
                 
                 setTimeout(runLoop, 0);
                 return;
@@ -528,15 +688,8 @@
             // =====================
             if (bot.mode === 0) {
                 currentChance = bot.chanceWager;
+                nextBet = calculateBaseBet();
                 
-                // Basebet = floor(start_balance / 10000)
-                let baseBet = Math.floor(bot.stats.startBal / 10000);
-                const minBet = parseFloat(document.getElementById("p-minbet")?.value) || 0.001;
-                if (baseBet < minBet) baseBet = minBet;
-                
-                nextBet = baseBet;
-                
-                // JIKA SUDAH PERNAH RECOVERY & TURUN LAGI → MATI
                 if (profit < 0) {
                     bot.mode = 2;
                     currentChance = bot.chanceWager;
@@ -553,10 +706,13 @@
                     currentChance = bot.chanceWager;
                     nextBet = parseFloat(document.getElementById("p-minbet")?.value) || 0.001;
                 } else {
-                    currentChance = bot.chanceRecovery[bot.step - 1];
+                    // Gunakan AI optimized chance jika enabled
+                    currentChance = bot.aiLearning.enabled ? 
+                        getOptimalChanceForStep(bot.step) : 
+                        bot.chanceRecovery[bot.step - 1];
+                    
                     const payout = (100 / currentChance) - 1;
                     
-                    // Gunakan loss_total untuk menghitung bet
                     if (payout > 0) {
                         nextBet = Math.abs(bot.loss_total) / payout;
                     } else {
@@ -572,10 +728,6 @@
             if (nextBet < minBet) nextBet = minBet;
             if (nextBet > bot.stats.currentBal) {
                 nextBet = minBet;
-                if (bot.mode === 1) {
-                    // Jika di recovery dan balance tidak cukup, tetap lanjut dengan minbet
-                    console.log(`⚠️ Recovery: Insufficient balance, using minbet`);
-                }
             }
             
             bot.currentChance = currentChance;
@@ -587,16 +739,13 @@
                 processBetResult(d, nextBet, currentChance);
             }
             
+            updateRuntime();
+            
             const tgNow = Date.now();
             if (tgNow - bot.lastTelegramTime >= bot.telegramInterval) {
                 await API.sendTelegramReport();
                 bot.lastTelegramTime = tgNow;
             }
-            
-            const runtime = Math.floor((Date.now() - bot.stats.startTime) / 1000);
-            bot.runtime.hours = Math.floor(runtime / 3600);
-            bot.runtime.minutes = Math.floor((runtime % 3600) / 60);
-            bot.runtime.seconds = runtime % 60;
             
             if (bot.isRunning) {
                 setTimeout(runLoop, 0);
@@ -617,7 +766,6 @@
         const pft = d.payout - d.amount;
         
         bot.stats.bets++; 
-        bot.currentSteps++;
         bot.stats.wagered += d.amount;
         bot.stats.profit += pft; 
         bot.stats.currentBal += pft;
@@ -641,24 +789,28 @@
             bot.stats.wins++; 
             
             if (bot.mode === 1) {
-                // Jika win di recovery, kurangi loss_total
                 bot.loss_total = Math.max(0, bot.loss_total - pft);
                 console.log(`✅ Recovery win! Remaining loss: ${bot.loss_total.toFixed(8)}`);
+                
+                // Track successful recovery step
+                trackRecoveryAttempt(bot.step, chance, true);
             }
         } else { 
             bot.stats.loss++; 
             
             if (bot.mode === 1) {
-                // Jika loss di recovery, tambah loss_total dan step
                 bot.loss_total = bot.loss_total + amount;
                 bot.step = Math.min(bot.step + 1, bot.max_step + 1);
                 console.log(`❌ Recovery loss #${bot.step}, Total loss: ${bot.loss_total.toFixed(8)}`);
+                
+                // Track failed recovery step
+                trackRecoveryAttempt(bot.step - 1, chance, false);
             }
         }
         
         updateDisplay();
         
-        // CHECK FOR CHART REPORT - SETIAP 500 KOIN WAGERED
+        // CHECK FOR CHART REPORT
         const currentWagerFloor = Math.floor(bot.stats.wagered / bot.chartReportInterval);
         const lastWagerFloor = Math.floor(bot.lastChartWagerAmount / bot.chartReportInterval);
         
@@ -699,13 +851,16 @@
     function updateDisplay() {
         document.getElementById("st-chance").innerText = bot.currentChance ? bot.currentChance.toFixed(1) + "%" : "0%";
         document.getElementById("st-next").innerText = bot.currentChance ? bot.currentChance.toFixed(1) + "%" : "0%";
-        document.getElementById("st-steps").innerText = bot.currentSteps + "/" + bot.maxSteps.toLocaleString();
         document.getElementById("st-step").innerText = `${bot.step}/${bot.max_step}`;
         
-        const runtimeElem = document.getElementById("st-runtime");
-        if (runtimeElem) {
-            runtimeElem.innerText = `${bot.runtime.hours}h ${bot.runtime.minutes}m ${bot.runtime.seconds}s`;
+        // AI Status
+        const aiStatus = document.getElementById("st-ai-status");
+        if (aiStatus) {
+            aiStatus.innerText = bot.aiLearning.enabled ? "ACTIVE" : "OFF";
+            aiStatus.style.color = bot.aiLearning.enabled ? "#10b981" : "#94a3b8";
         }
+        
+        updateRuntime();
     }
 
     function createUI() {
@@ -1135,7 +1290,7 @@
         const d = document.createElement("div"); d.id = "orion-wrap";
         d.innerHTML = `
             <div class="flex" style="justify-content:space-between; margin-bottom:8px;">
-                <span style="font-size:14px; font-weight:700; color:#f59e0b; text-shadow:0 0 10px rgba(245,158,11,0.3);">⚡ ORION FAST WAGER v3.0</span>
+                <span style="font-size:14px; font-weight:700; color:#f59e0b; text-shadow:0 0 10px rgba(245,158,11,0.3);">⚡ ORION AI v4.0</span>
                 <span class="badge" id="st-mode">WAGER</span>
             </div>
 
@@ -1158,16 +1313,9 @@
                 
                 <div class="grid-2col">
                     <div class="input-group">
-                        <label>Steps</label>
-                        <input id="p-steps" value="900000">
-                    </div>
-                    <div class="input-group">
                         <label>Demo Balance</label>
                         <input id="p-demo-balance" value="100.0">
                     </div>
-                </div>
-                
-                <div class="grid-2col">
                     <div class="input-group">
                         <label>Demo Mode</label>
                         <div class="switch">
@@ -1175,8 +1323,16 @@
                             <span class="switch-status" id="demo-status">OFF</span>
                         </div>
                     </div>
+                </div>
+                
+                <div class="grid-2col">
                     <div class="input-group">
-                        <label>Base Bet</label>
+                        <label>Base Bet Divider</label>
+                        <input id="p-base-divider" value="10000" type="number" min="1" step="1">
+                        <div class="info-tip">Base Bet = Start Balance / Divider</div>
+                    </div>
+                    <div class="input-group">
+                        <label>Base Bet (Auto)</label>
                         <input id="p-basebet" value="0.01" readonly>
                     </div>
                 </div>
@@ -1211,6 +1367,51 @@
                         <div class="sub-title">RECOVERY CHANCES</div>
                         <div class="grid-3col" id="recovery-chances-container">
                             <!-- Will be filled by JS -->
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <div class="section-header" onclick="toggleSection('ai')">
+                        <span class="title">🤖 AI LEARNING</span>
+                        <span class="collapse-btn" id="collapse-ai">▼</span>
+                    </div>
+                    <div class="section-content" id="content-ai">
+                        <div class="grid-2col">
+                            <div class="input-group">
+                                <label>Enable AI</label>
+                                <div class="switch">
+                                    <input type="checkbox" id="p-ai-enable"> 
+                                    <span class="switch-status" id="ai-status">OFF</span>
+                                </div>
+                            </div>
+                            <div class="input-group">
+                                <label>Learning Rate</label>
+                                <input id="p-ai-learning-rate" value="0.05" step="0.01" min="0.01" max="0.5">
+                            </div>
+                        </div>
+                        <div class="grid-2col">
+                            <div class="input-group">
+                                <label>Adaptation Speed</label>
+                                <input id="p-ai-adapt-speed" value="0.1" step="0.01" min="0.01" max="0.5">
+                            </div>
+                            <div class="input-group">
+                                <label>Min Chance %</label>
+                                <input id="p-ai-min-chance" value="30" step="1" min="1" max="98">
+                            </div>
+                        </div>
+                        <div class="grid-2col">
+                            <div class="input-group">
+                                <label>Max Chance %</label>
+                                <input id="p-ai-max-chance" value="98" step="1" min="1" max="99">
+                            </div>
+                            <div class="input-group">
+                                <label>Adjust Interval</label>
+                                <input id="p-ai-interval" value="10" step="1" min="5" max="50">
+                            </div>
+                        </div>
+                        <div style="background:#0f172a; padding:6px; border-radius:8px; font-size:9px; color:#f59e0b;">
+                            🤖 AI akan belajar dari setiap recovery attempt dan menyesuaikan chance untuk optimal profit
                         </div>
                     </div>
                 </div>
@@ -1255,12 +1456,8 @@
                     <span class="stat-value" id="st-speed"><span id="st-speed-val">0.00/s</span></span>
                 </div>
                 <div class="stat-row">
-                    <span>Steps</span>
-                    <span class="stat-value" id="st-steps">0/900k</span>
-                </div>
-                <div class="stat-row">
                     <span>Mode/Step</span>
-                    <span class="stat-value"><span id="st-mode-display">WAGER</span> (<span id="st-step">0/20</span>)</span>
+                    <span class="stat-value"><span id="st-mode-display">WAGER</span> <span id="st-step">0/20</span></span>
                 </div>
                 <div class="stat-row">
                     <span>Chance</span>
@@ -1273,6 +1470,10 @@
                 <div class="stat-row">
                     <span>Wagered</span>
                     <span class="stat-value" id="st-wagered">0</span>
+                </div>
+                <div class="stat-row">
+                    <span>AI Status</span>
+                    <span class="stat-value" id="st-ai-status">OFF</span>
                 </div>
                 <div class="stat-row">
                     <span>Next Chart @</span>
@@ -1305,7 +1506,7 @@
             </div>
             
             <div class="footer-copyright">
-                © 2025 ORION LOGIC — All rights reserved.
+                © 2025 ORION AI — All rights reserved.
             </div>
         `;
         document.body.appendChild(d);
@@ -1318,7 +1519,7 @@
                 div.className = "input-group";
                 div.innerHTML = `
                     <label>Step ${i}</label>
-                    <input id="p-recovery-${i}" value="${bot.chanceRecovery[i-1]}" type="number" step="0.01" min="1" max="99">
+                    <input id="p-recovery-${i}" value="${bot.chanceRecovery[i-1]}" type="number" step="0.1" min="1" max="99">
                 `;
                 container.appendChild(div);
             }
@@ -1352,7 +1553,27 @@
             updateModeDisplay();
         };
 
+        document.getElementById("p-ai-enable").onchange = (e) => {
+            const statusEl = document.getElementById("ai-status");
+            if (statusEl) {
+                statusEl.innerText = e.target.checked ? "ON" : "OFF";
+                statusEl.className = "switch-status " + (e.target.checked ? "on" : "off");
+            }
+        };
+
         document.getElementById("p-currency").onchange = (e) => bot.selectedCurrency = e.target.value;
+
+        document.getElementById("p-base-divider").addEventListener("input", function() {
+            if (bot.stats.startBal > 0) {
+                calculateBaseBet();
+            }
+        });
+
+        document.getElementById("p-minbet").addEventListener("input", function() {
+            if (bot.stats.startBal > 0) {
+                calculateBaseBet();
+            }
+        });
 
         document.getElementById("p-start").onclick = async () => {
             bot.selectedCurrency = document.getElementById("p-currency").value;
@@ -1373,6 +1594,9 @@
             bot.loss_total = 0;
             bot.max_step = parseInt(document.getElementById("p-max-step")?.value) || 20;
             
+            // Load base divider
+            bot.baseDivider = parseFloat(document.getElementById("p-base-divider")?.value) || 10000;
+            
             // Load chance settings
             bot.chanceWager = parseFloat(document.getElementById("p-chance-wager")?.value) || 99.98;
             
@@ -1385,24 +1609,24 @@
                                                i <= 15 ? 40 - (i-11)*2 : 30));
             }
             
+            // Initialize AI Learning
+            initAILearning();
+            
             if (!bot.isDemo) bot.stats.startBal = await API.getBalance(bot.selectedCurrency);
             else bot.stats.startBal = parseFloat(document.getElementById("p-demo-balance")?.value) || 100.0;
 
             bot.stats.currentBal = bot.stats.startBal;
             bot.stats.history = [bot.stats.startBal];
-            bot.maxSteps = parseInt(document.getElementById("p-steps")?.value) || 900000;
-            bot.currentSteps = 0;
-            bot.stepsResetCount = 0;
             bot.lastChartWagerAmount = 0;
             
-            bot.chartReportInterval = 500; // Fixed interval
+            bot.chartReportInterval = 500;
             
             const targetPct = parseFloat(document.getElementById("p-target-pct")?.value) || 3.0;
             bot.targetAbs = bot.stats.startBal * (targetPct / 100);
             bot.stopLossAbs = bot.stats.startBal * (parseFloat(document.getElementById("p-stop-pct")?.value) / 100);
             
+            calculateBaseBet();
             setNewBaseChance();
-            
             updateModeDisplay();
             
             await API.sendTelegramReport();
@@ -1416,11 +1640,6 @@
             await API.sendTelegramReport();
         };
 
-        // Update basebet when minbet changes
-        document.getElementById("p-minbet").addEventListener("input", function() {
-            if (bot.stats.startBal > 0) updateBaseBetFromSteps();
-        });
-
         setInterval(() => {
             if (!document.getElementById("st-p")) return;
             document.getElementById("st-p").innerText = bot.stats.profit.toFixed(8);
@@ -1428,13 +1647,18 @@
             document.getElementById("st-r").innerText = `${bot.stats.bets} (${bot.stats.wins}/${bot.stats.loss})`;
             document.getElementById("st-wagered").innerText = bot.stats.wagered.toFixed(8);
             
-            // Update mode display
             const modeText = bot.mode === 0 ? "WAGER" : (bot.mode === 1 ? "RECOVERY" : "LOCKED");
             document.getElementById("st-mode-display").innerText = modeText;
             
-            // Update next chart indicator
             const nextChart = (Math.floor(bot.stats.wagered / bot.chartReportInterval) + 1) * bot.chartReportInterval;
             document.getElementById("st-next-chart").innerText = nextChart.toFixed(0);
+            
+            // Update AI status
+            const aiStatus = document.getElementById("st-ai-status");
+            if (aiStatus) {
+                aiStatus.innerText = bot.aiLearning.enabled ? "ACTIVE" : "OFF";
+                aiStatus.style.color = bot.aiLearning.enabled ? "#10b981" : "#94a3b8";
+            }
         }, 500);
     }
 
