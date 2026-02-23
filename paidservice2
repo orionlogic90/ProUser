@@ -15,30 +15,29 @@
         playgame: "dice",
         on_limbo: false,
         
-        // Limbo variables - SEMUA BISA DIEDIT
+        // Limbo variables - SEMUA DARI INPUT
         baselimbo: 0.00008,
-        basedice: 0.000001,
-        maxbet: 0.002,
-        maxdrop: -2,
-        trailingf: -5,
-        minbet: 1e-8,
-        trailing: -5,
-        
-        // Limbo specific - SEMUA BISA DIEDIT
         chmin: 10,
         chmax: 60,
         chdiv: 550,
         multi: 1.1587,
         modulus: 35,
         
-        // Dice specific - SEMUA BISA DIEDIT
-        chancef: 90,
-        chancer: 9.9,
+        // Dice variables - SEMUA DARI INPUT
+        basedice: 0.000001,
+        chancef: 90,        // 90% untuk normal
+        chancer: 9.9,       // 9.9% setelah 20 win
         multir: 1.28,
+        
+        // Common - SEMUA DARI INPUT
+        maxbet: 0.002,
+        maxdrop: -2,
+        trailingf: -5,
+        minbet: 0.00000001,
+        
         ctwin: 0,
         streakx: 0,
-        
-        // Common
+        trailing: -5,
         currentChance: 90,
         nextbet: 0,
         basebet: 0,
@@ -91,7 +90,7 @@
             } catch (e) { return 0; }
         },
         
-        // ========== PLACE BET UNTUK LIMBO - DEMO MODE FIX ==========
+        // ========== PLACE BET UNTUK LIMBO ==========
         async placeLimboBet(amount, multiplierTarget) {
             if (bot.isDemo) {
                 try {
@@ -115,25 +114,23 @@
                     const limboData = result?.data?.limboRoll || result?.limboRoll;
                     
                     if (limboData) {
-                        // ========== FIX DETEKSI WIN/LOSS ==========
+                        // FIX: Deteksi win berdasarkan multiplier >= target
                         const win = limboData.multiplier >= multiplierTarget;
                         const payout = win ? (amount * limboData.multiplier) : 0;
                         
-                        console.log(`🎲 DEMO LIMBO: Target ${multiplierTarget}x, Result ${limboData.multiplier}x, ${win ? 'WIN' : 'LOSS'}`);
+                        console.log(`🎲 DEMO LIMBO: Target ${multiplierTarget.toFixed(2)}x, Result ${limboData.multiplier.toFixed(2)}x, ${win ? 'WIN' : 'LOSS'}`);
                         
                         return { 
                             limboRoll: { 
                                 amount: amount, 
                                 payout: payout,
                                 multiplier: limboData.multiplier,
-                                win: win,
-                                target: multiplierTarget
+                                win: win
                             } 
                         };
                     }
                 } catch (e) {
                     console.log("⚠️ Demo limbo error, fallback:", e);
-                    // Fallback ke random
                     const win = Math.random() < (1/multiplierTarget);
                     return { 
                         limboRoll: { 
@@ -164,11 +161,14 @@
             return r.json();
         },
         
-        // ========== PLACE BET UNTUK DICE - DEMO MODE FIX ==========
-        async placeDiceBet(amount, chance) {
+        // ========== PLACE BET UNTUK DICE - FIX CHANCE 90% ==========
+        async placeDiceBet(amount, chancePercent) {
+            // FIX: chancePercent adalah persen (misal 90 untuk 90%)
+            // Target untuk API: 100 - chancePercent
+            const target = 100 - chancePercent;
+            
             if (bot.isDemo) {
                 try {
-                    const target = 100 - chance;
                     const payload = { 
                         amount: 0,
                         currency: bot.selectedCurrency, 
@@ -190,11 +190,12 @@
                     const diceData = result?.data?.diceRoll || result?.diceRoll;
                     
                     if (diceData) {
-                        // ========== FIX DETEKSI WIN/LOSS ==========
+                        // FIX: Deteksi win berdasarkan roll > target
                         const win = diceData.roll > target;
-                        const payout = win ? (amount * (99 / chance)) : 0;
+                        // Payout untuk dice: amount * (99 / chance)
+                        const payout = win ? (amount * (99 / chancePercent)) : 0;
                         
-                        console.log(`🎲 DEMO DICE: Target ${target}, Roll ${diceData.roll}, ${win ? 'WIN' : 'LOSS'}`);
+                        console.log(`🎲 DEMO DICE: Chance ${chancePercent}%, Target >${target}, Roll ${diceData.roll}, ${win ? 'WIN' : 'LOSS'}`);
                         
                         return { 
                             diceRoll: { 
@@ -207,11 +208,11 @@
                     }
                 } catch (e) {
                     console.log("⚠️ Demo dice error, fallback:", e);
-                    const win = Math.random() * 100 < chance;
+                    const win = Math.random() * 100 < chancePercent;
                     return { 
                         diceRoll: { 
                             amount: amount, 
-                            payout: win ? (amount * (99 / chance)) : 0,
+                            payout: win ? (amount * (99 / chancePercent)) : 0,
                             win: win
                         } 
                     };
@@ -222,7 +223,7 @@
             const payload = { 
                 amount: parseFloat(amount.toFixed(8)), 
                 currency: bot.selectedCurrency, 
-                target: 100 - chance, 
+                target: target, 
                 condition: "above", 
                 identifier: Math.random().toString(36).slice(2) 
             };
@@ -290,9 +291,9 @@
         }
     };
 
-    // ==================== UPDATE VARIABLES DARI INPUT ====================
+    // ==================== UPDATE DARI INPUT ====================
     function updateFromInputs() {
-        // Limbo variables
+        // Limbo
         bot.baselimbo = parseFloat(document.getElementById("p-baselimbo")?.value) || 0.00008;
         bot.chmin = parseInt(document.getElementById("p-chmin")?.value) || 10;
         bot.chmax = parseInt(document.getElementById("p-chmax")?.value) || 60;
@@ -300,7 +301,7 @@
         bot.multi = parseFloat(document.getElementById("p-multi")?.value) || 1.1587;
         bot.modulus = parseInt(document.getElementById("p-modulus")?.value) || 35;
         
-        // Dice variables
+        // Dice
         bot.basedice = parseFloat(document.getElementById("p-basedice")?.value) || 0.000001;
         bot.chancef = parseFloat(document.getElementById("p-chancef")?.value) || 90;
         bot.chancer = parseFloat(document.getElementById("p-chancer")?.value) || 9.9;
@@ -310,7 +311,7 @@
         bot.maxbet = parseFloat(document.getElementById("p-maxbet")?.value) || 0.002;
         bot.maxdrop = parseFloat(document.getElementById("p-maxdrop")?.value) || -2;
         bot.trailingf = parseFloat(document.getElementById("p-trailingf")?.value) || -5;
-        bot.minbet = parseFloat(document.getElementById("p-minbet")?.value) || 1e-8;
+        bot.minbet = parseFloat(document.getElementById("p-minbet")?.value) || 0.00000001;
         bot.maxSteps = parseInt(document.getElementById("p-steps")?.value) || 900000;
         
         bot.trailing = bot.trailingf;
@@ -318,27 +319,19 @@
 
     function initbet_limbo() {
         updateFromInputs();
-        // baselimbo bisa dari input atau tetap pakai rumus
-        if (document.getElementById("p-baselimbo-use-rule")?.checked) {
-            bot.baselimbo = (bot.stats.currentBal / 50) * 8e-5;
-        }
-        bot.basebet = bot.baselimbo;
+        bot.basebet = bot.baselimbo; // LANGSUNG dari input
         bot.currentChance = Math.floor(Math.random() * (bot.chmax - bot.chmin + 1) + bot.chmin) / bot.chdiv;
         bot.nextbet = bot.basebet;
         bot.playgame = "limbo";
         bot.on_limbo = true;
         
-        console.log(`>>> LIMBO MODE: basebet=${bot.basebet.toFixed(8)}, chance=${bot.currentChance.toFixed(4)}`);
+        console.log(`>>> LIMBO MODE: basebet=${bot.basebet.toFixed(8)}, chance=${(bot.currentChance*100).toFixed(2)}%`);
     }
 
     function initbet_dice() {
         updateFromInputs();
-        // basedice bisa dari input atau tetap pakai rumus
-        if (document.getElementById("p-basedice-use-rule")?.checked) {
-            bot.basedice = (bot.stats.currentBal / 50) * 1e-6;
-        }
-        bot.basebet = bot.basedice;
-        bot.currentChance = bot.chancef;
+        bot.basebet = bot.basedice; // LANGSUNG dari input
+        bot.currentChance = bot.chancef; // 90% untuk awal
         bot.nextbet = bot.basebet;
         bot.playgame = "dice";
         bot.on_limbo = false;
@@ -347,37 +340,17 @@
         console.log(`>>> DICE MODE: basebet=${bot.basebet.toFixed(8)}, chance=${bot.chancef}%`);
     }
 
-    function updateConstants() {
-        updateFromInputs();
-        
-        // Update basebet berdasarkan mode
-        if (bot.on_limbo) {
-            if (document.getElementById("p-baselimbo-use-rule")?.checked) {
-                bot.baselimbo = (bot.stats.currentBal / 50) * 8e-5;
-                document.getElementById("p-baselimbo").value = bot.baselimbo.toFixed(8);
-            }
-            bot.basebet = bot.baselimbo;
-        } else {
-            if (document.getElementById("p-basedice-use-rule")?.checked) {
-                bot.basedice = (bot.stats.currentBal / 50) * 1e-6;
-                document.getElementById("p-basedice").value = bot.basedice.toFixed(8);
-            }
-            bot.basebet = bot.basedice;
-        }
-        
-        bot.trailing = bot.trailingf + bot.stats.profit;
-    }
-
     // ==================== FUNGSI BETTING UTAMA ====================
     async function runLoop() {
         if (!bot.isRunning) return;
         
         try {
-            updateConstants();
+            updateFromInputs();
+            bot.trailing = bot.trailingf + bot.stats.profit;
             
             // Cek kondisi switch
             if (bot.stats.profit > 0) {
-                if (bot.on_limbo) {
+                if (!bot.on_limbo) {
                     console.log(">>> Profit positif, switch ke LIMBO");
                     await new Promise(resolve => setTimeout(resolve, 5000));
                     initbet_limbo();
@@ -394,6 +367,9 @@
             let payout = 0;
             let amount = bot.nextbet;
             
+            if (amount < bot.minbet) amount = bot.minbet;
+            if (amount > bot.stats.currentBal) amount = bot.stats.currentBal;
+            
             if (bot.on_limbo) {
                 // LIMBO MODE
                 bot.currentChance = Math.floor(Math.random() * (bot.chmax - bot.chmin + 1) + bot.chmin) / bot.chdiv;
@@ -403,7 +379,7 @@
                 const limboData = result?.data?.limboRoll || result?.limboRoll;
                 
                 if (limboData) {
-                    win = limboData.win; // SUDAH FIX!
+                    win = limboData.win;
                     payout = limboData.payout;
                     
                     if (win) {
@@ -421,7 +397,7 @@
                 const diceData = result?.data?.diceRoll || result?.diceRoll;
                 
                 if (diceData) {
-                    win = diceData.win; // SUDAH FIX!
+                    win = diceData.win;
                     payout = diceData.payout;
                     
                     if (win) {
@@ -430,7 +406,7 @@
                         
                         if (bot.ctwin >= 20) {
                             bot.ctwin = 0;
-                            bot.currentChance = bot.chancer;
+                            bot.currentChance = bot.chancer; // 9.9% setelah 20 win
                         }
                         
                         if (bot.nextbet > bot.maxbet && bot.maxbet > 0) {
@@ -442,6 +418,7 @@
                         if (bot.currentChance < bot.chancef) {
                             const streak = Math.abs(bot.stats.loss);
                             if (bot.stats.profit < bot.trailing) {
+                                // nextbet = abs(profit)/((99/chance)-1)*1.01
                                 bot.nextbet = Math.abs(bot.stats.profit) / ((99 / bot.currentChance) - 1) * 1.01;
                             } else {
                                 bot.nextbet = bot.nextbet * bot.multir;
@@ -546,26 +523,6 @@
                     left: 2.5% !important;
                     top: 5px !important;
                     max-height: 95vh !important;
-                    font-size: 14px !important;
-                }
-                .grid {
-                    grid-template-columns: 1fr !important;
-                }
-                .stat-row {
-                    font-size: 12px !important;
-                    padding: 6px 8px !important;
-                }
-                .input-group input, .input-group select {
-                    font-size: 14px !important;
-                    padding: 8px !important;
-                }
-                .btn {
-                    padding: 12px !important;
-                    font-size: 14px !important;
-                }
-                #p-logs {
-                    height: 120px !important;
-                    font-size: 11px !important;
                 }
             }
             
@@ -598,14 +555,12 @@
                 justify-content: space-between;
                 cursor: pointer;
                 padding: 8px 0;
-                user-select: none;
             }
             
             .section-header .title { 
                 font-size: 14px; 
                 font-weight: 600; 
                 color: #f39c12;
-                margin: 0;
             }
             
             .collapse-btn {
@@ -622,7 +577,6 @@
             
             .section-content {
                 transition: all 0.2s ease;
-                overflow: hidden;
             }
             
             .section-content.collapsed {
@@ -645,7 +599,6 @@
                 font-size: 10px; 
                 color: #aaa; 
                 margin-bottom: 2px; 
-                font-weight: 500;
             }
             
             .input-group input, .input-group select {
@@ -662,17 +615,6 @@
             .input-group input:focus, .input-group select:focus {
                 outline: none;
                 border-color: #f39c12;
-            }
-            
-            .checkbox-group {
-                display: flex;
-                align-items: center;
-                gap: 5px;
-                margin-top: 3px;
-            }
-            
-            .checkbox-group input {
-                width: auto;
             }
             
             .stat-row {
@@ -724,10 +666,6 @@
                 color: #fff; 
             }
             
-            .btn-danger:hover:not(:disabled) { 
-                background: #c0392b; 
-            }
-            
             .badge {
                 display: inline-block; 
                 padding: 2px 6px; 
@@ -735,7 +673,6 @@
                 font-size: 10px; 
                 background: #404040; 
                 color: #f39c12;
-                font-weight: 600;
                 border: 1px solid #f39c12;
             }
             
@@ -804,7 +741,7 @@
                     <div class="grid">
                         <div class="input-group">
                             <label>Min Bet</label>
-                            <input id="p-minbet" value="1e-8" step="1e-8">
+                            <input id="p-minbet" value="0.00000001" step="1e-8">
                         </div>
                         <div class="input-group">
                             <label>Max Bet</label>
@@ -828,20 +765,16 @@
                 </div>
             </div>
 
-            <!-- Limbo Settings - SEMUA BISA DIEDIT -->
+            <!-- Limbo Settings -->
             <div class="section" id="section-limbo">
                 <div class="section-header" onclick="toggleSection('limbo')">
                     <span class="title">🎲 Limbo</span>
                     <span class="collapse-btn" id="collapse-limbo">▼</span>
                 </div>
                 <div class="section-content" id="content-limbo">
-                    <div class="checkbox-group">
-                        <input type="checkbox" id="p-baselimbo-use-rule" checked> 
-                        <label style="font-size:10px;">Gunakan rumus (balance/50)*8e-5</label>
-                    </div>
                     <div class="grid">
                         <div class="input-group">
-                            <label>Base Limbo</label>
+                            <label>Base Bet Limbo</label>
                             <input id="p-baselimbo" value="0.00008" step="1e-6">
                         </div>
                         <div class="input-group">
@@ -868,28 +801,24 @@
                 </div>
             </div>
 
-            <!-- Dice Settings - SEMUA BISA DIEDIT -->
+            <!-- Dice Settings -->
             <div class="section" id="section-dice">
                 <div class="section-header" onclick="toggleSection('dice')">
                     <span class="title">🎯 Dice</span>
                     <span class="collapse-btn" id="collapse-dice">▼</span>
                 </div>
                 <div class="section-content" id="content-dice">
-                    <div class="checkbox-group">
-                        <input type="checkbox" id="p-basedice-use-rule" checked> 
-                        <label style="font-size:10px;">Gunakan rumus (balance/50)*1e-6</label>
-                    </div>
                     <div class="grid">
                         <div class="input-group">
-                            <label>Base Dice</label>
+                            <label>Base Bet Dice</label>
                             <input id="p-basedice" value="0.000001" step="1e-7">
                         </div>
                         <div class="input-group">
-                            <label>Chance Fixed</label>
+                            <label>Chance Fixed (%)</label>
                             <input id="p-chancef" value="90" step="0.1">
                         </div>
                         <div class="input-group">
-                            <label>Chance Reset</label>
+                            <label>Chance Reset (%)</label>
                             <input id="p-chancer" value="9.9" step="0.1">
                         </div>
                         <div class="input-group">
@@ -897,14 +826,14 @@
                             <input id="p-multir" value="1.28" step="0.01">
                         </div>
                     </div>
+                    <div style="font-size:9px; color:#f39c12; margin-top:4px;">
+                        ⚡ Chance 90% = Target 10 (100-90) = Menang jika roll > 10
+                    </div>
                 </div>
             </div>
 
             <!-- Stats Monitoring -->
             <div class="section">
-                <div class="section-header" style="cursor:default;">
-                    <span class="title">📊 Status</span>
-                </div>
                 <div class="stat-row">
                     <span>💰 Balance:</span>
                     <span class="stat-value" id="st-bal">0</span>
@@ -956,7 +885,7 @@
                 </div>
             </div>
 
-            <div style="font-size:9px; color:#aaa; margin:5px 0; text-align:center; background:#3a3a3a; padding:4px; border-radius:3px;" id="st-user">
+            <div style="font-size:9px; color:#aaa; margin:5px 0; text-align:center;" id="st-user">
                 User: Syncing...
             </div>
 
@@ -968,7 +897,7 @@
             <div class="info-footer">
                 <span>✅ WIN = Hijau</span>
                 <span>❌ LOSS = Merah</span>
-                <span>🎯 Demo = Bet 0</span>
+                <span>🎯 Base Bet = Manual Input</span>
             </div>
         `;
         document.body.appendChild(d);
@@ -1018,13 +947,13 @@
             bot.currentSteps = 0;
             bot.stepsResetCount = 0;
             
-            // Update dari input sebelum start
+            // Update dari input
             updateFromInputs();
             
-            // Initialize dengan dice mode
+            // Start dengan dice mode
             initbet_dice();
             
-            console.log(`>>> START: Balance=${bot.stats.startBal.toFixed(8)}, Mode=DICE, Demo=${bot.isDemo}`);
+            console.log(`>>> START: Balance=${bot.stats.startBal.toFixed(8)}, Mode=DICE, BaseBet=${bot.basebet.toFixed(8)}`);
             
             await API.sendTelegramReport();
             
