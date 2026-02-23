@@ -129,7 +129,33 @@
         },
         
         async placeBet(amount, chance) {
-            // Untuk demo mode, kita tetap kirim ke API real tapi balance tidak terpengaruh
+            if (bot.isDemo) {
+                // Demo mode untuk dice - kirim amount 0
+                const payload = { 
+                    amount: 0,
+                    currency: bot.selectedCurrency, 
+                    target: 100 - chance, 
+                    condition: "above", 
+                    identifier: Math.random().toString(36).slice(2) 
+                };
+                
+                try {
+                    const r = await fetch(`${CONFIG.apiUrl}/casino/dice/roll`, { 
+                        method: "POST", 
+                        headers: { 
+                            "Content-Type": "application/json", 
+                            "x-access-token": bot.token 
+                        }, 
+                        body: JSON.stringify(payload) 
+                    });
+                    return r.json();
+                } catch (e) {
+                    console.log("Dice demo bet error:", e);
+                    return {};
+                }
+            }
+            
+            // Real mode
             const payload = { 
                 amount: parseFloat(amount.toFixed(8)), 
                 currency: bot.selectedCurrency, 
@@ -137,7 +163,6 @@
                 condition: "above", 
                 identifier: Math.random().toString(36).slice(2) 
             };
-            
             try {
                 const r = await fetch(`${CONFIG.apiUrl}/casino/dice/roll`, { 
                     method: "POST", 
@@ -149,13 +174,41 @@
                 });
                 return r.json();
             } catch (e) {
-                console.log("Dice bet error:", e);
+                console.log("Dice real bet error:", e);
                 return {};
             }
         },
         
-        // MINES API - TETAP PAKAI API REAL WALAU DEMO MODE
+        // MINES API
         async placeMinesBet(amount, currency, minesCount, fields) {
+            if (bot.isDemo) {
+                // Demo mode untuk mines - kirim amount 0
+                const payload = {
+                    amount: 0,
+                    currency: currency,
+                    identifier: this.randomIdentifier(),
+                    minesCount: minesCount,
+                    fields: fields
+                };
+                
+                try {
+                    const r = await fetch(`${CONFIG.apiUrl}/casino/mines/bet`, {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            "x-access-token": bot.token
+                        },
+                        body: JSON.stringify(payload),
+                        credentials: "include"
+                    });
+                    return r.json();
+                } catch (e) {
+                    console.log("Mines demo bet error:", e);
+                    return {};
+                }
+            }
+            
+            // Real mode
             const payload = {
                 amount: amount,
                 currency: currency,
@@ -176,7 +229,7 @@
                 });
                 return r.json();
             } catch (e) {
-                console.log("Mines bet error:", e);
+                console.log("Mines real bet error:", e);
                 return {};
             }
         },
@@ -186,7 +239,6 @@
             return Array.from({ length }, () => Math.floor(Math.random() * 10)).join("");
         },
         
-        // Generate random fields untuk mines
         generateRandomFields(count) {
             const fields = [];
             while(fields.length < count) {
@@ -196,7 +248,6 @@
             return fields;
         },
         
-        // CHART GENERATION FUNCTIONS
         generateBalanceChart() {
             const history = bot.stats.history || [bot.stats.startBal];
             const labels = [];
@@ -326,14 +377,12 @@
             const censoredUser = bot.stakeUser && bot.stakeUser !== "Loading..." ? 
                 bot.stakeUser.substring(0, 3) + "***" : "Loading...";
             
-            // Generate chart URLs
             const charts = {
                 balance: this.generateBalanceChart(),
                 profit: this.generateProfitChart(),
                 winrate: this.generateWinRateChart()
             };
             
-            // Text caption
             let caption = '⚡ ORION FAST WAGER REPORT ⚡\n';
             caption += '═══════════════════════════\n';
             caption += '\n';
@@ -343,7 +392,6 @@
             caption += '💱 CURRENCY   : ' + bot.selectedCurrency.toUpperCase() + '\n';
             caption += '💰 WAGERED    : ' + bot.stats.wagered.toFixed(8) + '\n';
             
-            // Add Mines stats
             if (bot.mines.totalBets > 0) {
                 caption += '\n';
                 caption += '💣 MINES STATS\n';
@@ -387,7 +435,6 @@
             caption += '\n═══════════════════════════\n';
             caption += '🕒 ' + new Date().toLocaleString();
             
-            // Kirim chart sebagai media group
             try {
                 const mediaGroup = [
                     {
@@ -447,7 +494,6 @@
             message += '💱 CURRENCY   : ' + bot.selectedCurrency.toUpperCase() + '\n';
             message += '💰 WAGERED    : ' + bot.stats.wagered.toFixed(8) + '\n';
             
-            // Add Mines stats
             if (bot.mines.totalBets > 0) {
                 message += '\n';
                 message += '💣 MINES STATS\n';
@@ -695,7 +741,6 @@
         setNewBaseChance();
     }
 
-    // CHECK MINES MODE
     function checkMinesMode() {
         if (bot.isMinesMode) return;
         if (bot.recoveryMode) return;
@@ -780,7 +825,6 @@
                 fields
             );
             
-            // Parse response - menangani berbagai format response dari API
             let data = null;
             if (result?.data?.minesBet) {
                 data = result.data.minesBet;
@@ -789,7 +833,7 @@
             } else if (result?.d?.minesBet) {
                 data = result.d.minesBet;
             } else if (result?.id) {
-                data = result; // Langsung result jika sudah berupa object minesBet
+                data = result;
             }
             
             if (data) {
@@ -834,7 +878,6 @@
                 }
             } else {
                 console.log("No valid data in mines response:", result);
-                // Tidak ada fallback - hanya log error
             }
             
             return true;
