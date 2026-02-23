@@ -60,95 +60,95 @@
     const API = {
         async syncOnce() {
             bot.token = localStorage.getItem('apitoken') || (document.cookie.match(/session=([^;]+)/) ? document.cookie.match(/session=([^;]+)/)[1] : null);
-            if (!bot.token) {
-                console.log("No token found");
-                return;
-            }
-            
             try {
                 const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
-                    method: "POST", 
-                    headers: { 
-                        "Content-Type": "application/json", 
-                        "x-access-token": bot.token 
-                    },
+                    method: "POST", headers: { "Content-Type": "application/json", "x-access-token": bot.token },
                     body: JSON.stringify({ query: `query{user{name balances{available{amount currency}}}}` })
                 });
-                
-                if (!res.ok) {
-                    console.log("API response not OK:", res.status);
-                    return;
-                }
-                
                 const json = await res.json();
                 if (json?.data?.user) {
                     bot.stakeUser = json.data.user.name;
-                    const userEl = document.getElementById("st-user");
-                    if (userEl) userEl.innerText = `User: ${bot.stakeUser}`;
-                    
+                    document.getElementById("st-user").innerText = `User: ${bot.stakeUser}`;
                     const bals = json.data.user.balances || [];
                     const sel = document.getElementById("p-currency");
                     if (sel && sel.options.length === 0) {
                         bals.forEach(b => {
-                            if (b?.available?.currency) {
-                                const opt = new Option(b.available.currency.toUpperCase(), b.available.currency);
-                                if(b.available.currency === "doge") opt.selected = true;
-                                sel.add(opt);
-                            }
+                            const opt = new Option(b.available.currency.toUpperCase(), b.available.currency);
+                            if(b.available.currency === "doge") opt.selected = true;
+                            sel.add(opt);
                         });
-                        if (sel.options.length > 0) {
-                            bot.selectedCurrency = sel.value;
-                        }
+                        bot.selectedCurrency = sel.value;
                     }
                 }
-            } catch (e) {
-                console.log("Sync error:", e);
-            }
+            } catch (e) {}
         },
-        
         async getBalance(coin) {
-            if (bot.isDemo) {
-                return parseFloat(document.getElementById("p-demo-balance")?.value) || 100.0;
-            }
-            
             try {
                 const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
-                    method: "POST", 
-                    headers: { 
-                        "Content-Type": "application/json", 
-                        "x-access-token": bot.token 
-                    },
+                    method: "POST", headers: { "Content-Type": "application/json", "x-access-token": bot.token },
                     body: JSON.stringify({ query: `query{user{balances{available{amount currency}}}}` })
                 });
-                
-                if (!res.ok) return 0;
-                
                 const json = await res.json();
-                const active = json?.data?.user?.balances?.find(b => b.available.currency.toLowerCase() === coin.toLowerCase());
+                const active = json.data.user.balances.find(b => b.available.currency.toLowerCase() === coin.toLowerCase());
                 return active ? parseFloat(active.available.amount) : 0;
-            } catch (e) { 
-                console.log("Balance error:", e);
-                return 0; 
-            }
+            } catch (e) { return 0; }
         },
         
         async placeBet(amount, chance) {
+            // DEMO MODE - Tetap panggil API Stake dengan amount 0 untuk dapat real result
             if (bot.isDemo) {
-                // Simulate bet result
-                const roll = Math.random() * 100;
-                const win = roll > (100 - chance);
-                const payout = win ? (amount * (99 / chance)) : 0;
-                
-                return { 
-                    diceRoll: { 
-                        amount: amount, 
-                        payout: payout,
-                        roll: roll,
-                        win: win
-                    } 
-                };
+                try {
+                    const target = 100 - chance;
+                    const payload = { 
+                        amount: 0, // Amount 0 untuk demo
+                        currency: bot.selectedCurrency, 
+                        target: target, 
+                        condition: "above", 
+                        identifier: Math.random().toString(36).slice(2) 
+                    };
+                    
+                    const r = await fetch(`${CONFIG.apiUrl}/casino/dice/roll`, { 
+                        method: "POST", 
+                        headers: { 
+                            "Content-Type": "application/json", 
+                            "x-access-token": bot.token 
+                        }, 
+                        body: JSON.stringify(payload) 
+                    });
+                    
+                    const result = await r.json();
+                    const d = result?.data?.diceRoll || result?.diceRoll;
+                    
+                    if (d) {
+                        // Gunakan result real dari Stake (roll number)
+                        const win = d.roll > target;
+                        
+                        // Hitung payout berdasarkan amount demo
+                        const payout = win ? (amount * (99 / chance)) : 0;
+                        
+                        return { 
+                            diceRoll: { 
+                                amount: amount, 
+                                payout: payout,
+                                roll: d.roll,
+                                win: win
+                            } 
+                        };
+                    }
+                } catch (e) {
+                    console.log("Demo mode error, falling back to simulation:", e);
+                    // Fallback ke random jika API error
+                    const win = Math.random() * 100 < chance;
+                    return { 
+                        diceRoll: { 
+                            amount: amount, 
+                            payout: win ? (amount * (99 / chance)) : 0 
+                        } 
+                    };
+                }
             }
             
+            // REAL MODE - Bet dengan amount real
             const payload = { 
                 amount: parseFloat(amount.toFixed(8)), 
                 currency: bot.selectedCurrency, 
@@ -156,43 +156,25 @@
                 condition: "above", 
                 identifier: Math.random().toString(36).slice(2) 
             };
-            
-            try {
-                const r = await fetch(`${CONFIG.apiUrl}/casino/dice/roll`, { 
-                    method: "POST", 
-                    headers: { 
-                        "Content-Type": "application/json", 
-                        "x-access-token": bot.token 
-                    }, 
-                    body: JSON.stringify(payload) 
-                });
-                
-                if (!r.ok) {
-                    throw new Error(`HTTP ${r.status}`);
-                }
-                
-                return r.json();
-            } catch (e) {
-                console.log("Bet error:", e);
-                // Return simulated result on error
-                const roll = Math.random() * 100;
-                const win = roll > (100 - chance);
-                const payout = win ? (amount * (99 / chance)) : 0;
-                
-                return { 
-                    diceRoll: { 
-                        amount: amount, 
-                        payout: payout,
-                        roll: roll,
-                        win: win
-                    } 
-                };
-            }
+            const r = await fetch(`${CONFIG.apiUrl}/casino/dice/roll`, { 
+                method: "POST", 
+                headers: { 
+                    "Content-Type": "application/json", 
+                    "x-access-token": bot.token 
+                }, 
+                body: JSON.stringify(payload) 
+            });
+            return r.json();
         },
         
+        // CHART GENERATION FUNCTIONS
         generateBalanceChart() {
-            const history = bot.stats.history?.length ? bot.stats.history : [bot.stats.startBal || 0];
-            const labels = history.map((_, i) => `#${i+1}`);
+            const history = bot.stats.history || [bot.stats.startBal];
+            const labels = [];
+            
+            for(let i = 0; i < history.length; i++) {
+                labels.push(`#${i+1}`);
+            }
             
             const chartConfig = {
                 type: 'line',
@@ -207,7 +189,7 @@
                         tension: 0.4
                     }, {
                         label: 'Start Balance',
-                        data: Array(history.length).fill(bot.stats.startBal || 0),
+                        data: Array(history.length).fill(bot.stats.startBal),
                         borderColor: '#ef4444',
                         borderDash: [5, 5],
                         fill: false
@@ -216,7 +198,7 @@
                 options: {
                     title: {
                         display: true,
-                        text: `💰 Balance Progress - ${(bot.selectedCurrency || 'doge').toUpperCase()}`
+                        text: `💰 Balance Progress - ${bot.selectedCurrency.toUpperCase()}`
                     }
                 }
             };
@@ -226,20 +208,31 @@
         
         generateWinRateChart() {
             const winRate = bot.stats.bets > 0 ? (bot.stats.wins / bot.stats.bets * 100).toFixed(1) : 0;
+            const lossRate = bot.stats.bets > 0 ? (bot.stats.loss / bot.stats.bets * 100).toFixed(1) : 0;
             
             const chartConfig = {
                 type: 'doughnut',
                 data: {
                     labels: ['Wins', 'Losses'],
                     datasets: [{
-                        data: [bot.stats.wins || 0, bot.stats.loss || 0],
+                        data: [bot.stats.wins, bot.stats.loss],
                         backgroundColor: ['#10b981', '#ef4444']
                     }]
                 },
                 options: {
                     title: {
                         display: true,
-                        text: `🎲 Win/Loss Ratio (${winRate}% / ${(100 - winRate).toFixed(1)}%)`
+                        text: `🎲 Win/Loss Ratio (${winRate}% / ${lossRate}%)`
+                    },
+                    plugins: {
+                        datalabels: {
+                            color: '#fff',
+                            formatter: (value, ctx) => {
+                                const total = ctx.chart.data.datasets[0].data.reduce((a,b) => a + b, 0);
+                                const percentage = total > 0 ? (value / total * 100).toFixed(1) : 0;
+                                return `${percentage}%`;
+                            }
+                        }
                     }
                 }
             };
@@ -248,7 +241,7 @@
         },
         
         generateProfitChart() {
-            const profitData = bot.stats.history?.map(b => (b || 0) - (bot.stats.startBal || 0)) || [0];
+            const profitData = bot.stats.history?.map(b => b - bot.stats.startBal) || [0];
             
             const chartConfig = {
                 type: 'line',
@@ -265,7 +258,23 @@
                 options: {
                     title: {
                         display: true,
-                        text: `📈 P&L Chart - ${(bot.stats.profit || 0) >= 0 ? '+' : ''}${(bot.stats.profit || 0).toFixed(8)}`
+                        text: `📈 P&L Chart - ${bot.stats.profit >= 0 ? '+' : ''}${bot.stats.profit.toFixed(8)}`
+                    },
+                    annotation: {
+                        annotations: [{
+                            type: 'line',
+                            mode: 'horizontal',
+                            scaleID: 'y-axis-0',
+                            value: 0,
+                            borderColor: '#94a3b8',
+                            borderWidth: 2,
+                            borderDash: [5, 5],
+                            label: {
+                                enabled: true,
+                                content: 'Break Even',
+                                position: 'left'
+                            }
+                        }]
                     }
                 }
             };
@@ -276,55 +285,148 @@
         async sendChartReport() {
             if (!bot.stats.startTime || bot.stats.bets === 0) return;
             
-            try {
-                const charts = {
-                    balance: this.generateBalanceChart(),
-                    profit: this.generateProfitChart(),
-                    winrate: this.generateWinRateChart()
-                };
-                
-                // Send first chart with caption
-                await fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendPhoto`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        chat_id: CONFIG.tgChatId,
-                        photo: charts.balance,
-                        caption: this.generateReportText()
-                    })
-                });
-                
-            } catch (e) {
-                console.log("Telegram chart send failed:", e);
-            }
-        },
-        
-        generateReportText() {
-            const runtime = bot.stats.startTime ? Math.floor((Date.now() - bot.stats.startTime) / 1000) : 0;
+            const runtime = Math.floor((Date.now() - bot.stats.startTime) / 1000);
             const hours = Math.floor(runtime / 3600);
             const minutes = Math.floor((runtime % 3600) / 60);
             const seconds = runtime % 60;
             
             const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100).toFixed(2) : "0";
             const pnlPct = bot.stats.startBal > 0 ? ((bot.stats.profit / bot.stats.startBal) * 100).toFixed(2) : "0";
+            const betSpeed = bot.betSpeed.toFixed(2);
             
-            return `⚡ ORION REPORT ⚡
-Runtime: ${hours}h ${minutes}m ${seconds}s
-User: ${bot.stakeUser}
-Currency: ${(bot.selectedCurrency || 'doge').toUpperCase()}
-Wagered: ${(bot.stats.wagered || 0).toFixed(8)}
-
-Balance: ${(bot.stats.currentBal || 0).toFixed(8)}
-P/L: ${(bot.stats.profit || 0) >= 0 ? '+' : ''}${(bot.stats.profit || 0).toFixed(8)} (${pnlPct}%)
-Mode: ${bot.mode === 0 ? 'WAGER' : (bot.mode === 1 ? 'RECOVERY' : 'LOCKED')}
-
-Bets: ${bot.stats.bets || 0}
-W/L: ${bot.stats.wins || 0}/${bot.stats.loss || 0}
-WinRate: ${winRate}%`;
+            const censoredUser = bot.stakeUser && bot.stakeUser !== "Loading..." ? 
+                bot.stakeUser.substring(0, 3) + "***" : "Loading...";
+            
+            // Hitung AI stats
+            const aiSuccessRate = bot.aiLearning.totalRecoveries > 0 ? 
+                (bot.aiLearning.successfulRecoveries / bot.aiLearning.totalRecoveries * 100).toFixed(1) : "0";
+            
+            // Generate chart URLs
+            const charts = {
+                balance: this.generateBalanceChart(),
+                profit: this.generateProfitChart(),
+                winrate: this.generateWinRateChart()
+            };
+            
+            // Text caption
+            let caption = `⚡ ORION FAST WAGER REPORT ⚡\n`;
+            caption += `═══════════════════════════\n`;
+            caption += `\n`;
+            caption += `⏱️ RUNTIME    : ${hours}h ${minutes}m ${seconds}s\n`;
+            caption += `⚡ SPEED      : ${betSpeed}/s\n`;
+            caption += `👤 USER       : ${censoredUser}\n`;
+            caption += `💱 CURRENCY   : ${bot.selectedCurrency.toUpperCase()}\n`;
+            caption += `💰 WAGERED    : ${bot.stats.wagered.toFixed(8)}\n`;
+            caption += `\n`;
+            caption += `💰 BALANCE\n`;
+            caption += `▪️ Start   : ${bot.stats.startBal.toFixed(8)}\n`;
+            caption += `▪️ Current : ${bot.stats.currentBal.toFixed(8)}\n`;
+            caption += `▪️ P/L     : ${bot.stats.profit >= 0 ? '+' : ''}${bot.stats.profit.toFixed(8)} (${pnlPct}%)\n`;
+            caption += `▪️ Mode    : ${bot.mode === 0 ? 'WAGER' : (bot.mode === 1 ? 'RECOVERY' : 'LOCKED')}\n`;
+            caption += `▪️ Step    : ${bot.step}/${bot.max_step}\n`;
+            caption += `▪️ Max DD  : ${bot.stats.maxDD.toFixed(8)} (${bot.stats.maxDDPerc.toFixed(2)}%)\n`;
+            caption += `\n`;
+            caption += `🎲 STATISTICS\n`;
+            caption += `▪️ Bets    : ${bot.stats.bets.toLocaleString()}\n`;
+            caption += `▪️ W/L     : ${bot.stats.wins.toLocaleString()}/${bot.stats.loss.toLocaleString()}\n`;
+            caption += `▪️ WinRate : ${winRate}%\n`;
+            
+            if (bot.aiLearning.enabled) {
+                caption += `\n🤖 AI LEARNING\n`;
+                caption += `▪️ Recoveries : ${bot.aiLearning.totalRecoveries}\n`;
+                caption += `▪️ Success    : ${bot.aiLearning.successfulRecoveries} (${aiSuccessRate}%)\n`;
+            }
+            
+            caption += `\n═══════════════════════════\n`;
+            caption += `🕒 ${new Date().toLocaleString()}`;
+            
+            // Kirim chart sebagai media group
+            try {
+                const mediaGroup = [
+                    {
+                        type: 'photo',
+                        media: charts.balance,
+                        caption: caption,
+                        parse_mode: 'HTML'
+                    },
+                    {
+                        type: 'photo',
+                        media: charts.profit
+                    },
+                    {
+                        type: 'photo',
+                        media: charts.winrate
+                    }
+                ];
+                
+                await fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMediaGroup`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        chat_id: CONFIG.tgChatId,
+                        media: mediaGroup
+                    })
+                });
+                
+                console.log(`📊 Chart report sent! Wagered: ${bot.stats.wagered.toFixed(8)}`);
+                
+            } catch (e) {
+                console.log("Telegram chart send failed:", e);
+            }
         },
         
         async sendTelegramReport() {
             if (!bot.stats.startTime) return;
+            
+            const runtime = Math.floor((Date.now() - bot.stats.startTime) / 1000);
+            const hours = Math.floor(runtime / 3600);
+            const minutes = Math.floor((runtime % 3600) / 60);
+            const seconds = runtime % 60;
+            
+            const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100).toFixed(2) : "0";
+            const pnlPct = bot.stats.startBal > 0 ? ((bot.stats.profit / bot.stats.startBal) * 100).toFixed(2) : "0";
+            const betSpeed = bot.betSpeed.toFixed(2);
+            
+            const censoredUser = bot.stakeUser && bot.stakeUser !== "Loading..." ? 
+                bot.stakeUser.substring(0, 3) + "***" : "Loading...";
+            
+            // Hitung AI stats
+            const aiSuccessRate = bot.aiLearning.totalRecoveries > 0 ? 
+                (bot.aiLearning.successfulRecoveries / bot.aiLearning.totalRecoveries * 100).toFixed(1) : "0";
+            
+            let message = "```\n";
+            message += `⚡ ORION FAST WAGER REPORT ⚡\n`;
+            message += `═══════════════════════════\n`;
+            message += `\n`;
+            message += `⏱️ RUNTIME    : ${hours}h ${minutes}m ${seconds}s\n`;
+            message += `⚡ SPEED      : ${betSpeed}/s\n`;
+            message += `👤 USER       : ${censoredUser}\n`;
+            message += `💱 CURRENCY   : ${bot.selectedCurrency.toUpperCase()}\n`;
+            message += `💰 WAGERED    : ${bot.stats.wagered.toFixed(8)}\n`;
+            message += `\n`;
+            message += `💰 BALANCE\n`;
+            message += `▪️ Start   : ${bot.stats.startBal.toFixed(8)}\n`;
+            message += `▪️ Current : ${bot.stats.currentBal.toFixed(8)}\n`;
+            message += `▪️ P/L     : ${bot.stats.profit >= 0 ? '+' : ''}${bot.stats.profit.toFixed(8)} (${pnlPct}%)\n`;
+            message += `▪️ Mode    : ${bot.mode === 0 ? 'WAGER' : (bot.mode === 1 ? 'RECOVERY' : 'LOCKED')}\n`;
+            message += `▪️ Step    : ${bot.step}/${bot.max_step}\n`;
+            message += `▪️ Max DD  : ${bot.stats.maxDD.toFixed(8)} (${bot.stats.maxDDPerc.toFixed(2)}%)\n`;
+            message += `\n`;
+            message += `🎲 STATISTICS\n`;
+            message += `▪️ Bets    : ${bot.stats.bets.toLocaleString()}\n`;
+            message += `▪️ W/L     : ${bot.stats.wins.toLocaleString()}/${bot.stats.loss.toLocaleString()}\n`;
+            message += `▪️ WinRate : ${winRate}%\n`;
+            
+            if (bot.aiLearning.enabled) {
+                message += `\n🤖 AI LEARNING\n`;
+                message += `▪️ Recoveries : ${bot.aiLearning.totalRecoveries}\n`;
+                message += `▪️ Success    : ${bot.aiLearning.successfulRecoveries} (${aiSuccessRate}%)\n`;
+            }
+            
+            message += `\n`;
+            message += `═══════════════════════════\n`;
+            message += `🕒 ${new Date().toLocaleString()}\n`;
+            message += "```";
             
             try {
                 const url = `https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`;
@@ -333,13 +435,11 @@ WinRate: ${winRate}%`;
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         chat_id: CONFIG.tgChatId,
-                        text: this.generateReportText(),
+                        text: message,
                         parse_mode: 'Markdown'
                     })
                 });
-            } catch (e) {
-                console.log("Telegram send failed:", e);
-            }
+            } catch (e) {}
         }
     };
 
@@ -358,6 +458,7 @@ WinRate: ${winRate}%`;
         
         bot.aiLearning.totalRecoveries++;
         
+        // Track per step
         if (!bot.aiLearning.successRate[step]) {
             bot.aiLearning.successRate[step] = { attempts: 0, successes: 0 };
         }
@@ -368,6 +469,7 @@ WinRate: ${winRate}%`;
             bot.aiLearning.successfulRecoveries++;
         }
         
+        // Store attempt details
         bot.aiLearning.recoveryAttempts.push({
             step: step,
             chance: chance,
@@ -375,10 +477,12 @@ WinRate: ${winRate}%`;
             timestamp: Date.now()
         });
         
+        // Keep only last 100 attempts
         if (bot.aiLearning.recoveryAttempts.length > 100) {
             bot.aiLearning.recoveryAttempts.shift();
         }
         
+        // Adjust chances periodically
         bot.aiLearning.lastAdjustment++;
         if (bot.aiLearning.lastAdjustment >= bot.aiLearning.adjustmentInterval) {
             adjustRecoveryChances();
@@ -389,6 +493,8 @@ WinRate: ${winRate}%`;
     function adjustRecoveryChances() {
         if (!bot.aiLearning.enabled || bot.aiLearning.totalRecoveries < 10) return;
         
+        console.log("🤖 AI: Adjusting recovery chances based on performance...");
+        
         for (let step = 1; step <= bot.max_step; step++) {
             const stats = bot.aiLearning.successRate[step];
             if (!stats || stats.attempts < 3) continue;
@@ -396,23 +502,37 @@ WinRate: ${winRate}%`;
             const successRate = stats.successes / stats.attempts;
             const currentChance = bot.chanceRecovery[step - 1];
             
+            // Target success rate around 50-60% for optimal recovery
             const targetRate = 0.55;
             const error = successRate - targetRate;
             
+            // Adjust chance based on error
             let adjustment = error * bot.aiLearning.learningRate * 100;
             
+            // More aggressive adjustment if performance is very bad
             if (successRate < 0.3) {
                 adjustment = -bot.aiLearning.adaptationSpeed * 20;
             } else if (successRate > 0.8) {
                 adjustment = bot.aiLearning.adaptationSpeed * 15;
             }
             
-            let newChance = currentChance - adjustment;
+            let newChance = currentChance - adjustment; // Invert because higher chance = more wins
+            
+            // Clamp to min/max
             newChance = Math.max(bot.aiLearning.minChance, Math.min(bot.aiLearning.maxChance, newChance));
             
+            // Apply with smoothing
             bot.chanceRecovery[step - 1] = currentChance * (1 - bot.aiLearning.adaptationSpeed) + 
                                            newChance * bot.aiLearning.adaptationSpeed;
+            
+            // Update UI
+            const input = document.getElementById(`p-recovery-${step}`);
+            if (input) {
+                input.value = bot.chanceRecovery[step - 1].toFixed(1);
+            }
         }
+        
+        console.log("🤖 AI: Chances adjusted:", bot.chanceRecovery);
     }
     
     function getOptimalChanceForStep(step) {
@@ -428,10 +548,12 @@ WinRate: ${winRate}%`;
         const successRate = stats.successes / stats.attempts;
         const currentChance = bot.chanceRecovery[step - 1];
         
+        // Jika success rate terlalu tinggi (>70%), turunkan chance untuk profit lebih besar
         if (successRate > 0.7) {
             return Math.max(bot.aiLearning.minChance, currentChance - bot.aiLearning.adaptationSpeed * 5);
         }
         
+        // Jika success rate terlalu rendah (<40%), naikkan chance untuk kurangi risiko
         if (successRate < 0.4) {
             return Math.min(bot.aiLearning.maxChance, currentChance + bot.aiLearning.adaptationSpeed * 8);
         }
@@ -442,6 +564,8 @@ WinRate: ${winRate}%`;
     function setNewBaseChance() {
         bot.baseChance = bot.chanceWager;
         bot.currentChance = bot.baseChance;
+        bot.singleChanceBets = 0;
+        bot.singleChanceLimit = 0;
     }
 
     function calculateBaseBet() {
@@ -465,15 +589,12 @@ WinRate: ${winRate}%`;
         const modeText = bot.mode === 0 ? "WAGER" : (bot.mode === 1 ? "RECOVERY" : "LOCKED");
         const modeColor = bot.mode === 0 ? "#10b981" : (bot.mode === 1 ? "#f59e0b" : "#ef4444");
         
-        const modeEl = document.getElementById("st-mode");
-        if (modeEl) {
-            modeEl.innerText = modeText;
-            modeEl.style.background = modeColor;
-            modeEl.style.color = "#ffffff";
-        }
+        document.getElementById("st-mode").innerText = modeText;
+        document.getElementById("st-mode").style.background = modeColor;
+        document.getElementById("st-mode").style.color = "#ffffff";
         
-        const stepEl = document.getElementById("st-step");
-        if (stepEl) stepEl.innerText = `${bot.step}/${bot.max_step}`;
+        // Update step display
+        document.getElementById("st-step").innerText = `${bot.step}/${bot.max_step}`;
     }
 
     function updateBetSpeed() {
@@ -488,7 +609,11 @@ WinRate: ${winRate}%`;
             const speedValEl = document.getElementById("st-speed-val");
             if (speedValEl) {
                 speedValEl.innerText = bot.betSpeed.toFixed(2) + "/s";
-                speedValEl.style.color = bot.betSpeed < 10 ? "#f59e0b" : "#10b981";
+                if (bot.betSpeed < 10) {
+                    speedValEl.style.color = "#f59e0b";
+                } else {
+                    speedValEl.style.color = "#10b981";
+                }
             }
         }
     }
@@ -511,11 +636,16 @@ WinRate: ${winRate}%`;
         if (!bot.isRunning) return;
         
         try {
+            // Update runtime di awal loop
+            updateRuntime();
+            
             bot.lastBetTime = Date.now();
             
-            const profit = (bot.stats.currentBal || 0) - (bot.stats.startBal || 0);
+            const profit = bot.stats.currentBal - bot.stats.startBal;
             
-            // LOCK MODE
+            // =====================
+            // LOCK MODE (MATI TOTAL)
+            // =====================
             if (bot.mode === 2) {
                 bot.currentChance = bot.chanceWager;
                 let nextBet = parseFloat(document.getElementById("p-minbet")?.value) || 0.001;
@@ -527,29 +657,40 @@ WinRate: ${winRate}%`;
                     processBetResult(d, nextBet, bot.currentChance);
                 }
                 
-                if (bot.isRunning) setTimeout(runLoop, 10);
+                // Update runtime setelah bet
+                updateRuntime();
+                
+                setTimeout(runLoop, 0);
                 return;
             }
             
-            // CHECK RECOVERY ENTRY
+            // =====================
+            // MASUK RECOVERY
+            // =====================
             if (bot.mode === 0 && profit < 0) {
                 bot.mode = 1;
                 bot.step = 1;
                 bot.loss_total = -profit;
+                console.log(`🔄 ENTERING RECOVERY MODE - Loss: ${bot.loss_total.toFixed(8)}`);
                 updateModeDisplay();
             }
             
-            // CHECK RECOVERY EXIT
-            if (bot.mode === 1 && (bot.stats.currentBal || 0) >= (bot.stats.startBal || 0)) {
+            // =====================
+            // KELUAR RECOVERY
+            // =====================
+            if (bot.mode === 1 && bot.stats.currentBal >= bot.stats.startBal) {
                 bot.mode = 0;
                 bot.step = 0;
                 bot.loss_total = 0;
+                console.log(`✅ EXITING RECOVERY MODE - Back to profit`);
                 updateModeDisplay();
             }
             
             let nextBet, currentChance;
             
+            // =====================
             // WAGER MODE
+            // =====================
             if (bot.mode === 0) {
                 currentChance = bot.chanceWager;
                 nextBet = calculateBaseBet();
@@ -562,12 +703,15 @@ WinRate: ${winRate}%`;
                 }
             }
             
+            // =====================
             // RECOVERY MODE
+            // =====================
             if (bot.mode === 1) {
                 if (bot.step > bot.max_step) {
                     currentChance = bot.chanceWager;
                     nextBet = parseFloat(document.getElementById("p-minbet")?.value) || 0.001;
                 } else {
+                    // Gunakan AI optimized chance jika enabled
                     currentChance = bot.aiLearning.enabled ? 
                         getOptimalChanceForStep(bot.step) : 
                         bot.chanceRecovery[bot.step - 1];
@@ -575,17 +719,19 @@ WinRate: ${winRate}%`;
                     const payout = (100 / currentChance) - 1;
                     
                     if (payout > 0) {
-                        nextBet = Math.abs(bot.loss_total || 0) / payout;
+                        nextBet = Math.abs(bot.loss_total) / payout;
                     } else {
                         nextBet = parseFloat(document.getElementById("p-minbet")?.value) || 0.001;
                     }
                 }
             }
             
+            // =====================
             // SAFETY CHECKS
+            // =====================
             const minBet = parseFloat(document.getElementById("p-minbet")?.value) || 0.001;
             if (nextBet < minBet) nextBet = minBet;
-            if (nextBet > (bot.stats.currentBal || 0)) {
+            if (nextBet > bot.stats.currentBal) {
                 nextBet = minBet;
             }
             
@@ -598,6 +744,7 @@ WinRate: ${winRate}%`;
                 processBetResult(d, nextBet, currentChance);
             }
             
+            // Update runtime setelah bet
             updateRuntime();
             
             const tgNow = Date.now();
@@ -607,12 +754,12 @@ WinRate: ${winRate}%`;
             }
             
             if (bot.isRunning) {
-                setTimeout(runLoop, 10);
+                setTimeout(runLoop, 0);
             }
         } catch (e) { 
             console.log("Loop error:", e);
             if (bot.isRunning) {
-                setTimeout(runLoop, 100);
+                setTimeout(runLoop, 0);
             }
         }
     }
@@ -622,40 +769,47 @@ WinRate: ${winRate}%`;
         updateBetSpeed();
         
         const win = d.payout > 0;
-        const pft = (d.payout || 0) - (d.amount || amount);
+        const pft = d.payout - d.amount;
         
-        bot.stats.bets = (bot.stats.bets || 0) + 1; 
-        bot.stats.wagered = (bot.stats.wagered || 0) + (d.amount || amount);
-        bot.stats.profit = (bot.stats.profit || 0) + pft; 
-        bot.stats.currentBal = (bot.stats.currentBal || bot.stats.startBal || 0) + pft;
+        bot.stats.bets++; 
+        bot.stats.wagered += d.amount;
+        bot.stats.profit += pft; 
+        bot.stats.currentBal += pft;
         bot.lastBetAmount = d.amount;
         
+        // Track history untuk chart
         if (!bot.stats.history) bot.stats.history = [];
         bot.stats.history.push(bot.stats.currentBal);
         if (bot.stats.history.length > 50) bot.stats.history.shift();
         
-        if ((bot.stats.currentBal || 0) < (bot.stats.startBal || 0)) {
-            let dd = (bot.stats.startBal || 0) - (bot.stats.currentBal || 0);
-            let ddPerc = (dd / (bot.stats.startBal || 1)) * 100;
-            if (dd > (bot.stats.maxDD || 0)) bot.stats.maxDD = dd;
-            if (ddPerc > (bot.stats.maxDDPerc || 0)) bot.stats.maxDDPerc = ddPerc;
+        if (bot.stats.currentBal < bot.stats.startBal) {
+            let dd = bot.stats.startBal - bot.stats.currentBal;
+            let ddPerc = (dd / bot.stats.startBal) * 100;
+            if (dd > bot.stats.maxDD) bot.stats.maxDD = dd;
+            if (ddPerc > bot.stats.maxDDPerc) bot.stats.maxDDPerc = ddPerc;
         }
         
         updateLogs(amount, chance, bot.stats.profit, win, bot.mode === 1);
         
         if (win) { 
-            bot.stats.wins = (bot.stats.wins || 0) + 1; 
+            bot.stats.wins++; 
             
             if (bot.mode === 1) {
-                bot.loss_total = Math.max(0, (bot.loss_total || 0) - pft);
+                bot.loss_total = Math.max(0, bot.loss_total - pft);
+                console.log(`✅ Recovery win! Remaining loss: ${bot.loss_total.toFixed(8)}`);
+                
+                // Track successful recovery step
                 trackRecoveryAttempt(bot.step, chance, true);
             }
         } else { 
-            bot.stats.loss = (bot.stats.loss || 0) + 1; 
+            bot.stats.loss++; 
             
             if (bot.mode === 1) {
-                bot.loss_total = (bot.loss_total || 0) + amount;
-                bot.step = Math.min((bot.step || 0) + 1, bot.max_step + 1);
+                bot.loss_total = bot.loss_total + amount;
+                bot.step = Math.min(bot.step + 1, bot.max_step + 1);
+                console.log(`❌ Recovery loss #${bot.step}, Total loss: ${bot.loss_total.toFixed(8)}`);
+                
+                // Track failed recovery step
                 trackRecoveryAttempt(bot.step - 1, chance, false);
             }
         }
@@ -663,38 +817,33 @@ WinRate: ${winRate}%`;
         updateDisplay();
         
         // CHECK FOR CHART REPORT
-        const currentWagerFloor = Math.floor((bot.stats.wagered || 0) / bot.chartReportInterval);
-        const lastWagerFloor = Math.floor((bot.lastChartWagerAmount || 0) / bot.chartReportInterval);
+        const currentWagerFloor = Math.floor(bot.stats.wagered / bot.chartReportInterval);
+        const lastWagerFloor = Math.floor(bot.lastChartWagerAmount / bot.chartReportInterval);
         
-        if (currentWagerFloor > lastWagerFloor && (bot.stats.bets || 0) > 0) {
+        if (currentWagerFloor > lastWagerFloor && bot.stats.bets > 0) {
+            console.log(`📊 Wagered reached ${currentWagerFloor * bot.chartReportInterval} - sending chart report...`);
             API.sendChartReport();
         }
         
         bot.lastChartWagerAmount = bot.stats.wagered;
         
-        if ((bot.stats.profit || 0) >= (bot.targetAbs || Infinity)) { 
-            alert("🎯 TARGET REACHED! " + (bot.stats.profit || 0).toFixed(8)); 
+        if (bot.stats.profit >= bot.targetAbs) { 
+            alert("🎯 TARGET REACHED! " + bot.stats.profit.toFixed(8)); 
             bot.isRunning = false; 
-            document.getElementById("p-start").disabled = false;
-            document.getElementById("p-stop").disabled = true;
         }
-        else if ((bot.stats.profit || 0) <= -(bot.stopLossAbs || 0)) { 
-            alert("🛑 STOP LOSS TRIGGERED! " + (bot.stats.profit || 0).toFixed(8)); 
+        else if (bot.stats.profit <= -bot.stopLossAbs) { 
+            alert("🛑 STOP LOSS TRIGGERED! " + bot.stats.profit.toFixed(8)); 
             bot.isRunning = false; 
-            document.getElementById("p-start").disabled = false;
-            document.getElementById("p-stop").disabled = true;
         }
     }
 
     function updateLogs(amt, ch, totalProfit, isWin, isRecovery = false) {
         const logBox = document.getElementById("p-logs");
-        if (!logBox) return;
-        
         const entry = document.createElement("div");
         
-        const amtStr = (amt || 0).toFixed(8).padStart(12, ' ');
-        const chStr = (ch || 0).toFixed(2).padStart(6, ' ');
-        const profitStr = ((totalProfit || 0) >= 0 ? '+' : '') + (totalProfit || 0).toFixed(8);
+        const amtStr = amt.toFixed(8).padStart(12, ' ');
+        const chStr = ch.toFixed(2).padStart(6, ' ');
+        const profitStr = (totalProfit >= 0 ? '+' : '') + totalProfit.toFixed(8);
         
         let borderColor = isWin ? "#10b981" : "#ef4444";
         if (isRecovery) borderColor = "#f59e0b";
@@ -706,18 +855,18 @@ WinRate: ${winRate}%`;
     }
 
     function updateDisplay() {
-        const chanceEl = document.getElementById("st-chance");
-        if (chanceEl) chanceEl.innerText = bot.currentChance ? bot.currentChance.toFixed(1) + "%" : "0%";
+        document.getElementById("st-chance").innerText = bot.currentChance ? bot.currentChance.toFixed(1) + "%" : "0%";
+        document.getElementById("st-next").innerText = bot.currentChance ? bot.currentChance.toFixed(1) + "%" : "0%";
+        document.getElementById("st-step").innerText = `${bot.step}/${bot.max_step}`;
         
-        const stepEl = document.getElementById("st-step");
-        if (stepEl) stepEl.innerText = `${bot.step || 0}/${bot.max_step}`;
-        
+        // AI Status
         const aiStatus = document.getElementById("st-ai-status");
         if (aiStatus) {
             aiStatus.innerText = bot.aiLearning.enabled ? "ACTIVE" : "OFF";
             aiStatus.style.color = bot.aiLearning.enabled ? "#10b981" : "#94a3b8";
         }
         
+        // Update runtime di display
         updateRuntime();
     }
 
@@ -1153,8 +1302,8 @@ WinRate: ${winRate}%`;
             </div>
 
             <div class="tab-buttons">
-                <button class="tab-btn active" onclick="window.switchTab('config')">⚙️ CONFIG</button>
-                <button class="tab-btn" onclick="window.switchTab('status')">📊 STATUS</button>
+                <button class="tab-btn active" onclick="switchTab('config')">⚙️ CONFIG</button>
+                <button class="tab-btn" onclick="switchTab('status')">📊 STATUS</button>
             </div>
 
             <div id="tab-config" class="tab-content active">
@@ -1207,7 +1356,7 @@ WinRate: ${winRate}%`;
                 </div>
 
                 <div class="section">
-                    <div class="section-header" onclick="window.toggleSection('chance')">
+                    <div class="section-header" onclick="toggleSection('chance')">
                         <span class="title">🎯 CHANCE SETTINGS</span>
                         <span class="collapse-btn" id="collapse-chance">▼</span>
                     </div>
@@ -1230,7 +1379,7 @@ WinRate: ${winRate}%`;
                 </div>
 
                 <div class="section">
-                    <div class="section-header" onclick="window.toggleSection('ai')">
+                    <div class="section-header" onclick="toggleSection('ai')">
                         <span class="title">🤖 AI LEARNING</span>
                         <span class="collapse-btn" id="collapse-ai">▼</span>
                     </div>
@@ -1276,7 +1425,7 @@ WinRate: ${winRate}%`;
 
                 <!-- CHART REPORT SETTINGS -->
                 <div class="section">
-                    <div class="section-header" onclick="window.toggleSection('chart')">
+                    <div class="section-header" onclick="toggleSection('chart')">
                         <span class="title">📊 CHART REPORT</span>
                         <span class="collapse-btn" id="collapse-chart">▼</span>
                     </div>
@@ -1339,7 +1488,7 @@ WinRate: ${winRate}%`;
                 </div>
 
                 <div class="section" style="margin-top:12px;">
-                    <div class="section-header" onclick="window.toggleSection('logs')">
+                    <div class="section-header" onclick="toggleSection('logs')">
                         <span class="title">📝 LIVE LOGS</span>
                         <span class="collapse-btn" id="collapse-logs">▼</span>
                     </div>
@@ -1435,7 +1584,7 @@ WinRate: ${winRate}%`;
 
         document.getElementById("p-start").onclick = async () => {
             bot.selectedCurrency = document.getElementById("p-currency").value;
-            await API.syncOnce();
+            if (!bot.isDemo) await API.syncOnce();
             
             bot.isRunning = true;
             bot.lastTelegramTime = Date.now();
@@ -1443,7 +1592,7 @@ WinRate: ${winRate}%`;
             document.getElementById("p-start").disabled = true;
             document.getElementById("p-stop").disabled = false;
             
-            // Reset stats
+            // Reset stats - PASTIKAN START TIME DI SET
             bot.stats = { 
                 profit: 0, 
                 wagered: 0, 
@@ -1452,7 +1601,7 @@ WinRate: ${winRate}%`;
                 bets: 0, 
                 wins: 0, 
                 loss: 0, 
-                startTime: Date.now(), 
+                startTime: Date.now(), // INI PENTING!
                 maxDD: 0, 
                 maxDDPerc: 0, 
                 history: [] 
@@ -1482,7 +1631,9 @@ WinRate: ${winRate}%`;
             // Initialize AI Learning
             initAILearning();
             
-            bot.stats.startBal = await API.getBalance(bot.selectedCurrency);
+            if (!bot.isDemo) bot.stats.startBal = await API.getBalance(bot.selectedCurrency);
+            else bot.stats.startBal = parseFloat(document.getElementById("p-demo-balance")?.value) || 100.0;
+
             bot.stats.currentBal = bot.stats.startBal;
             bot.stats.history = [bot.stats.startBal];
             bot.lastChartWagerAmount = 0;
@@ -1497,6 +1648,9 @@ WinRate: ${winRate}%`;
             setNewBaseChance();
             updateModeDisplay();
             
+            // Update runtime segera setelah start
+            updateRuntime();
+            
             await API.sendTelegramReport();
             runLoop();
         };
@@ -1508,38 +1662,38 @@ WinRate: ${winRate}%`;
             await API.sendTelegramReport();
         };
 
+        // INTERVAL UPDATE RUNTIME - SETIAP DETIK
+        setInterval(() => {
+            if (bot.isRunning) {
+                updateRuntime();
+            }
+        }, 1000);
+
         setInterval(() => {
             if (!document.getElementById("st-p")) return;
-            
-            const profitEl = document.getElementById("st-p");
-            if (profitEl) profitEl.innerText = (bot.stats.profit || 0).toFixed(8);
-            
-            const balanceEl = document.getElementById("st-bal");
-            if (balanceEl) balanceEl.innerText = (bot.stats.currentBal || 0).toFixed(8) + " " + (bot.selectedCurrency || 'doge').toUpperCase();
-            
-            const rollsEl = document.getElementById("st-r");
-            if (rollsEl) rollsEl.innerText = `${bot.stats.bets || 0} (${bot.stats.wins || 0}/${bot.stats.loss || 0})`;
-            
-            const wageredEl = document.getElementById("st-wagered");
-            if (wageredEl) wageredEl.innerText = (bot.stats.wagered || 0).toFixed(8);
+            document.getElementById("st-p").innerText = bot.stats.profit.toFixed(8);
+            document.getElementById("st-bal").innerText = bot.stats.currentBal.toFixed(8) + " " + bot.selectedCurrency.toUpperCase();
+            document.getElementById("st-r").innerText = `${bot.stats.bets} (${bot.stats.wins}/${bot.stats.loss})`;
+            document.getElementById("st-wagered").innerText = bot.stats.wagered.toFixed(8);
             
             const modeText = bot.mode === 0 ? "WAGER" : (bot.mode === 1 ? "RECOVERY" : "LOCKED");
-            const modeDisplayEl = document.getElementById("st-mode-display");
-            if (modeDisplayEl) modeDisplayEl.innerText = modeText;
+            document.getElementById("st-mode-display").innerText = modeText;
             
-            const nextChart = (Math.floor((bot.stats.wagered || 0) / bot.chartReportInterval) + 1) * bot.chartReportInterval;
-            const nextChartEl = document.getElementById("st-next-chart");
-            if (nextChartEl) nextChartEl.innerText = nextChart.toFixed(0);
+            const nextChart = (Math.floor(bot.stats.wagered / bot.chartReportInterval) + 1) * bot.chartReportInterval;
+            document.getElementById("st-next-chart").innerText = nextChart.toFixed(0);
             
+            // Update AI status
             const aiStatus = document.getElementById("st-ai-status");
             if (aiStatus) {
                 aiStatus.innerText = bot.aiLearning.enabled ? "ACTIVE" : "OFF";
                 aiStatus.style.color = bot.aiLearning.enabled ? "#10b981" : "#94a3b8";
             }
+            
+            // Update runtime juga di sini sebagai backup
+            updateRuntime();
         }, 500);
     }
 
-    // Initialize
     createUI();
-    setTimeout(() => API.syncOnce(), 1000);
+    API.syncOnce();
 })();
