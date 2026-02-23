@@ -130,7 +130,7 @@
         
         async placeBet(amount, chance) {
             if (bot.isDemo) {
-                // Demo mode untuk dice - kirim amount 0
+                // Demo mode - kirim amount 0
                 const payload = { 
                     amount: 0,
                     currency: bot.selectedCurrency, 
@@ -179,10 +179,9 @@
             }
         },
         
-        // MINES API
         async placeMinesBet(amount, currency, minesCount, fields) {
             if (bot.isDemo) {
-                // Demo mode untuk mines - kirim amount 0
+                // Demo mode - kirim amount 0
                 const payload = {
                     amount: 0,
                     currency: currency,
@@ -876,8 +875,6 @@
                 if (payout > 10) {
                     API.sendTelegramMessage('💣 MINES HIT!\nPayout: ' + payout + 'x\nProfit: ' + profit.toFixed(2) + '\nRemaining Bets: ' + (bot.minesMaxBets - bot.minesBets));
                 }
-            } else {
-                console.log("No valid data in mines response:", result);
             }
             
             return true;
@@ -1040,14 +1037,26 @@
         }
     }
 
+    // ==================== PERBAIKAN UTAMA: RUN LOOP ====================
     async function runLoop() {
         if (!bot.isRunning) return;
         
         try {
             bot.lastBetTime = Date.now();
             
+            // CEK APAKAH INI BET PERTAMA
+            if (bot.stats.bets === 0) {
+                console.log("🎲 First bet - Starting with base bet...");
+                // Pastikan base chance sudah diset
+                if (bot.baseChance === 0) {
+                    setNewBaseChance();
+                }
+            }
+            
+            // CEK MINES MODE
             checkMinesMode();
             
+            // JIKA DALAM MINES MODE
             if (bot.isMinesMode) {
                 const executed = await executeMinesBet();
                 if (executed && bot.isRunning) {
@@ -1056,6 +1065,7 @@
                 }
             }
             
+            // JIKA TIDAK DALAM MINES MODE, JALANKAN DICE
             if (!bot.isMinesMode) {
                 if (bot.isTrailingActive) updateTrailingPeak();
                 
@@ -1070,6 +1080,7 @@
                 checkRecoveryMode();
                 checkWagerModeTriggers();
                 
+                // HITUNG BET AMOUNT
                 let nextBet, currentChance;
                 
                 if (bot.recoveryMode) {
@@ -1083,6 +1094,7 @@
                 }
                 
                 if (!bot.recoveryMode) {
+                    // SET CHANCE
                     if (bot.singleChanceBets < bot.singleChanceLimit) {
                         bot.currentChance = bot.baseChance;
                     } else {
@@ -1090,6 +1102,7 @@
                     }
                     currentChance = bot.currentChance;
                     
+                    // HITUNG BET
                     if (bot.isWagerEnabled && bot.isWagerMode) {
                         bot.profitWagerBetPct = parseFloat(document.getElementById("p-profit-wager-bet-pct")?.value) || 1.5;
                         nextBet = bot.stats.currentBal * (bot.profitWagerBetPct / 100);
@@ -1100,17 +1113,25 @@
                         const payout = 99 / currentChance;
                         const margin = parseFloat(document.getElementById("p-margin")?.value) || 1.005;
                         const minBetLimit = parseFloat(document.getElementById("p-minbet")?.value) || 0.00000002;
-                        const baseBet = parseFloat(document.getElementById("p-basebet")?.value) || 0.00000001;
                         
-                        nextBet = (Math.abs(bot.tg) / (payout - 1)) * margin;
-                        if (bot.tg === bot.perStep) nextBet = baseBet;
-                        if (nextBet < minBetLimit) nextBet = minBetLimit;
+                        // UNTUK BET PERTAMA, PAKAI BASE BET
+                        if (bot.stats.bets === 0) {
+                            const baseBet = parseFloat(document.getElementById("p-basebet")?.value) || 0.00000001;
+                            nextBet = baseBet;
+                            console.log("Using base bet for first bet:", nextBet);
+                        } else {
+                            nextBet = (Math.abs(bot.tg) / (payout - 1)) * margin;
+                            if (nextBet < minBetLimit) nextBet = minBetLimit;
+                        }
                     }
                     
                     if (nextBet > bot.stats.currentBal && bot.stats.currentBal > 0) nextBet = bot.stats.currentBal;
                 }
 
+                // LAKUKAN BET
                 if (nextBet && currentChance) {
+                    console.log(`Placing bet: ${nextBet} ${bot.selectedCurrency} @ ${currentChance}%`);
+                    
                     const res = await API.placeBet(nextBet, currentChance);
                     const d = res?.data?.diceRoll || res?.diceRoll;
 
@@ -1168,6 +1189,7 @@
 
                         updateDisplay();
 
+                        // CHECK CHART REPORT
                         const currentWagerFloor = Math.floor(bot.stats.wagered / bot.chartReportInterval);
                         const lastWagerFloor = Math.floor(bot.lastChartWagerAmount / bot.chartReportInterval);
                         
@@ -1178,6 +1200,7 @@
                         
                         bot.lastChartWagerAmount = bot.stats.wagered;
 
+                        // CEK TARGET/STOP LOSS
                         if (bot.stats.profit >= bot.targetAbs) { 
                             alert("🎯 TARGET REACHED! " + bot.stats.profit.toFixed(8)); 
                             bot.isRunning = false; 
@@ -1193,20 +1216,24 @@
                 }
             }
             
+            // UPDATE TELEGRAM
             const tgNow = Date.now();
             if (tgNow - bot.lastTelegramTime >= bot.telegramInterval) {
                 await API.sendTelegramReport();
                 bot.lastTelegramTime = tgNow;
             }
             
+            // UPDATE RUNTIME
             const runtime = Math.floor((Date.now() - bot.stats.startTime) / 1000);
             bot.runtime.hours = Math.floor(runtime / 3600);
             bot.runtime.minutes = Math.floor((runtime % 3600) / 60);
             bot.runtime.seconds = runtime % 60;
             
-            if (bot.isRunning && !bot.isMinesMode) {
-                setTimeout(runLoop, 0);
+            // LOOP LAGI
+            if (bot.isRunning) {
+                setTimeout(runLoop, 10); // Delay 10ms biar tidak overload
             }
+            
         } catch (e) { 
             console.log("Loop error:", e);
             if (bot.isRunning) {
@@ -1214,6 +1241,7 @@
             }
         }
     }
+    // ==================== AKHIR PERBAIKAN ====================
 
     function updateLogs(amt, ch, totalProfit, isWin, isRecovery) {
         if (isRecovery === undefined) isRecovery = false;
