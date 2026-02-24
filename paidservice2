@@ -3,7 +3,7 @@
         get apiUrl() { return window.location.origin + '/_api'; },
         tgToken: '8472646774:AAGYIU5V1kK4YMj5u1MqR0-QR5mQ4XemdMQ',
         tgChatId: '-1003744641395',
-        version: "v7.4 [PRO]"
+        version: "Orion v1 Premium"
     };
 
     const bot = {
@@ -38,7 +38,9 @@
                 const json = await res.json();
                 if (json?.data?.user) {
                     bot.stakeUser = json.data.user.name;
-                    document.getElementById("st-user").innerText = "User: " + bot.stakeUser;
+                    const userEl = document.getElementById("st-user");
+                    if (userEl) userEl.innerText = bot.stakeUser;
+                    
                     const bals = json.data.user.balances || [];
                     const sel = document.getElementById("p-currency");
                     if (sel && sel.options.length === 0) {
@@ -50,7 +52,7 @@
                             sel.appendChild(opt);
                         });
                     }
-                    bot.selectedCurrency = sel.value;
+                    if (sel) bot.selectedCurrency = sel.value;
                     const active = bals.find(b => b.available.currency === bot.selectedCurrency);
                     bot.stats.startBal = active ? parseFloat(active.available.amount) : 0;
                 }
@@ -63,39 +65,42 @@
             
             const url = `https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`;
             const text = `
-💠 *ORION WAGER SYSTEM* 💠
+🔷 *ORION v1 PREMIUM* 🔷
 ━━━━━━━━━━━━━━━━━━━━
 ${statusHeader}
 
 👤 *User:* \`${bot.stakeUser}\`
-🪙 *Coin:* \`${bot.selectedCurrency.toUpperCase()}\`
-⚙️ *Status:* \`${bot.currentStatus}\`
+🪙 *Asset:* \`${bot.selectedCurrency.toUpperCase()}\`
+⚙️ *Mode:* \`${bot.currentStatus}\`
 ━━━━━━━━━━━━━━━━━━━━
 ⏱ *Uptime:* \`${timeStr}\`
-🏦 *Initial:* \`${bot.stats.startBal.toFixed(8)}\`
-💰 *Profit:* \`${bot.stats.profit.toFixed(8)}\`
-📈 *Wagered:* \`${bot.stats.wagered.toFixed(8)}\`
-📉 *Max DD:* \`${bot.stats.maxDD.toFixed(8)}\`
-🎰 *Total Bet:* \`${bot.stats.bets}\`
-🏁 *Win/Loss:* \`${bot.stats.wins} / ${bot.stats.loss}\`
+💰 *Balance:* \`${(bot.stats.startBal + bot.stats.profit).toFixed(8)}\`
+📈 *Profit:* \`${bot.stats.profit.toFixed(8)}\`
+📊 *Wagered:* \`${bot.stats.wagered.toFixed(8)}\`
+📉 *Drawdown:* \`${bot.stats.maxDD.toFixed(8)}\`
+━━━━━━━━━━━━━━━━━━━━
+🎰 *Bets:* \`${bot.stats.bets}\`
+🏁 *W/L:* \`${bot.stats.wins}/${bot.stats.loss}\`
 ⚡ *Speed:* \`${speed} b/s\`
 ━━━━━━━━━━━━━━━━━━━━
-🛰 *Version:* \`${CONFIG.version}\`
+🆔 *Orion v1 Premium*
             `;
 
             fetch(url, { 
                 method: "POST", 
                 headers: { "Content-Type": "application/json" }, 
                 body: JSON.stringify({ chat_id: CONFIG.tgChatId, text, parse_mode: "Markdown" })
-            }).then(r => {
-                if(!r.ok) bot.lastError = "TG Error: Check Bot Token";
-            }).catch(e => { bot.lastError = "TG Network Timeout"; });
+            }).catch(e => {});
         },
         async placeBet(amount, payout, game) {
             const endpoint = game === "dice" ? `${CONFIG.apiUrl}/casino/dice/roll` : `${CONFIG.apiUrl}/casino/limbo/bet`;
             const payload = { amount: parseFloat(amount), currency: bot.selectedCurrency, identifier: Math.random().toString(36).slice(2) };
-            if (game === "dice") { payload.target = 100 - (100 / payout); payload.condition = "above"; }
-            else { payload.multiplierTarget = parseFloat(payout); }
+            if (game === "dice") { 
+                payload.target = 100 - (100 / payout); 
+                payload.condition = "above"; 
+            } else { 
+                payload.multiplierTarget = parseFloat(payout); 
+            }
             return fetch(endpoint, {
                 method: "POST",
                 headers: { "Content-Type": "application/json", "x-access-token": bot.token },
@@ -106,31 +111,32 @@ ${statusHeader}
 
     async function runLoop() {
         if (!bot.isRunning) return;
+        
         const baseBet = parseFloat(document.getElementById("p-minbet").value) || 0;
         const div = parseFloat(document.getElementById("p-div").value) || 2000;
-        const chance = parseFloat(document.getElementById("p-chance").value) || 98;
-        const limboPayout = parseFloat(document.getElementById("p-limbo-payout").value) || 1.12;
+        const limboPayout = parseFloat(document.getElementById("p-limbo-payout").value) || 1.0001;
         const diceChance = parseFloat(document.getElementById("p-dice-chance").value) || 98;
         const limboCycles = parseInt(document.getElementById("p-limbo-cycles").value) || 3;
         const diceCycles = parseInt(document.getElementById("p-dice-cycles").value) || 2;
-        const recoveryMultiplier = parseFloat(document.getElementById("p-recovery-mult").value) || 1.12;
+        const recoveryMultiplier = parseFloat(document.getElementById("p-recovery-mult").value) || 1.0001;
         const recoveryBetMultiplier = parseFloat(document.getElementById("p-recovery-bet-mult").value) || 0.25;
         const useRecovery = document.getElementById("p-use-recovery").checked;
         
         let payout, nextbet, gameToPlay;
-        const isMinus = useRecovery && Math.round(bot.stats.profit * 1e8) < 0;
+        const isMinus = useRecovery && bot.stats.profit < 0;
 
         if (isMinus) {
             bot.currentStatus = "RECOVERY";
             payout = recoveryMultiplier;
-            gameToPlay = "limbo"; // recovery selalu pakai limbo
+            gameToPlay = "limbo";
             let calcRec = Math.abs(bot.stats.profit) / (payout - 1);
             nextbet = Math.max(calcRec, baseBet);
-            if (nextbet > bot.stats.startBal * recoveryBetMultiplier) nextbet = bot.stats.startBal * recoveryBetMultiplier;
+            if (nextbet > bot.stats.startBal * recoveryBetMultiplier) {
+                nextbet = bot.stats.startBal * recoveryBetMultiplier;
+            }
         } else {
             bot.currentStatus = "WAGERING";
             
-            // Cycle management
             if (bot.switchCounter >= bot.nextSwitchAt) {
                 if (bot.currentGame === "limbo") {
                     bot.currentGame = "dice";
@@ -153,88 +159,418 @@ ${statusHeader}
             nextbet = (div > 0 && bot.stats.startBal > 0) ? Math.max(baseBet, bot.stats.startBal / div) : baseBet;
         }
 
-        API.placeBet(nextbet, payout, gameToPlay).then(res => {
-            if (res.errors) { bot.lastError = res.errors[0].message; setTimeout(runLoop, 800); return; }
+        try {
+            const res = await API.placeBet(nextbet, payout, gameToPlay);
+            
+            if (res.errors) { 
+                bot.lastError = res.errors[0].message; 
+                setTimeout(runLoop, 800); 
+                return; 
+            }
+            
             const data = res?.data || res;
             const bet = data.diceRoll || data.diceBet || data.limboBet;
+            
             if (bet && bot.isRunning) {
-                bot.stats.bets++; bot.switchCounter++;
+                bot.stats.bets++; 
+                bot.switchCounter++;
                 bot.stats.wagered += bet.amount;
                 const pft = (bet.payout - bet.amount);
                 bot.stats.profit += pft;
                 if (pft > 0) bot.stats.wins++; else bot.stats.loss++;
                 if (bot.stats.profit < bot.stats.maxDD) bot.stats.maxDD = bot.stats.profit;
                 bot.lastError = "None";
-                if (bot.stats.bets % 250 === 0) { API.sendTg("📊 *AUTO PROGRESS*"); }
+                
+                if (bot.stats.bets % 250 === 0) { 
+                    API.sendTg("📊 *AUTO PROGRESS*"); 
+                }
             }
-            if (bot.isRunning) queueMicrotask(runLoop); 
-        }).catch(() => { bot.lastError = "Network Error"; if (bot.isRunning) setTimeout(runLoop, 1000); });
+            
+            if (bot.isRunning) {
+                setTimeout(runLoop, 150);
+            }
+            
+        } catch (e) { 
+            bot.lastError = "Network Error"; 
+            if (bot.isRunning) setTimeout(runLoop, 1000); 
+        }
     }
 
     function createUI() {
         if (document.getElementById("orion-wrap")) return;
+        
         const s = document.createElement("style");
-        s.innerHTML = `#orion-wrap{position:fixed;top:15px;right:15px;width:320px;background:#0f172a;color:#fff;padding:15px;z-index:9999;border-radius:10px;font-family:sans-serif;border:1px solid #334155;box-shadow:0 10px 25px rgba(0,0,0,0.5)}.p-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}.p-input{width:100%;background:#1e293b;border:1px solid #475569;color:#fff;padding:6px;border-radius:4px;font-size:11px;box-sizing:border-box}.p-section{background:#020617;padding:10px;border-radius:6px;margin-bottom:10px;border:1px solid #1e293b}.p-section-title{color:#06b6d4;font-size:10px;font-weight:bold;margin-bottom:6px;text-transform:uppercase}.p-checkbox{display:flex;align-items:center;gap:5px;margin:8px 0}.p-checkbox input{width:16px;height:16px}.p-btn{width:100%;padding:10px;border:none;border-radius:6px;font-weight:bold;cursor:pointer;font-size:12px;margin-top:5px}`;
+        s.innerHTML = `
+            #orion-wrap {
+                position: fixed;
+                top: 10px;
+                right: 10px;
+                width: min(340px, calc(100vw - 20px));
+                background: linear-gradient(165deg, #0B1120 0%, #0F1A2F 100%);
+                color: #E2E8F0;
+                padding: 16px;
+                z-index: 99999;
+                border-radius: 20px;
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+                border: 1px solid rgba(56, 189, 248, 0.15);
+                box-shadow: 0 20px 40px -12px rgba(0,0,0,0.8), 0 0 0 1px rgba(56, 189, 248, 0.1) inset;
+                backdrop-filter: blur(8px);
+                font-size: 13px;
+                max-height: 95vh;
+                overflow-y: auto;
+                scrollbar-width: thin;
+                scrollbar-color: #1E293B #0F172A;
+            }
+            #orion-wrap::-webkit-scrollbar {
+                width: 4px;
+            }
+            #orion-wrap::-webkit-scrollbar-track {
+                background: #0F172A;
+            }
+            #orion-wrap::-webkit-scrollbar-thumb {
+                background: #1E293B;
+                border-radius: 4px;
+            }
+            .orion-header {
+                text-align: center;
+                margin-bottom: 16px;
+                position: relative;
+            }
+            .orion-title {
+                font-weight: 700;
+                font-size: 18px;
+                background: linear-gradient(135deg, #38BDF8, #818CF8);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                letter-spacing: 0.5px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 6px;
+            }
+            .orion-badge {
+                background: rgba(56, 189, 248, 0.15);
+                border: 1px solid rgba(56, 189, 248, 0.3);
+                border-radius: 30px;
+                padding: 2px 10px;
+                font-size: 9px;
+                color: #38BDF8;
+                display: inline-block;
+                margin-top: 4px;
+            }
+            .orion-user {
+                font-size: 11px;
+                color: #94A3B8;
+                background: rgba(15, 23, 42, 0.6);
+                padding: 6px 12px;
+                border-radius: 30px;
+                border: 1px solid #1E293B;
+                margin: 8px 0 4px;
+                word-break: break-word;
+            }
+            .orion-section {
+                background: rgba(2, 6, 23, 0.6);
+                border-radius: 16px;
+                padding: 12px;
+                margin-bottom: 12px;
+                border: 1px solid #1E293B;
+                backdrop-filter: blur(4px);
+            }
+            .orion-section-title {
+                font-size: 11px;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                color: #38BDF8;
+                margin-bottom: 12px;
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+            .orion-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 8px;
+            }
+            .orion-input-group {
+                display: flex;
+                flex-direction: column;
+                gap: 4px;
+            }
+            .orion-input-group label {
+                font-size: 9px;
+                font-weight: 500;
+                color: #94A3B8;
+                text-transform: uppercase;
+                letter-spacing: 0.3px;
+            }
+            .orion-input {
+                width: 100%;
+                background: #030712;
+                border: 1px solid #1E293B;
+                color: #F1F5F9;
+                padding: 8px 10px;
+                border-radius: 10px;
+                font-size: 12px;
+                box-sizing: border-box;
+                transition: all 0.15s;
+                font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+            }
+            .orion-input:focus {
+                outline: none;
+                border-color: #38BDF8;
+                box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+            }
+            .orion-checkbox {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                margin: 10px 0;
+                padding: 4px 0;
+            }
+            .orion-checkbox input {
+                width: 16px;
+                height: 16px;
+                accent-color: #38BDF8;
+                margin: 0;
+            }
+            .orion-checkbox label {
+                font-size: 12px;
+                color: #CBD5E1;
+            }
+            .orion-stats {
+                background: #030712;
+                border-radius: 16px;
+                padding: 14px;
+                border: 1px solid #1E293B;
+                margin-bottom: 12px;
+            }
+            .orion-stat-row {
+                display: flex;
+                justify-content: space-between;
+                padding: 6px 0;
+                border-bottom: 1px solid rgba(30, 41, 59, 0.5);
+            }
+            .orion-stat-row:last-child {
+                border-bottom: none;
+            }
+            .orion-stat-label {
+                color: #94A3B8;
+                font-weight: 400;
+            }
+            .orion-stat-value {
+                font-weight: 600;
+                color: #F1F5F9;
+                font-family: 'SF Mono', Monaco, monospace;
+            }
+            .orion-stat-value.positive {
+                color: #4ADE80;
+            }
+            .orion-stat-value.negative {
+                color: #F87171;
+            }
+            .orion-buttons {
+                display: flex;
+                gap: 8px;
+                margin-top: 8px;
+            }
+            .orion-btn {
+                flex: 1;
+                padding: 12px;
+                border: none;
+                border-radius: 30px;
+                font-weight: 600;
+                font-size: 13px;
+                cursor: pointer;
+                transition: all 0.2s;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+            .orion-btn-start {
+                background: linear-gradient(135deg, #38BDF8, #818CF8);
+                color: #030712;
+                box-shadow: 0 4px 12px rgba(56, 189, 248, 0.3);
+            }
+            .orion-btn-start:hover {
+                transform: translateY(-1px);
+                box-shadow: 0 6px 16px rgba(56, 189, 248, 0.4);
+            }
+            .orion-btn-stop {
+                background: rgba(239, 68, 68, 0.1);
+                border: 1px solid rgba(239, 68, 68, 0.3);
+                color: #FCA5A5;
+            }
+            .orion-btn-stop:hover {
+                background: rgba(239, 68, 68, 0.2);
+                border-color: #EF4444;
+            }
+            .orion-log {
+                margin-top: 8px;
+                padding: 8px 12px;
+                background: #030712;
+                border-radius: 12px;
+                font-size: 10px;
+                color: #FBBF24;
+                border: 1px solid #1E293B;
+                word-break: break-word;
+            }
+            .orion-game-badge {
+                display: inline-block;
+                background: rgba(56, 189, 248, 0.2);
+                border-radius: 20px;
+                padding: 2px 10px;
+                font-size: 9px;
+                color: #38BDF8;
+                margin-left: 8px;
+            }
+            @media (max-width: 480px) {
+                #orion-wrap {
+                    top: 5px;
+                    right: 5px;
+                    width: calc(100vw - 10px);
+                    padding: 12px;
+                }
+            }
+        `;
         document.head.appendChild(s);
+        
         const d = document.createElement("div");
         d.id = "orion-wrap";
-        d.innerHTML = `<div style="font-weight:bold;color:#06b6d4;text-align:center;margin-bottom:4px">ORION WAGER MACHINE</div>
-            <div id="st-user" style="font-size:10px;text-align:center;color:#94a3b8;margin-bottom:12px;border-bottom:1px solid #1e293b;padding-bottom:8px">User: Loading...</div>
+        d.innerHTML = `
+            <div class="orion-header">
+                <div class="orion-title">
+                    <span>⚡</span> ORION v1 <span>⚡</span>
+                </div>
+                <div class="orion-badge">PREMIUM EDITION</div>
+            </div>
             
-            <div class="p-section">
-                <div class="p-section-title">⚙️ BASIC SETTINGS</div>
-                <div class="p-grid">
-                    <div style="grid-column: span 2"><select id="p-currency" class="p-input"></select></div>
-                    <div><label style="font-size:9px">BASE BET</label><input id="p-minbet" class="p-input" value="0.001"></div>
-                    <div><label style="font-size:9px">DIVISOR</label><input id="p-div" class="p-input" value="2000"></div>
+            <div class="orion-user" id="st-user">
+                Loading...
+            </div>
+            
+            <div class="orion-section">
+                <div class="orion-section-title">
+                    <span>⚙️</span> SYSTEM CONFIG
+                </div>
+                <div class="orion-grid">
+                    <div style="grid-column: span 2">
+                        <div class="orion-input-group">
+                            <label>CURRENCY</label>
+                            <select id="p-currency" class="orion-input"></select>
+                        </div>
+                    </div>
+                    <div class="orion-input-group">
+                        <label>BASE BET</label>
+                        <input id="p-minbet" class="orion-input" value="0.001" step="any" placeholder="0.001">
+                    </div>
+                    <div class="orion-input-group">
+                        <label>DIVISOR</label>
+                        <input id="p-div" class="orion-input" value="2000" placeholder="2000">
+                    </div>
                 </div>
             </div>
             
-            <div class="p-section">
-                <div class="p-section-title">🎲 LIMBO SETTINGS</div>
-                <div class="p-grid">
-                    <div><label style="font-size:9px">PAYOUT</label><input id="p-limbo-payout" class="p-input" value="1.12"></div>
-                    <div><label style="font-size:9px">CYCLES</label><input id="p-limbo-cycles" class="p-input" value="3"></div>
+            <div class="orion-section">
+                <div class="orion-section-title">
+                    <span>🎲</span> LIMBO STRATEGY
+                </div>
+                <div class="orion-grid">
+                    <div class="orion-input-group">
+                        <label>PAYOUT</label>
+                        <input id="p-limbo-payout" class="orion-input" value="1.0001" step="0.0001" placeholder="1.0001">
+                    </div>
+                    <div class="orion-input-group">
+                        <label>CYCLES</label>
+                        <input id="p-limbo-cycles" class="orion-input" value="3" placeholder="3">
+                    </div>
                 </div>
             </div>
             
-            <div class="p-section">
-                <div class="p-section-title">🎯 DICE SETTINGS</div>
-                <div class="p-grid">
-                    <div><label style="font-size:9px">CHANCE %</label><input id="p-dice-chance" class="p-input" value="98"></div>
-                    <div><label style="font-size:9px">CYCLES</label><input id="p-dice-cycles" class="p-input" value="2"></div>
+            <div class="orion-section">
+                <div class="orion-section-title">
+                    <span>🎯</span> DICE STRATEGY
+                </div>
+                <div class="orion-grid">
+                    <div class="orion-input-group">
+                        <label>CHANCE %</label>
+                        <input id="p-dice-chance" class="orion-input" value="98" step="0.1" placeholder="98">
+                    </div>
+                    <div class="orion-input-group">
+                        <label>CYCLES</label>
+                        <input id="p-dice-cycles" class="orion-input" value="2" placeholder="2">
+                    </div>
                 </div>
             </div>
             
-            <div class="p-section">
-                <div class="p-section-title">🔄 RECOVERY MODE</div>
-                <div class="p-checkbox">
+            <div class="orion-section">
+                <div class="orion-section-title">
+                    <span>🔄</span> RECOVERY MODE
+                </div>
+                <div class="orion-checkbox">
                     <input type="checkbox" id="p-use-recovery" checked>
-                    <label style="font-size:11px">Enable Recovery Mode</label>
+                    <label>Enable Automatic Recovery</label>
                 </div>
-                <div class="p-grid">
-                    <div><label style="font-size:9px">MULTIPLIER</label><input id="p-recovery-mult" class="p-input" value="1.12"></div>
-                    <div><label style="font-size:9px">MAX BET (BAL%)</label><input id="p-recovery-bet-mult" class="p-input" value="0.25"></div>
+                <div class="orion-grid">
+                    <div class="orion-input-group">
+                        <label>MULTIPLIER</label>
+                        <input id="p-recovery-mult" class="orion-input" value="1.0001" step="0.0001">
+                    </div>
+                    <div class="orion-input-group">
+                        <label>MAX BET (BAL%)</label>
+                        <input id="p-recovery-bet-mult" class="orion-input" value="0.25" step="0.01">
+                    </div>
                 </div>
             </div>
             
-            <div style="font-size:11px;background:#020617;padding:12px;border-radius:8px;border:1px solid #1e293b;margin-bottom:10px">
-                <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>TIME</span><span id="st-time">00:00:00</span></div>
-                <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>STATUS</span><span id="st-status" style="color:#06b6d4">IDLE</span></div>
-                <div style="display:flex;justify-content:space-between;margin-bottom:3px;border-top:1px solid #1e293b;padding-top:3px"><span>START BAL</span><span id="st-startbal">0</span></div>
-                <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>PROFIT</span><span id="st-profit">0</span></div>
-                <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>WAGER</span><span id="st-wager">0</span></div>
-                <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>MAX DD</span><span id="st-dd" style="color:#ef4444">0</span></div>
-                <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>BETS</span><span id="st-bets">0</span></div>
-                <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>W / L</span><span id="st-wl">0 / 0</span></div>
-                <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span>SPEED</span><span id="st-speed">0 b/s</span></div>
-                <div style="display:flex;justify-content:space-between;margin-top:3px;border-top:1px dashed #334155;padding-top:3px"><span>LOG</span><span id="st-log" style="color:#fbbf24;font-size:9px">None</span></div>
+            <div class="orion-stats">
+                <div class="orion-stat-row">
+                    <span class="orion-stat-label">TIME</span>
+                    <span class="orion-stat-value" id="st-time">00:00:00</span>
+                </div>
+                <div class="orion-stat-row">
+                    <span class="orion-stat-label">STATUS</span>
+                    <span class="orion-stat-value" id="st-status" style="color: #38BDF8">IDLE</span>
+                </div>
+                <div class="orion-stat-row">
+                    <span class="orion-stat-label">BALANCE</span>
+                    <span class="orion-stat-value" id="st-startbal">0.00000000</span>
+                </div>
+                <div class="orion-stat-row">
+                    <span class="orion-stat-label">PROFIT</span>
+                    <span class="orion-stat-value" id="st-profit">0.00000000</span>
+                </div>
+                <div class="orion-stat-row">
+                    <span class="orion-stat-label">WAGERED</span>
+                    <span class="orion-stat-value" id="st-wager">0.00000000</span>
+                </div>
+                <div class="orion-stat-row">
+                    <span class="orion-stat-label">MAX DD</span>
+                    <span class="orion-stat-value" style="color: #F87171" id="st-dd">0.00000000</span>
+                </div>
+                <div class="orion-stat-row">
+                    <span class="orion-stat-label">BETS</span>
+                    <span class="orion-stat-value" id="st-bets">0</span>
+                </div>
+                <div class="orion-stat-row">
+                    <span class="orion-stat-label">W/L</span>
+                    <span class="orion-stat-value" id="st-wl">0/0</span>
+                </div>
+                <div class="orion-stat-row">
+                    <span class="orion-stat-label">SPEED</span>
+                    <span class="orion-stat-value" id="st-speed">0 b/s</span>
+                </div>
             </div>
             
-            <div style="display:flex;gap:5px">
-                <button id="p-start" class="p-btn" style="background:#06b6d4;color:#0f172a;width:100%">START MACHINE</button>
-                <button id="p-stop" class="p-btn" style="background:#ef4444;color:#fff;width:100%">STOP</button>
-            </div>`;
+            <div class="orion-log" id="st-log">
+                None
+            </div>
+            
+            <div class="orion-buttons">
+                <button id="p-start" class="orion-btn orion-btn-start">START</button>
+                <button id="p-stop" class="orion-btn orion-btn-stop">STOP</button>
+            </div>
+        `;
+        
         document.body.appendChild(d);
         
         document.getElementById("p-start").onclick = async () => { 
@@ -252,32 +588,33 @@ ${statusHeader}
                 bot.currentGame = "limbo";
                 bot.nextSwitchAt = parseInt(document.getElementById("p-limbo-cycles").value) || 3;
                 runLoop(); 
-                API.sendTg("🚀 *MACHINE ENGAGED*"); 
+                API.sendTg("🚀 *SYSTEM ENGAGED*"); 
             } 
         };
         
         document.getElementById("p-stop").onclick = () => { 
             if(bot.isRunning){ 
                 bot.isRunning = false; 
-                API.sendTg("🛑 *MACHINE HALTED*"); 
+                API.sendTg("🛑 *SYSTEM HALTED*"); 
             } 
         };
     }
 
     setInterval(() => {
-        if (!bot.isRunning) return;
+        if (!bot.isRunning || !document.getElementById("st-time")) return;
         const elapsed = (new Date() - bot.startTime) / 1000;
         document.getElementById("st-time").innerText = new Date(elapsed * 1000).toISOString().substr(11, 8);
-        document.getElementById("st-status").innerText = bot.currentStatus + (bot.currentStatus === "WAGERING" ? ` (${bot.currentGame.toUpperCase()})` : "");
-        document.getElementById("st-startbal").innerText = bot.stats.startBal.toFixed(8);
+        document.getElementById("st-status").innerText = bot.currentStatus + (bot.currentStatus === "WAGERING" ? ` (${bot.currentGame})` : "");
+        document.getElementById("st-startbal").innerText = (bot.stats.startBal + bot.stats.profit).toFixed(8);
         document.getElementById("st-profit").innerText = bot.stats.profit.toFixed(8);
         document.getElementById("st-wager").innerText = bot.stats.wagered.toFixed(8);
         document.getElementById("st-dd").innerText = bot.stats.maxDD.toFixed(8);
         document.getElementById("st-bets").innerText = bot.stats.bets;
-        document.getElementById("st-wl").innerText = `${bot.stats.wins} / ${bot.stats.loss}`;
+        document.getElementById("st-wl").innerText = `${bot.stats.wins}/${bot.stats.loss}`;
         document.getElementById("st-speed").innerText = (bot.stats.bets / (elapsed || 1)).toFixed(2) + " b/s";
         document.getElementById("st-log").innerText = bot.lastError;
     }, 400);
 
-    createUI(); API.syncOnce();
+    createUI(); 
+    API.syncOnce();
 })();
