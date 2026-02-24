@@ -1,16 +1,4 @@
 (() => {
-  /************** TELEGRAM **************/
-  function kirimpesan(message) {
-    const botToken = '8481497621:AAEPpKx_Om18VAmlM_oHyC9xoJH3DtlWUHw';
-    const chatId = '8453280675';
-
-    fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text: message }),
-    });
-  }
-
   /************** CONFIG **************/
   const CONFIG = {
     apiUrl: 'https://stake.krd/_api',
@@ -45,6 +33,7 @@
     selectedCurrency: "idr",
     selectedMines: 13,
     selectedFields: [],
+    globalMaxPayout: 0,
     
     // Bet tracking
     betSpeed: 0,
@@ -57,26 +46,70 @@
     
     // Telegram
     lastTelegramTime: Date.now(),
-    telegramInterval: 180000, // 3 minutes
+    telegramInterval: 180000,
     
     // Chart report
     lastChartWagerAmount: 0,
-    chartReportInterval: 500, // Kirim report setiap 500 wagered
-    globalMaxPayout: 0,
+    chartReportInterval: 500,
     
-    // Draggable
-    isDragging: false
+    // Martingale Settings
+    martingale: {
+      enabled: false,
+      mode: 'dynamic', // 'dynamic', 'fixed', 'progressive'
+      multiplier: 2.0,
+      maxSteps: 5,
+      currentStep: 0,
+      baseBet: 0,
+      currentBet: 0,
+      lossStreak: 0,
+      winStreak: 0,
+      afterWin: 'reset', // 'reset', 'increase', 'decrease'
+      afterLoss: 'increase' // 'increase', 'double', 'reset'
+    },
+    
+    // Target Settings
+    target: {
+      enabled: false,
+      type: 'percent', // 'percent', 'fixed'
+      value: 10.0,
+      reached: false
+    },
+    
+    // Stop Loss Settings
+    stopLoss: {
+      enabled: false,
+      type: 'percent', // 'percent', 'fixed'
+      value: 5.0,
+      reached: false
+    },
+    
+    // Streak Settings
+    streak: {
+      enabled: false,
+      lossStreak: 0,
+      winStreak: 0,
+      lossMultiplier: 2.0,
+      winMultiplier: 1.5,
+      lossThreshold: 3,
+      winThreshold: 3,
+      resetAfterTarget: true
+    }
   };
 
   /************** API FUNCTIONS **************/
   const API = {
     async syncOnce() {
+      // Get token from multiple sources
       bot.token = localStorage.getItem('apitoken') || 
                   (document.cookie.match(/session=([^;]+)/) ? 
                   document.cookie.match(/session=([^;]+)/)[1] : null);
       
-      if (!bot.token) return;
-      
+      if (!bot.token) {
+        console.log("❌ No token found");
+        document.getElementById("st-user").innerText = "❌ No token";
+        return;
+      }
+
       try {
         const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
           method: "POST",
@@ -85,28 +118,69 @@
             "x-access-token": bot.token 
           },
           body: JSON.stringify({ 
-            query: `query{user{name balances{available{amount currency}}}}` 
+            query: `query {
+              user {
+                name 
+                balances {
+                  available {
+                    amount 
+                    currency
+                  }
+                }
+              }
+            }` 
           })
         });
         
         const json = await res.json();
+        
         if (json?.data?.user) {
           bot.stakeUser = json.data.user.name;
           
+          // Update user display
+          const userEl = document.getElementById("st-user");
+          if (userEl) {
+            userEl.innerText = `👤 ${bot.stakeUser}`;
+          }
+          
+          // Populate currency dropdown
           const bals = json.data.user.balances || [];
           const currencySelect = document.getElementById("currency");
           
-          if (currencySelect && currencySelect.options.length === 0) {
+          if (currencySelect) {
+            // Clear existing options
+            currencySelect.innerHTML = '';
+            
             bals.forEach(b => {
-              const opt = new Option(b.available.currency.toUpperCase(), b.available.currency);
-              if (b.available.currency === "idr") opt.selected = true;
+              const currency = b.available.currency.toLowerCase();
+              const opt = new Option(currency.toUpperCase(), currency);
+              
+              // Set default to idr if available
+              if (currency === "idr") {
+                opt.selected = true;
+                bot.selectedCurrency = currency;
+              }
+              
               currencySelect.add(opt);
             });
-            bot.selectedCurrency = currencySelect.value;
+            
+            // If no options added, add defaults
+            if (currencySelect.options.length === 0) {
+              const currencies = ['idr', 'ltc', 'usdt', 'sol', 'doge', 'xrp', 'trx', 'bnb'];
+              currencies.forEach(c => {
+                const opt = new Option(c.toUpperCase(), c);
+                if (c === 'idr') opt.selected = true;
+                currencySelect.add(opt);
+              });
+              bot.selectedCurrency = "idr";
+            }
           }
+          
+          console.log("✅ Sync successful:", bot.stakeUser);
         }
       } catch (e) {
-        console.log("Sync error:", e);
+        console.log("❌ Sync error:", e);
+        document.getElementById("st-user").innerText = "❌ Sync failed";
       }
     },
 
@@ -123,7 +197,16 @@
             "x-access-token": bot.token 
           },
           body: JSON.stringify({ 
-            query: `query{user{balances{available{amount currency}}}}` 
+            query: `query {
+              user {
+                balances {
+                  available {
+                    amount 
+                    currency
+                  }
+                }
+              }
+            }` 
           })
         });
         
@@ -133,6 +216,7 @@
         );
         return active ? parseFloat(active.available.amount) : 0;
       } catch (e) { 
+        console.log("❌ Balance error:", e);
         return 0; 
       }
     },
@@ -147,7 +231,6 @@
       };
 
       if (bot.isDemo) {
-        // Simulate mines bet for demo mode
         return simulateMinesBet(amount, minesCount, fields);
       }
 
@@ -229,7 +312,6 @@
 
     generateWinRateChart() {
       const winRate = bot.stats.bets > 0 ? (bot.stats.wins / bot.stats.bets * 100).toFixed(1) : 0;
-      const lossRate = bot.stats.bets > 0 ? (bot.stats.loss / bot.stats.bets * 100).toFixed(1) : 0;
       
       const chartConfig = {
         type: 'doughnut',
@@ -243,7 +325,7 @@
         options: {
           title: {
             display: true,
-            text: `🎲 Win/Loss Ratio (${winRate}% / ${lossRate}%)`
+            text: `🎲 Win/Loss Ratio (${winRate}%)`
           }
         }
       };
@@ -289,14 +371,22 @@
       caption += `▪️ Current : ${bot.stats.currentBal.toFixed(8)}\n`;
       caption += `▪️ P/L     : ${bot.stats.profit >= 0 ? '+' : ''}${bot.stats.profit.toFixed(8)} (${pnlPct}%)\n`;
       caption += `▪️ Max DD  : ${bot.stats.maxDD.toFixed(8)} (${bot.stats.maxDDPerc.toFixed(2)}%)\n`;
-      caption += `▪️ Max Payout: ${bot.globalMaxPayout.toFixed(4)}x\n`;
+      caption += `▪️ Max Payout: ${bot.globalMaxPayout.toFixed(2)}x\n`;
       caption += `\n`;
       caption += `🎲 STATISTICS\n`;
       caption += `▪️ Bets    : ${bot.stats.bets.toLocaleString()}\n`;
       caption += `▪️ W/L     : ${bot.stats.wins.toLocaleString()}/${bot.stats.loss.toLocaleString()}\n`;
       caption += `▪️ WinRate : ${winRate}%\n`;
-      caption += `\n`;
-      caption += `═══════════════════════════\n`;
+      
+      // Martingale stats
+      if (bot.martingale.enabled) {
+        caption += `\n⚙️ MARTINGALE\n`;
+        caption += `▪️ Mode    : ${bot.martingale.mode}\n`;
+        caption += `▪️ Step    : ${bot.martingale.currentStep}/${bot.martingale.maxSteps}\n`;
+        caption += `▪️ Streak  : L${bot.streak.lossStreak} W${bot.streak.winStreak}\n`;
+      }
+      
+      caption += `\n═══════════════════════════\n`;
       caption += `🕒 ${new Date().toLocaleString()}`;
       
       // Kirim chart sebagai media group
@@ -330,7 +420,7 @@
         console.log(`📊 Chart report sent! Wagered: ${bot.stats.wagered.toFixed(8)}`);
         
       } catch (e) {
-        console.log("Telegram chart send failed:", e);
+        console.log("❌ Telegram chart send failed:", e);
       }
     },
 
@@ -365,12 +455,20 @@
       message += `▪️ Current : ${bot.stats.currentBal.toFixed(8)}\n`;
       message += `▪️ P/L     : ${bot.stats.profit >= 0 ? '+' : ''}${bot.stats.profit.toFixed(8)} (${pnlPct}%)\n`;
       message += `▪️ Max DD  : ${bot.stats.maxDD.toFixed(8)} (${bot.stats.maxDDPerc.toFixed(2)}%)\n`;
-      message += `▪️ Max Payout: ${bot.globalMaxPayout.toFixed(4)}x\n`;
+      message += `▪️ Max Payout: ${bot.globalMaxPayout.toFixed(2)}x\n`;
       message += `\n`;
       message += `🎲 STATISTICS\n`;
       message += `▪️ Bets    : ${bot.stats.bets.toLocaleString()}\n`;
       message += `▪️ W/L     : ${bot.stats.wins.toLocaleString()}/${bot.stats.loss.toLocaleString()}\n`;
       message += `▪️ WinRate : ${winRate}%\n`;
+      
+      if (bot.martingale.enabled) {
+        message += `\n⚙️ MARTINGALE\n`;
+        message += `▪️ Mode    : ${bot.martingale.mode}\n`;
+        message += `▪️ Step    : ${bot.martingale.currentStep}/${bot.martingale.maxSteps}\n`;
+        message += `▪️ Streak  : L${bot.streak.lossStreak} W${bot.streak.winStreak}\n`;
+      }
+      
       message += `\n`;
       message += `═══════════════════════════\n`;
       message += `🕒 ${new Date().toLocaleString()}\n`;
@@ -388,6 +486,18 @@
           })
         });
       } catch (e) {}
+    },
+
+    kirimPesan(message) {
+      fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          chat_id: CONFIG.tgChatId, 
+          text: message,
+          parse_mode: 'Markdown'
+        }),
+      });
     }
   };
 
@@ -410,9 +520,9 @@
   }
 
   function simulateMinesBet(amount, minesCount, fields) {
-    // Simple simulation for demo mode
     const win = Math.random() > (minesCount / 25);
-    const payout = win ? amount * (25 / (25 - minesCount)) : 0;
+    const multiplier = 25 / (25 - minesCount);
+    const payout = win ? amount * multiplier : 0;
     
     return {
       data: {
@@ -420,11 +530,11 @@
           id: "demo_" + Date.now(),
           amount: amount,
           payout: payout,
-          payoutMultiplier: payout / amount,
+          payoutMultiplier: multiplier,
           state: {
             rounds: fields.map((f, i) => ({
               field: f,
-              payoutMultiplier: i < 2 ? (25 / (25 - minesCount)) : 0
+              payoutMultiplier: i < 2 ? multiplier : 0
             }))
           }
         }
@@ -448,16 +558,158 @@
     }
   }
 
-  /************** UI STYLES **************/
+  // Martingale Functions
+  function calculateMartingaleBet(baseBet, win) {
+    if (!bot.martingale.enabled) return baseBet;
+    
+    if (win) {
+      // Handle win streak
+      bot.streak.winStreak++;
+      bot.streak.lossStreak = 0;
+      bot.martingale.currentStep = 0;
+      
+      if (bot.streak.enabled && bot.streak.winStreak >= bot.streak.winThreshold) {
+        // Apply win streak multiplier
+        bot.martingale.currentBet = baseBet * bot.streak.winMultiplier;
+      } else {
+        // After win, reset or adjust based on settings
+        switch(bot.martingale.afterWin) {
+          case 'reset':
+            bot.martingale.currentBet = bot.martingale.baseBet;
+            break;
+          case 'increase':
+            bot.martingale.currentBet = bot.martingale.currentBet * 1.2;
+            break;
+          case 'decrease':
+            bot.martingale.currentBet = bot.martingale.currentBet * 0.8;
+            break;
+        }
+      }
+    } else {
+      // Handle loss streak
+      bot.streak.lossStreak++;
+      bot.streak.winStreak = 0;
+      bot.martingale.currentStep++;
+      
+      if (bot.streak.enabled && bot.streak.lossStreak >= bot.streak.lossThreshold) {
+        // Apply loss streak multiplier
+        bot.martingale.currentBet = baseBet * bot.streak.lossMultiplier;
+      } else {
+        // After loss, apply martingale based on mode
+        switch(bot.martingale.mode) {
+          case 'fixed':
+            bot.martingale.currentBet = baseBet * Math.pow(bot.martingale.multiplier, bot.martingale.currentStep);
+            break;
+          case 'dynamic':
+            bot.martingale.currentBet = baseBet * (1 + (bot.martingale.currentStep * 0.5));
+            break;
+          case 'progressive':
+            bot.martingale.currentBet = baseBet * (bot.martingale.multiplier + (bot.martingale.currentStep * 0.3));
+            break;
+        }
+      }
+      
+      // Check max steps
+      if (bot.martingale.currentStep >= bot.martingale.maxSteps) {
+        console.log("⚠️ Max martingale steps reached, resetting");
+        bot.martingale.currentStep = 0;
+        bot.martingale.currentBet = bot.martingale.baseBet;
+      }
+    }
+    
+    // Ensure bet doesn't exceed balance
+    if (bot.martingale.currentBet > bot.stats.currentBal * 0.1) {
+      bot.martingale.currentBet = bot.stats.currentBal * 0.1;
+    }
+    
+    return bot.martingale.currentBet;
+  }
+
+  function checkTargets() {
+    // Check target profit
+    if (bot.target.enabled && !bot.target.reached) {
+      let targetMet = false;
+      
+      if (bot.target.type === 'percent') {
+        targetMet = (bot.stats.profit / bot.stats.startBal * 100) >= bot.target.value;
+      } else {
+        targetMet = bot.stats.profit >= bot.target.value;
+      }
+      
+      if (targetMet) {
+        bot.target.reached = true;
+        API.kirimPesan(`🎯 *TARGET REACHED!*\nProfit: ${bot.stats.profit.toFixed(8)} ${bot.selectedCurrency.toUpperCase()}`);
+        bot.isRunning = false;
+        return true;
+      }
+    }
+    
+    // Check stop loss
+    if (bot.stopLoss.enabled && !bot.stopLoss.reached) {
+      let stopMet = false;
+      const loss = -bot.stats.profit;
+      
+      if (bot.stopLoss.type === 'percent') {
+        stopMet = (loss / bot.stats.startBal * 100) >= bot.stopLoss.value;
+      } else {
+        stopMet = loss >= bot.stopLoss.value;
+      }
+      
+      if (stopMet) {
+        bot.stopLoss.reached = true;
+        API.kirimPesan(`🛑 *STOP LOSS TRIGGERED!*\nLoss: ${loss.toFixed(8)} ${bot.selectedCurrency.toUpperCase()}`);
+        bot.isRunning = false;
+        return true;
+      }
+    }
+    
+    return false;
+  }
+
+  /************** UI STYLES - Mobile Friendly **************/
   const style = document.createElement("style");
   style.innerHTML = `
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
     
+    @media (max-width: 768px) {
+      #mineUI {
+        width: 95% !important;
+        right: 2.5% !important;
+        left: 2.5% !important;
+        top: 5px !important;
+        max-height: 95vh !important;
+        font-size: 12px !important;
+      }
+      
+      .grid-2col {
+        grid-template-columns: 1fr !important;
+      }
+      
+      .tab-buttons button {
+        padding: 12px !important;
+        font-size: 14px !important;
+      }
+      
+      #fieldsBox {
+        width: 90% !important;
+      }
+      
+      .grid {
+        grid-template-columns: repeat(5, 1fr) !important;
+      }
+      
+      .cell {
+        width: 100% !important;
+        height: 50px !important;
+        font-size: 14px !important;
+      }
+    }
+    
     #mineUI {
       position: fixed;
-      top: 90px;
-      right: 20px;
-      width: 320px;
+      top: 10px;
+      right: 10px;
+      width: 380px;
       background: linear-gradient(145deg, #0f172a 0%, #1e293b 100%);
       color: #f1f5f9;
       font-family: 'Inter', sans-serif;
@@ -468,6 +720,8 @@
       border: 1px solid rgba(245, 158, 11, 0.2);
       cursor: move;
       backdrop-filter: blur(8px);
+      max-height: 90vh;
+      overflow-y: auto;
     }
     
     #mineUI.hidden {
@@ -477,12 +731,12 @@
     #mineUI input, #mineUI select, #mineUI button {
       width: 100%;
       margin: 4px 0;
-      padding: 8px 10px;
-      border-radius: 8px;
+      padding: 10px 12px;
+      border-radius: 10px;
       border: 1px solid #334155;
       background: #0f172a;
       color: #f1f5f9;
-      font-size: 12px;
+      font-size: 13px;
       box-sizing: border-box;
       font-family: 'Inter', sans-serif;
     }
@@ -501,7 +755,11 @@
     }
     
     #mineUI button:hover {
-      transform: translateY(-1px);
+      transform: translateY(-2px);
+    }
+    
+    #mineUI button:active {
+      transform: translateY(0);
     }
     
     .start { 
@@ -514,7 +772,7 @@
       color: white;
     }
     
-    .fieldsBtn { 
+    .fieldsBtn, .settingsBtn { 
       background: linear-gradient(135deg, #2962ff 0%, #1e4bd8 100%);
       color: white;
     }
@@ -525,7 +783,7 @@
     }
     
     label { 
-      font-size: 11px; 
+      font-size: 12px; 
       color: #94a3b8;
       font-weight: 500;
       text-transform: uppercase;
@@ -534,28 +792,145 @@
       margin-top: 8px;
     }
     
+    .tab-buttons {
+      display: flex;
+      gap: 8px;
+      margin: 16px 0;
+      background: rgba(15, 23, 42, 0.6);
+      padding: 4px;
+      border-radius: 12px;
+    }
+    
+    .tab-btn {
+      flex: 1;
+      background: transparent;
+      border: none;
+      color: #94a3b8;
+      padding: 10px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border-radius: 8px;
+      transition: all 0.2s;
+    }
+    
+    .tab-btn.active {
+      background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+      color: black;
+    }
+    
+    .tab-content {
+      display: none;
+    }
+    
+    .tab-content.active {
+      display: block;
+    }
+    
+    .section {
+      margin-bottom: 12px;
+      background: rgba(15, 23, 42, 0.5);
+      border-radius: 12px;
+      padding: 12px;
+      border: 1px solid rgba(245, 158, 11, 0.1);
+    }
+    
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      cursor: pointer;
+      color: #f59e0b;
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    
+    .section-content {
+      margin-top: 12px;
+    }
+    
+    .section-content.collapsed {
+      display: none;
+    }
+    
+    .grid-2col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    
+    .grid-3col {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 8px;
+    }
+    
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      background: #0f172a;
+      padding: 8px 12px;
+      margin: 4px 0;
+      border-radius: 8px;
+      border-left: 3px solid #f59e0b;
+    }
+    
+    .stat-value {
+      font-weight: 600;
+      color: #f59e0b;
+    }
+    
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 11px;
+      background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+      color: black;
+      font-weight: 600;
+    }
+    
+    .switch {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: #0f172a;
+      padding: 8px 12px;
+      border-radius: 8px;
+      border: 1px solid #334155;
+    }
+    
+    .switch input {
+      width: 20px;
+      height: 20px;
+      accent-color: #f59e0b;
+    }
+    
     #fieldsModal {
       position: fixed;
       inset: 0;
-      background: rgba(0,0,0,.8);
+      background: rgba(0,0,0,0.9);
       display: none;
       align-items: center;
       justify-content: center;
       z-index: 1000000;
-      backdrop-filter: blur(4px);
     }
     
     #fieldsBox {
       background: linear-gradient(145deg, #0f172a 0%, #1e293b 100%);
       padding: 20px;
       border-radius: 16px;
-      border: 1px solid rgba(245, 158, 11, 0.2);
+      max-width: 90%;
     }
     
     .grid {
       display: grid;
       grid-template-columns: repeat(5, 45px);
       gap: 8px;
+      margin: 15px 0;
     }
     
     .cell {
@@ -567,9 +942,7 @@
       align-items: center;
       justify-content: center;
       cursor: pointer;
-      user-select: none;
       border-radius: 8px;
-      font-size: 12px;
       font-weight: 600;
       transition: all 0.2s;
     }
@@ -586,92 +959,34 @@
     
     #showBotBtn {
       position: fixed;
-      top: 90px;
-      right: 20px;
+      top: 10px;
+      right: 10px;
       z-index: 999998;
       display: none;
-      padding: 12px 16px;
+      padding: 15px 20px;
       background: linear-gradient(135deg, #00c853 0%, #00a844 100%);
       color: white;
       font-weight: bold;
       border-radius: 50px;
       cursor: pointer;
-      box-shadow: 0 4px 12px rgba(0,200,83,0.3);
       font-size: 20px;
-    }
-    
-    #stats-panel {
-      background: #0f172a;
-      border-radius: 12px;
-      padding: 12px;
-      margin: 12px 0;
-      border: 1px solid #334155;
-    }
-    
-    .stat-row {
-      display: flex;
-      justify-content: space-between;
-      font-size: 11px;
-      padding: 4px 0;
-      border-bottom: 1px solid #1e293b;
-    }
-    
-    .stat-label {
-      color: #94a3b8;
-    }
-    
-    .stat-value {
-      color: #f59e0b;
-      font-weight: 600;
-      font-family: monospace;
-    }
-    
-    .badge {
-      display: inline-block;
-      padding: 4px 10px;
-      border-radius: 20px;
-      font-size: 10px;
-      background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-      color: black;
-      font-weight: 600;
-      text-transform: uppercase;
-    }
-    
-    .mode-badge {
-      display: inline-block;
-      padding: 4px 10px;
-      border-radius: 20px;
-      font-size: 10px;
-      background: #1e293b;
-      border: 1px solid #f59e0b;
-      color: #f59e0b;
-      font-weight: 600;
-    }
-    
-    .footer {
-      text-align: center;
-      font-size: 9px;
-      color: #475569;
-      margin-top: 12px;
-      padding-top: 8px;
-      border-top: 1px solid #334155;
+      box-shadow: 0 4px 12px rgba(0,200,83,0.3);
     }
     
     #logs-container {
       background: #0f172a;
       border-radius: 8px;
-      padding: 8px;
-      max-height: 100px;
+      padding: 10px;
+      max-height: 120px;
       overflow-y: auto;
-      font-size: 10px;
+      font-size: 11px;
       font-family: monospace;
       border: 1px solid #334155;
     }
     
     .log-entry {
-      padding: 2px 0;
+      padding: 3px 0;
       border-bottom: 1px solid #1e293b;
-      color: #94a3b8;
     }
     
     .log-entry.win {
@@ -682,28 +997,13 @@
       color: #ef4444;
     }
     
-    .switch {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      background: #0f172a;
-      padding: 8px 10px;
-      border-radius: 8px;
-      border: 1px solid #334155;
-      margin: 8px 0;
-    }
-    
-    .switch input {
-      width: 18px;
-      height: 18px;
-      accent-color: #f59e0b;
-      margin: 0;
-    }
-    
-    .grid-2col {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
+    .footer {
+      text-align: center;
+      font-size: 10px;
+      color: #475569;
+      margin-top: 16px;
+      padding-top: 8px;
+      border-top: 1px solid #334155;
     }
   `;
   document.head.appendChild(style);
@@ -713,77 +1013,228 @@
   ui.id = "mineUI";
   ui.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-      <span style="font-size:14px; font-weight:700; color:#f59e0b;">⚡ ORION MINES v3.0</span>
+      <span style="font-size:16px; font-weight:700; color:#f59e0b;">⚡ ORION MINES v3.0</span>
       <span class="badge" id="mode-badge">MINES</span>
     </div>
 
-    <label>💰 Amount:</label>
-    <input id="amount" type="number" step="0.00000001" value="0.00000001">
+    <div class="tab-buttons">
+      <button class="tab-btn active" onclick="switchTab('main')">🎮 MAIN</button>
+      <button class="tab-btn" onclick="switchTab('martingale')">⚙️ MARTINGALE</button>
+      <button class="tab-btn" onclick="switchTab('stats')">📊 STATS</button>
+    </div>
 
-    <label>💱 Currency:</label>
-    <select id="currency"></select>
-
-    <div class="grid-2col">
-      <div>
-        <label>💣 Mines Count</label>
-        <select id="minesCount"></select>
+    <!-- MAIN TAB -->
+    <div id="tab-main" class="tab-content active">
+      <div class="grid-2col">
+        <div>
+          <label>💰 Amount</label>
+          <input id="amount" type="number" step="0.00000001" value="0.00000001">
+        </div>
+        <div>
+          <label>💱 Currency</label>
+          <select id="currency"></select>
+        </div>
       </div>
-      <div>
-        <label>🎮 Demo Mode</label>
-        <div class="switch">
-          <input type="checkbox" id="demo-toggle">
-          <span id="demo-status" style="font-size:10px;">OFF</span>
+
+      <div class="grid-2col">
+        <div>
+          <label>💣 Mines Count</label>
+          <select id="minesCount"></select>
+        </div>
+        <div>
+          <label>🎮 Demo Mode</label>
+          <div class="switch">
+            <input type="checkbox" id="demo-toggle">
+            <span id="demo-status">OFF</span>
+          </div>
+        </div>
+      </div>
+
+      <label>🎛️ Selected Fields (<span id="fields-count">0</span>/25)</label>
+      <button class="fieldsBtn" id="openFields">📋 Select Fields</button>
+
+      <!-- QUICK MARTINGALE TOGGLE -->
+      <div class="section" style="margin-top:12px;">
+        <div class="section-header" onclick="toggleSection('quickMartingale')">
+          <span>⚡ QUICK MARTINGALE</span>
+          <span class="collapse-btn">▼</span>
+        </div>
+        <div class="section-content" id="content-quickMartingale">
+          <div class="switch" style="margin-bottom:8px;">
+            <input type="checkbox" id="martingale-enable">
+            <span>Enable Martingale</span>
+          </div>
+          <div class="grid-2col">
+            <div>
+              <label>Mode</label>
+              <select id="martingale-mode">
+                <option value="dynamic">Dynamic</option>
+                <option value="fixed">Fixed</option>
+                <option value="progressive">Progressive</option>
+              </select>
+            </div>
+            <div>
+              <label>Multiplier</label>
+              <input id="martingale-multiplier" type="number" step="0.1" value="2.0" min="1.1">
+            </div>
+          </div>
+          <div class="grid-2col">
+            <div>
+              <label>Max Steps</label>
+              <input id="martingale-max-steps" type="number" value="5" min="1" max="10">
+            </div>
+            <div>
+              <label>After Win</label>
+              <select id="martingale-after-win">
+                <option value="reset">Reset</option>
+                <option value="increase">Increase</option>
+                <option value="decrease">Decrease</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TARGET / STOP LOSS -->
+      <div class="grid-2col" style="margin-top:8px;">
+        <div>
+          <label>🎯 Target Profit</label>
+          <input id="target-value" type="number" step="0.1" value="10.0" placeholder="10%">
+          <div style="display:flex; gap:4px; margin-top:4px;">
+            <select id="target-type" style="width:60%;">
+              <option value="percent">Percent</option>
+              <option value="fixed">Fixed</option>
+            </select>
+            <button id="target-enable" class="settingsBtn" style="width:40%;">Enable</button>
+          </div>
+        </div>
+        <div>
+          <label>🛑 Stop Loss</label>
+          <input id="stoploss-value" type="number" step="0.1" value="5.0" placeholder="5%">
+          <div style="display:flex; gap:4px; margin-top:4px;">
+            <select id="stoploss-type" style="width:60%;">
+              <option value="percent">Percent</option>
+              <option value="fixed">Fixed</option>
+            </select>
+            <button id="stoploss-enable" class="settingsBtn" style="width:40%;">Enable</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- STREAK SETTINGS -->
+      <div class="section" style="margin-top:12px;">
+        <div class="section-header" onclick="toggleSection('streak')">
+          <span>📈 STREAK MARTINGALE</span>
+          <span class="collapse-btn">▼</span>
+        </div>
+        <div class="section-content" id="content-streak">
+          <div class="switch" style="margin-bottom:8px;">
+            <input type="checkbox" id="streak-enable">
+            <span>Enable Streak Mode</span>
+          </div>
+          <div class="grid-2col">
+            <div>
+              <label>Loss Streak</label>
+              <input id="streak-loss-threshold" type="number" value="3" min="1">
+            </div>
+            <div>
+              <label>Loss Multiplier</label>
+              <input id="streak-loss-multiplier" type="number" step="0.1" value="2.0">
+            </div>
+          </div>
+          <div class="grid-2col">
+            <div>
+              <label>Win Streak</label>
+              <input id="streak-win-threshold" type="number" value="3" min="1">
+            </div>
+            <div>
+              <label>Win Multiplier</label>
+              <input id="streak-win-multiplier" type="number" step="0.1" value="1.5">
+            </div>
+          </div>
         </div>
       </div>
     </div>
 
-    <label>🎛️ Selected Fields (<span id="fields-count">0</span>/25)</label>
-    <button class="fieldsBtn" id="openFields">📋 Select Fields</button>
+    <!-- MARTINGALE TAB -->
+    <div id="tab-martingale" class="tab-content">
+      <div class="section">
+        <div class="stat-row">
+          <span>Current Step</span>
+          <span class="stat-value" id="mart-step">0/0</span>
+        </div>
+        <div class="stat-row">
+          <span>Base Bet</span>
+          <span class="stat-value" id="mart-base">0</span>
+        </div>
+        <div class="stat-row">
+          <span>Current Bet</span>
+          <span class="stat-value" id="mart-current">0</span>
+        </div>
+        <div class="stat-row">
+          <span>Loss Streak</span>
+          <span class="stat-value" id="mart-loss-streak">0</span>
+        </div>
+        <div class="stat-row">
+          <span>Win Streak</span>
+          <span class="stat-value" id="mart-win-streak">0</span>
+        </div>
+      </div>
+      
+      <button id="reset-martingale" class="fieldsBtn" style="margin-top:8px;">🔄 Reset Martingale</button>
+    </div>
 
-    <div id="stats-panel">
+    <!-- STATS TAB -->
+    <div id="tab-stats" class="tab-content">
       <div class="stat-row">
-        <span class="stat-label">User:</span>
+        <span>User</span>
         <span class="stat-value" id="st-user">Loading...</span>
       </div>
       <div class="stat-row">
-        <span class="stat-label">Balance:</span>
+        <span>Balance</span>
         <span class="stat-value" id="st-balance">0</span>
       </div>
       <div class="stat-row">
-        <span class="stat-label">Profit:</span>
-        <span class="stat-value" id="st-profit" style="color:#10b981">0</span>
+        <span>Profit</span>
+        <span class="stat-value" id="st-profit">0</span>
       </div>
       <div class="stat-row">
-        <span class="stat-label">Bets:</span>
+        <span>Bets</span>
         <span class="stat-value" id="st-bets">0</span>
       </div>
       <div class="stat-row">
-        <span class="stat-label">W/L:</span>
+        <span>W/L</span>
         <span class="stat-value" id="st-wl">0/0</span>
       </div>
       <div class="stat-row">
-        <span class="stat-label">WinRate:</span>
+        <span>WinRate</span>
         <span class="stat-value" id="st-winrate">0%</span>
       </div>
       <div class="stat-row">
-        <span class="stat-label">Wagered:</span>
+        <span>Wagered</span>
         <span class="stat-value" id="st-wagered">0</span>
       </div>
       <div class="stat-row">
-        <span class="stat-label">Speed:</span>
+        <span>Speed</span>
         <span class="stat-value" id="speed-value">0.00/s</span>
       </div>
       <div class="stat-row">
-        <span class="stat-label">Max Payout:</span>
+        <span>Max Payout</span>
         <span class="stat-value" id="st-max-payout">0x</span>
+      </div>
+      <div class="stat-row">
+        <span>Runtime</span>
+        <span class="stat-value" id="st-runtime">0h 0m</span>
       </div>
     </div>
 
-    <label>📝 Live Logs</label>
+    <!-- LOGS -->
+    <label style="margin-top:12px;">📝 Live Logs</label>
     <div id="logs-container">
       <div class="log-entry">Ready</div>
     </div>
 
+    <!-- CONTROL BUTTONS -->
     <div class="grid-2col" style="margin-top:12px;">
       <button class="start" id="start">▶ START</button>
       <button class="stop" id="stop" disabled>⏹ STOP</button>
@@ -792,7 +1243,7 @@
     <button class="toggleBtn" id="hideBot" style="margin-top:8px;">🙈 Minimize</button>
     
     <div class="footer">
-      © 2025 ORION MINES — All rights reserved.
+      © 2025 ORION MINES — v3.0
     </div>
   `;
   document.body.appendChild(ui);
@@ -817,11 +1268,11 @@
   modal.id = "fieldsModal";
   modal.innerHTML = `
     <div id="fieldsBox">
-      <h3 style="color:#f59e0b; margin-top:0; font-size:14px;">Select Safe Fields</h3>
+      <h3 style="color:#f59e0b; margin-top:0;">Select Safe Fields</h3>
       <div class="grid" id="grid"></div>
-      <div style="display:flex; gap:8px; margin-top:16px;">
-        <button id="clearFields" style="flex:1; background:#ef4444;">Clear</button>
-        <button id="saveFields" style="flex:2; background:#00c853;">SAVE</button>
+      <div class="grid-2col">
+        <button id="clearFields" style="background:#ef4444;">Clear</button>
+        <button id="saveFields" style="background:#00c853;">Save</button>
       </div>
     </div>
   `;
@@ -870,6 +1321,24 @@
   document.getElementById("currency").value = loadLS("mine_currency", "idr");
   document.getElementById("minesCount").value = loadLS("mine_minesCount", 13);
 
+  /************** TAB FUNCTIONS **************/
+  window.switchTab = function(tabName) {
+    document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+    
+    event.target.classList.add('active');
+    document.getElementById(`tab-${tabName}`).classList.add('active');
+  };
+
+  window.toggleSection = function(sectionId) {
+    const content = document.getElementById(`content-${sectionId}`);
+    const btn = event.currentTarget.querySelector('.collapse-btn');
+    if (content) {
+      content.classList.toggle('collapsed');
+      btn.innerHTML = content.classList.contains('collapsed') ? '►' : '▼';
+    }
+  };
+
   /************** DEMO MODE TOGGLE **************/
   const demoToggle = document.getElementById("demo-toggle");
   const demoStatus = document.getElementById("demo-status");
@@ -878,6 +1347,74 @@
     bot.isDemo = e.target.checked;
     demoStatus.innerText = e.target.checked ? "ON" : "OFF";
     demoStatus.style.color = e.target.checked ? "#10b981" : "#ef4444";
+  };
+
+  /************** MARTINGALE SETTINGS **************/
+  document.getElementById("martingale-enable").onchange = (e) => {
+    bot.martingale.enabled = e.target.checked;
+  };
+
+  document.getElementById("martingale-mode").onchange = (e) => {
+    bot.martingale.mode = e.target.value;
+  };
+
+  document.getElementById("martingale-multiplier").oninput = (e) => {
+    bot.martingale.multiplier = parseFloat(e.target.value);
+  };
+
+  document.getElementById("martingale-max-steps").oninput = (e) => {
+    bot.martingale.maxSteps = parseInt(e.target.value);
+  };
+
+  document.getElementById("martingale-after-win").onchange = (e) => {
+    bot.martingale.afterWin = e.target.value;
+  };
+
+  document.getElementById("streak-enable").onchange = (e) => {
+    bot.streak.enabled = e.target.checked;
+  };
+
+  document.getElementById("streak-loss-threshold").oninput = (e) => {
+    bot.streak.lossThreshold = parseInt(e.target.value);
+  };
+
+  document.getElementById("streak-loss-multiplier").oninput = (e) => {
+    bot.streak.lossMultiplier = parseFloat(e.target.value);
+  };
+
+  document.getElementById("streak-win-threshold").oninput = (e) => {
+    bot.streak.winThreshold = parseInt(e.target.value);
+  };
+
+  document.getElementById("streak-win-multiplier").oninput = (e) => {
+    bot.streak.winMultiplier = parseFloat(e.target.value);
+  };
+
+  document.getElementById("reset-martingale").onclick = () => {
+    bot.martingale.currentStep = 0;
+    bot.martingale.currentBet = bot.martingale.baseBet;
+    bot.streak.lossStreak = 0;
+    bot.streak.winStreak = 0;
+    updateDisplay();
+  };
+
+  /************** TARGET/STOPLOSS SETTINGS **************/
+  document.getElementById("target-enable").onclick = () => {
+    bot.target.enabled = !bot.target.enabled;
+    bot.target.type = document.getElementById("target-type").value;
+    bot.target.value = parseFloat(document.getElementById("target-value").value);
+    bot.target.reached = false;
+    this.innerText = bot.target.enabled ? "Disable" : "Enable";
+    this.style.background = bot.target.enabled ? "#ef4444" : "#2962ff";
+  };
+
+  document.getElementById("stoploss-enable").onclick = () => {
+    bot.stopLoss.enabled = !bot.stopLoss.enabled;
+    bot.stopLoss.type = document.getElementById("stoploss-type").value;
+    bot.stopLoss.value = parseFloat(document.getElementById("stoploss-value").value);
+    bot.stopLoss.reached = false;
+    this.innerText = bot.stopLoss.enabled ? "Disable" : "Enable";
+    this.style.background = bot.stopLoss.enabled ? "#ef4444" : "#2962ff";
   };
 
   /************** HIDE / SHOW **************/
@@ -904,6 +1441,18 @@
     document.getElementById("st-wagered").innerText = bot.stats.wagered.toFixed(8);
     document.getElementById("st-max-payout").innerText = bot.globalMaxPayout.toFixed(2) + "x";
     
+    const runtime = Math.floor((Date.now() - bot.stats.startTime) / 1000) || 0;
+    const hours = Math.floor(runtime / 3600);
+    const minutes = Math.floor((runtime % 3600) / 60);
+    document.getElementById("st-runtime").innerText = hours + "h " + minutes + "m";
+    
+    // Martingale display
+    document.getElementById("mart-step").innerText = bot.martingale.currentStep + "/" + bot.martingale.maxSteps;
+    document.getElementById("mart-base").innerText = bot.martingale.baseBet.toFixed(8);
+    document.getElementById("mart-current").innerText = bot.martingale.currentBet.toFixed(8);
+    document.getElementById("mart-loss-streak").innerText = bot.streak.lossStreak;
+    document.getElementById("mart-win-streak").innerText = bot.streak.winStreak;
+    
     if (bot.stats.profit >= 0) {
       document.getElementById("st-profit").style.color = "#10b981";
     } else {
@@ -920,9 +1469,8 @@
     const amountStr = amount.toFixed(8);
     const payoutStr = payout.toFixed(8);
     const multiStr = multiplier.toFixed(2);
-    const fieldsStr = fields ? ` [${fields.join(',')}]` : '';
     
-    entry.innerHTML = `${amountStr} → ${payoutStr} (${multiStr}x)${fieldsStr}`;
+    entry.innerHTML = `${amountStr} → ${payoutStr} (${multiStr}x)`;
     logsContainer.prepend(entry);
     
     if (logsContainer.children.length > 10) {
@@ -980,6 +1528,13 @@
     bot.lastSpeedUpdate = Date.now();
     bot.betSpeed = 0;
     bot.globalMaxPayout = 0;
+    
+    // Reset martingale
+    bot.martingale.baseBet = parseFloat(amountEl.value);
+    bot.martingale.currentBet = bot.martingale.baseBet;
+    bot.martingale.currentStep = 0;
+    bot.streak.lossStreak = 0;
+    bot.streak.winStreak = 0;
 
     // Get initial balance
     if (!bot.isDemo) {
@@ -992,11 +1547,8 @@
     bot.stats.currentBal = bot.stats.startBal;
     bot.stats.history = [bot.stats.startBal];
 
-    // Update user display
-    document.getElementById("st-user").innerText = bot.stakeUser;
-
     // Send start report
-    await API.sendTelegramReport();
+    API.kirimPesan(`🚀 *MINES BOT STARTED*\nCurrency: ${bot.selectedCurrency.toUpperCase()}\nMines: ${bot.selectedMines}\nFields: ${bot.selectedFields.length}\nBalance: ${bot.stats.startBal.toFixed(8)}`);
 
     // Start betting loop
     runMinesLoop();
@@ -1008,6 +1560,7 @@
     document.getElementById("start").disabled = false;
     document.getElementById("stop").disabled = true;
     
+    API.kirimPesan(`⏹ *MINES BOT STOPPED*\nProfit: ${bot.stats.profit.toFixed(8)} ${bot.selectedCurrency.toUpperCase()}\nBets: ${bot.stats.bets}`);
     await API.sendTelegramReport();
   };
 
@@ -1018,7 +1571,13 @@
     try {
       bot.lastBetTime = Date.now();
       
-      const amount = parseFloat(document.getElementById("amount").value);
+      // Calculate bet amount with martingale
+      let amount = bot.martingale.enabled ? bot.martingale.currentBet : parseFloat(document.getElementById("amount").value);
+      
+      // Ensure amount doesn't exceed balance
+      if (amount > bot.stats.currentBal) {
+        amount = bot.stats.currentBal * 0.95;
+      }
       
       // Place bet
       const result = await API.placeMinesBet(amount, bot.selectedMines, bot.selectedFields);
@@ -1032,7 +1591,6 @@
         const win = d.payout > 0;
         const payout = d.payout || 0;
         const multiplier = d.payoutMultiplier || 0;
-        const rounds = d?.state?.rounds || [];
         
         // Calculate profit
         const profit = payout - amount;
@@ -1051,7 +1609,7 @@
         // Track max payout
         if (multiplier > bot.globalMaxPayout) {
           bot.globalMaxPayout = multiplier;
-          kirimpesan(`🔥 New Max Payout: ${bot.globalMaxPayout.toFixed(4)}x`);
+          API.kirimPesan(`🔥 *New Max Payout!*\n${multiplier.toFixed(2)}x`);
         }
         
         // Update history
@@ -1068,13 +1626,19 @@
           if (ddPerc > bot.stats.maxDDPerc) bot.stats.maxDDPerc = ddPerc;
         }
         
+        // Update martingale
+        if (bot.martingale.enabled) {
+          const nextBet = calculateMartingaleBet(bot.martingale.baseBet, win);
+          bot.martingale.currentBet = nextBet;
+        }
+        
         // Add log
-        addLog(amount, payout, multiplier, win, d.state?.rounds?.map(r => r.field));
+        addLog(amount, payout, multiplier, win);
         
         // Update display
         updateDisplay();
         
-        // Check for chart report (every 500 wagered)
+        // Check for chart report
         const currentWagerFloor = Math.floor(bot.stats.wagered / bot.chartReportInterval);
         const lastWagerFloor = Math.floor(bot.lastChartWagerAmount / bot.chartReportInterval);
         
@@ -1084,9 +1648,17 @@
         
         bot.lastChartWagerAmount = bot.stats.wagered;
         
-        // Check for big payout notification
+        // Check for big win
         if (multiplier > 20) {
-          kirimpesan(`🔥 BIG WIN!\nPayout: ${multiplier.toFixed(2)}x\nAmount: ${payout.toFixed(8)} ${bot.selectedCurrency.toUpperCase()}`);
+          API.kirimPesan(`💰 *BIG WIN!*\nPayout: ${multiplier.toFixed(2)}x\nAmount: ${payout.toFixed(8)} ${bot.selectedCurrency.toUpperCase()}`);
+        }
+        
+        // Check targets
+        if (checkTargets()) {
+          bot.isRunning = false;
+          document.getElementById("start").disabled = false;
+          document.getElementById("stop").disabled = true;
+          return;
         }
       }
       
@@ -1096,12 +1668,6 @@
         await API.sendTelegramReport();
         bot.lastTelegramTime = now;
       }
-      
-      // Update runtime
-      const runtime = Math.floor((Date.now() - bot.stats.startTime) / 1000);
-      bot.runtime.hours = Math.floor(runtime / 3600);
-      bot.runtime.minutes = Math.floor((runtime % 3600) / 60);
-      bot.runtime.seconds = runtime % 60;
       
       // Continue loop
       if (bot.isRunning) {
@@ -1150,5 +1716,7 @@
   dragElement(ui);
 
   // Initial sync
-  API.syncOnce();
+  setTimeout(() => {
+    API.syncOnce();
+  }, 1000);
 })();
