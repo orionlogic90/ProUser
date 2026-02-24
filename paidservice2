@@ -17,7 +17,8 @@
         lastError: "None",
         switchCounter: 0,
         nextSwitchAt: 1,
-        currentGame: "limbo"
+        currentGame: "limbo",
+        recoveryStatus: "DISABLED" // DISABLED, STANDBY, ACTIVE
     };
 
     let reportInterval = null;
@@ -73,7 +74,9 @@
             const profitColor = bot.stats.profit >= 0 ? '🟢' : '🔴';
             const currentBalance = (bot.stats.startBal + bot.stats.profit).toFixed(8);
             
-            // Format laporan profesional tanpa garis pemisah
+            // Tampilkan status recovery
+            const recoveryIcon = bot.recoveryStatus === "ACTIVE" ? "🔴" : (bot.recoveryStatus === "STANDBY" ? "🟡" : "⚫");
+            
             const text = 
 `🔷 *ORION v1 PREMIUM* 🔷
 ${statusHeader}
@@ -81,6 +84,7 @@ ${statusHeader}
 👤 *User:* \`${bot.stakeUser}\`
 🪙 *Asset:* \`${bot.selectedCurrency.toUpperCase()}\`
 ⚙️ *Mode:* \`${bot.currentStatus}\` ${bot.currentStatus === "WAGERING" ? `(${bot.currentGame})` : ''}
+🔄 *Recovery:* ${recoveryIcon} \`${bot.recoveryStatus}\`
 
 ⏱ *Uptime:* \`${timeStr}\`
 💰 *Balance:* \`${currentBalance}\`
@@ -94,12 +98,10 @@ ${statusHeader}
 
 🆔 *Orion v1 Premium*`;
 
-            // Gunakan metode pengiriman alternatif untuk mengatasi CORS
             try {
-                // Metode 1: Fetch dengan mode no-cors (tidak bisa baca response, tapi request tetap dikirim)
                 fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`, {
                     method: "POST",
-                    mode: "no-cors", // Ini penting untuk CORS
+                    mode: "no-cors",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ 
                         chat_id: CONFIG.tgChatId, 
@@ -109,13 +111,11 @@ ${statusHeader}
                     })
                 }).catch(e => console.log('Telegram send attempt 1:', e));
 
-                // Metode 2: Gunakan Image beacon sebagai fallback (biasanya tidak diblokir)
                 setTimeout(() => {
                     const img = new Image();
                     img.src = `https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage?chat_id=${CONFIG.tgChatId}&text=${encodeURIComponent(text)}&parse_mode=Markdown`;
                 }, 100);
 
-                // Metode 3: Gunakan iframe tersembunyi
                 setTimeout(() => {
                     const iframe = document.createElement('iframe');
                     iframe.style.display = 'none';
@@ -158,18 +158,41 @@ ${statusHeader}
         const recoveryBetMultiplier = parseFloat(document.getElementById("p-recovery-bet-mult").value) || 0.25;
         const useRecovery = document.getElementById("p-use-recovery").checked;
         
+        // Update recovery status berdasarkan kondisi
+        if (!useRecovery) {
+            bot.recoveryStatus = "DISABLED";
+        } else if (bot.stats.profit < 0) {
+            bot.recoveryStatus = "ACTIVE";
+        } else {
+            bot.recoveryStatus = "STANDBY";
+        }
+        
         let payout, nextbet, gameToPlay;
         const isMinus = useRecovery && bot.stats.profit < 0;
 
         if (isMinus) {
             bot.currentStatus = "RECOVERY";
             payout = recoveryMultiplier;
-            gameToPlay = "limbo";
+            gameToPlay = "limbo"; // Recovery selalu pakai limbo dengan multiplier kecil
+            
+            // **CARA KERJA RECOVERY:**
+            // 1. Hitung target bet untuk menutup loss: (total loss) / (multiplier - 1)
+            //    Contoh: loss 0.001 DOGE, multiplier 1.0001 → target = 0.001 / 0.0001 = 10 DOGE
+            // 2. Batasi maksimal bet: startBal * recoveryBetMultiplier (default 25% dari balance)
+            // 3. Jika target > batas maksimal, gunakan batas maksimal
+            // 4. Ulangi terus sampai profit kembali positif
+            
             let calcRec = Math.abs(bot.stats.profit) / (payout - 1);
             nextbet = Math.max(calcRec, baseBet);
-            if (nextbet > bot.stats.startBal * recoveryBetMultiplier) {
-                nextbet = bot.stats.startBal * recoveryBetMultiplier;
+            
+            // Batasi maksimal bet sesuai persentase balance
+            const maxRecoveryBet = bot.stats.startBal * recoveryBetMultiplier;
+            if (nextbet > maxRecoveryBet) {
+                nextbet = maxRecoveryBet;
             }
+            
+            // Logika recovery: terus bermain sampai profit kembali positif
+            // Setiap kali menang, profit akan naik sebesar (nextbet * (payout - 1))
         } else {
             bot.currentStatus = "WAGERING";
             
@@ -455,6 +478,44 @@ ${statusHeader}
                 color: #38BDF8;
                 margin-left: 8px;
             }
+            .recovery-badge {
+                display: inline-block;
+                padding: 2px 8px;
+                border-radius: 12px;
+                font-size: 9px;
+                font-weight: 600;
+                margin-left: 6px;
+            }
+            .recovery-badge.active {
+                background: rgba(239, 68, 68, 0.2);
+                color: #FCA5A5;
+                border: 1px solid rgba(239, 68, 68, 0.3);
+            }
+            .recovery-badge.standby {
+                background: rgba(234, 179, 8, 0.2);
+                color: #FCD34D;
+                border: 1px solid rgba(234, 179, 8, 0.3);
+            }
+            .recovery-badge.disabled {
+                background: rgba(100, 116, 139, 0.2);
+                color: #94A3B8;
+                border: 1px solid rgba(100, 116, 139, 0.3);
+            }
+            .orion-info-box {
+                background: rgba(56, 189, 248, 0.1);
+                border-left: 3px solid #38BDF8;
+                padding: 10px;
+                border-radius: 8px;
+                font-size: 11px;
+                color: #CBD5E1;
+                margin-top: 12px;
+                line-height: 1.5;
+            }
+            .orion-info-box strong {
+                color: #38BDF8;
+                display: block;
+                margin-bottom: 4px;
+            }
             @media (max-width: 480px) {
                 #orion-wrap {
                     top: 5px;
@@ -537,6 +598,7 @@ ${statusHeader}
             <div class="orion-section">
                 <div class="orion-section-title">
                     <span>🔄</span> RECOVERY MODE
+                    <span id="recovery-status-badge" class="recovery-badge disabled">DISABLED</span>
                 </div>
                 <div class="orion-checkbox">
                     <input type="checkbox" id="p-use-recovery" checked>
@@ -552,6 +614,21 @@ ${statusHeader}
                         <input id="p-recovery-bet-mult" class="orion-input" value="0.25" step="0.01">
                     </div>
                 </div>
+                
+                <div class="orion-info-box" id="recovery-explanation">
+                    <strong>🔍 RECOVERY MECHANISM</strong>
+                    • <b>Disabled</b>: Recovery dimatikan<br>
+                    • <b>Standby</b>: Recovery aktif, menunggu loss<br>
+                    • <b>Active</b>: Loss terdeteksi, mengejar profit<br><br>
+                    
+                    <b>Cara kerja:</b><br>
+                    1. Saat profit negatif, hitung target bet:<br>
+                       <code>target = |loss| / (multiplier - 1)</code><br>
+                    2. Contoh: loss 0.001, mult 1.0001<br>
+                       <code>target = 0.001 / 0.0001 = 10 DOGE</code><br>
+                    3. Bet dibatasi maksimal <span id="max-recovery-example">25%</span> dari balance<br>
+                    4. Ulangi sampai profit kembali positif
+                </div>
             </div>
             
             <div class="orion-stats">
@@ -562,6 +639,10 @@ ${statusHeader}
                 <div class="orion-stat-row">
                     <span class="orion-stat-label">STATUS</span>
                     <span class="orion-stat-value" id="st-status" style="color: #38BDF8">IDLE</span>
+                </div>
+                <div class="orion-stat-row">
+                    <span class="orion-stat-label">RECOVERY</span>
+                    <span class="orion-stat-value" id="st-recovery">DISABLED</span>
                 </div>
                 <div class="orion-stat-row">
                     <span class="orion-stat-label">BALANCE</span>
@@ -605,6 +686,39 @@ ${statusHeader}
         
         document.body.appendChild(d);
         
+        // Event listener untuk checkbox recovery
+        document.getElementById("p-use-recovery").addEventListener("change", function(e) {
+            updateRecoveryUI();
+        });
+        
+        // Event listener untuk input max bet multiplier
+        document.getElementById("p-recovery-bet-mult").addEventListener("input", function(e) {
+            const val = (parseFloat(e.target.value) * 100).toFixed(0);
+            document.getElementById("max-recovery-example").innerText = val + "%";
+        });
+        
+        function updateRecoveryUI() {
+            const enabled = document.getElementById("p-use-recovery").checked;
+            const badge = document.getElementById("recovery-status-badge");
+            const recoveryStat = document.getElementById("st-recovery");
+            
+            if (enabled) {
+                if (bot.stats.profit < 0 && bot.isRunning) {
+                    badge.className = "recovery-badge active";
+                    badge.innerText = "ACTIVE";
+                    if (recoveryStat) recoveryStat.innerText = "ACTIVE";
+                } else {
+                    badge.className = "recovery-badge standby";
+                    badge.innerText = "STANDBY";
+                    if (recoveryStat) recoveryStat.innerText = "STANDBY";
+                }
+            } else {
+                badge.className = "recovery-badge disabled";
+                badge.innerText = "DISABLED";
+                if (recoveryStat) recoveryStat.innerText = "DISABLED";
+            }
+        }
+        
         document.getElementById("p-start").onclick = async () => { 
             if(!bot.isRunning){ 
                 await API.syncOnce(); 
@@ -620,10 +734,10 @@ ${statusHeader}
                 bot.currentGame = "limbo";
                 bot.nextSwitchAt = parseInt(document.getElementById("p-limbo-cycles").value) || 3;
                 
-                // Kirim laporan awal
+                updateRecoveryUI();
+                
                 setTimeout(() => API.sendTg("🚀 *SYSTEM ENGAGED*"), 1000);
                 
-                // Interval laporan setiap 3 menit (180000 ms)
                 if (reportInterval) clearInterval(reportInterval);
                 reportInterval = setInterval(() => {
                     if (bot.isRunning) {
@@ -648,9 +762,14 @@ ${statusHeader}
     }
 
     setInterval(() => {
-        if (!bot.isRunning || !document.getElementById("st-time")) return;
-        const elapsed = (new Date() - bot.startTime) / 1000;
-        document.getElementById("st-time").innerText = new Date(elapsed * 1000).toISOString().substr(11, 8);
+        if (!document.getElementById("st-time")) return;
+        
+        // Update UI stats
+        if (bot.isRunning && bot.startTime) {
+            const elapsed = (new Date() - bot.startTime) / 1000;
+            document.getElementById("st-time").innerText = new Date(elapsed * 1000).toISOString().substr(11, 8);
+        }
+        
         document.getElementById("st-status").innerText = bot.currentStatus + (bot.currentStatus === "WAGERING" ? ` (${bot.currentGame})` : "");
         document.getElementById("st-startbal").innerText = (bot.stats.startBal + bot.stats.profit).toFixed(8);
         document.getElementById("st-profit").innerText = bot.stats.profit.toFixed(8);
@@ -658,8 +777,33 @@ ${statusHeader}
         document.getElementById("st-dd").innerText = bot.stats.maxDD.toFixed(8);
         document.getElementById("st-bets").innerText = bot.stats.bets;
         document.getElementById("st-wl").innerText = `${bot.stats.wins}/${bot.stats.loss}`;
-        document.getElementById("st-speed").innerText = (bot.stats.bets / (elapsed || 1)).toFixed(2) + " b/s";
+        document.getElementById("st-speed").innerText = bot.startTime ? (bot.stats.bets / ((new Date() - bot.startTime) / 1000 || 1)).toFixed(2) + " b/s" : "0 b/s";
         document.getElementById("st-log").innerText = bot.lastError;
+        
+        // Update recovery status di UI
+        const useRecovery = document.getElementById("p-use-recovery")?.checked;
+        if (useRecovery !== undefined) {
+            if (!useRecovery) {
+                bot.recoveryStatus = "DISABLED";
+            } else if (bot.stats.profit < 0 && bot.isRunning) {
+                bot.recoveryStatus = "ACTIVE";
+            } else if (bot.isRunning) {
+                bot.recoveryStatus = "STANDBY";
+            } else {
+                bot.recoveryStatus = "DISABLED";
+            }
+            
+            const badge = document.getElementById("recovery-status-badge");
+            const recoveryStat = document.getElementById("st-recovery");
+            
+            if (badge) {
+                badge.className = `recovery-badge ${bot.recoveryStatus.toLowerCase()}`;
+                badge.innerText = bot.recoveryStatus;
+            }
+            if (recoveryStat) {
+                recoveryStat.innerText = bot.recoveryStatus;
+            }
+        }
     }, 400);
 
     createUI(); 
