@@ -40,6 +40,10 @@
     
     lastTelegramTime: Date.now(),
     telegramInterval: 180000,
+    
+    // Untuk drag
+    isDragging: false,
+    dragOffset: { x: 0, y: 0 }
   };
 
   /************** HELPER FUNCTIONS **************/
@@ -115,7 +119,6 @@
         bot.stakeUser = json.data.user.name;
         document.getElementById("st-user").innerText = `👤 ${bot.stakeUser}`;
         
-        // Update currency dropdown with balances
         const balances = json.data.user.balances || [];
         updateCurrencyDropdown(balances);
         
@@ -208,6 +211,78 @@
     return data;
   }
 
+  /************** DRAG FUNCTION **************/
+  function makeDraggable(element) {
+    let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
+    
+    element.onmousedown = dragMouseDown;
+    element.ontouchstart = dragTouchStart; // Untuk mobile
+    
+    function dragMouseDown(e) {
+      e.preventDefault();
+      pos3 = e.clientX;
+      pos4 = e.clientY;
+      document.onmouseup = closeDragElement;
+      document.onmousemove = elementDrag;
+    }
+    
+    function dragTouchStart(e) {
+      e.preventDefault();
+      const touch = e.touches[0];
+      pos3 = touch.clientX;
+      pos4 = touch.clientY;
+      document.ontouchend = closeDragElement;
+      document.ontouchmove = elementDragTouch;
+    }
+    
+    function elementDrag(e) {
+      e.preventDefault();
+      pos1 = pos3 - e.clientX;
+      pos2 = pos4 - e.clientY;
+      pos3 = e.clientX;
+      pos4 = e.clientY;
+      
+      let newTop = element.offsetTop - pos2;
+      let newLeft = element.offsetLeft - pos1;
+      
+      // Batasi agar tidak keluar layar
+      newTop = Math.max(0, Math.min(newTop, window.innerHeight - element.offsetHeight));
+      newLeft = Math.max(0, Math.min(newLeft, window.innerWidth - element.offsetWidth));
+      
+      element.style.top = newTop + "px";
+      element.style.left = newLeft + "px";
+      element.style.right = "auto";
+      element.style.bottom = "auto";
+    }
+    
+    function elementDragTouch(e) {
+      e.preventDefault();
+      const touch = e.touches[0];
+      pos1 = pos3 - touch.clientX;
+      pos2 = pos4 - touch.clientY;
+      pos3 = touch.clientX;
+      pos4 = touch.clientY;
+      
+      let newTop = element.offsetTop - pos2;
+      let newLeft = element.offsetLeft - pos1;
+      
+      newTop = Math.max(0, Math.min(newTop, window.innerHeight - element.offsetHeight));
+      newLeft = Math.max(0, Math.min(newLeft, window.innerWidth - element.offsetWidth));
+      
+      element.style.top = newTop + "px";
+      element.style.left = newLeft + "px";
+      element.style.right = "auto";
+      element.style.bottom = "auto";
+    }
+    
+    function closeDragElement() {
+      document.onmouseup = null;
+      document.onmousemove = null;
+      document.ontouchend = null;
+      document.ontouchmove = null;
+    }
+  }
+
   /************** CREATE UI **************/
   function createUI() {
     console.log("Creating UI...");
@@ -216,7 +291,7 @@
     const oldUI = document.getElementById("orion-mines");
     if (oldUI) oldUI.remove();
     
-    // Style
+    // Style mobile friendly
     const style = document.createElement("style");
     style.innerHTML = `
       #orion-mines {
@@ -224,88 +299,139 @@
         top: 20px;
         right: 20px;
         width: 340px;
+        max-width: calc(100vw - 30px);
+        max-height: calc(100vh - 40px);
+        overflow-y: auto;
         background: #0f172a;
         color: white;
-        font-family: Arial, sans-serif;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         padding: 15px;
-        border-radius: 10px;
+        border-radius: 15px;
         z-index: 999999;
-        border: 1px solid #f59e0b;
-        box-shadow: 0 5px 20px rgba(0,0,0,0.5);
+        border: 2px solid #f59e0b;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        touch-action: none; /* Untuk drag */
+        cursor: grab;
+        font-size: 14px;
       }
+      
+      #orion-mines:active {
+        cursor: grabbing;
+      }
+      
+      /* Mobile styles */
+      @media (max-width: 768px) {
+        #orion-mines {
+          top: 10px;
+          right: 10px;
+          left: 10px;
+          width: auto;
+          padding: 12px;
+          font-size: 13px;
+        }
+      }
+      
       #orion-mines input, #orion-mines select, #orion-mines button {
         width: 100%;
-        margin: 5px 0;
-        padding: 8px;
-        border-radius: 5px;
+        margin: 6px 0;
+        padding: 12px;
+        border-radius: 10px;
         border: 1px solid #334155;
         background: #1e293b;
         color: white;
         box-sizing: border-box;
+        font-size: 14px;
+        -webkit-appearance: none;
       }
+      
       #orion-mines button {
         cursor: pointer;
         font-weight: bold;
         border: none;
+        transition: transform 0.1s;
       }
+      
+      #orion-mines button:active {
+        transform: scale(0.98);
+      }
+      
       .start { background: #00c853; }
       .stop { background: #d50000; }
       .fieldsBtn { background: #2962ff; }
+      
       .stat-row {
         display: flex;
         justify-content: space-between;
-        padding: 5px;
+        padding: 10px;
         background: #1e293b;
-        margin: 3px 0;
-        border-radius: 5px;
-        font-size: 12px;
+        margin: 4px 0;
+        border-radius: 10px;
+        font-size: 13px;
       }
-      .stat-value { color: #f59e0b; font-weight: bold; }
+      
+      .stat-value { 
+        color: #f59e0b; 
+        font-weight: bold;
+        font-family: monospace;
+      }
+      
       .badge {
         background: #f59e0b;
         color: black;
-        padding: 3px 8px;
-        border-radius: 12px;
-        font-size: 11px;
+        padding: 5px 12px;
+        border-radius: 20px;
+        font-size: 12px;
         font-weight: bold;
       }
+      
       #logs {
         background: #1e293b;
-        padding: 8px;
-        border-radius: 5px;
-        height: 80px;
+        padding: 10px;
+        border-radius: 10px;
+        height: 100px;
         overflow-y: auto;
-        font-size: 11px;
+        font-size: 12px;
         margin: 10px 0;
+        font-family: monospace;
       }
+      
       .log-win { color: #00c853; }
       .log-loss { color: #d50000; }
+      
       .grid-2col {
         display: grid;
         grid-template-columns: 1fr 1fr;
-        gap: 8px;
+        gap: 10px;
       }
+      
+      /* Modal fields */
       #fieldsModal {
         position: fixed;
         top: 0; left: 0; right: 0; bottom: 0;
-        background: rgba(0,0,0,0.8);
+        background: rgba(0,0,0,0.9);
         display: none;
         align-items: center;
         justify-content: center;
         z-index: 1000000;
+        padding: 15px;
       }
+      
       #fieldsBox {
         background: #0f172a;
         padding: 20px;
-        border-radius: 10px;
-        width: 300px;
+        border-radius: 20px;
+        width: 100%;
+        max-width: 350px;
+        border: 2px solid #f59e0b;
       }
+      
       .field-grid {
         display: grid;
         grid-template-columns: repeat(5, 1fr);
-        gap: 5px;
-        margin: 15px 0;
+        gap: 8px;
+        margin: 20px 0;
       }
+      
       .field-cell {
         background: #1e293b;
         border: 1px solid #334155;
@@ -314,13 +440,59 @@
         align-items: center;
         justify-content: center;
         cursor: pointer;
-        font-size: 12px;
-        border-radius: 5px;
+        font-size: 14px;
+        font-weight: bold;
+        border-radius: 8px;
+        transition: all 0.1s;
       }
+      
+      .field-cell:active {
+        transform: scale(0.9);
+      }
+      
       .field-cell.active {
         background: #00c853;
         color: black;
-        font-weight: bold;
+        border-color: #00c853;
+      }
+      
+      /* Drag handle */
+      .drag-handle {
+        text-align: center;
+        padding: 5px;
+        margin-bottom: 10px;
+        color: #f59e0b;
+        font-size: 20px;
+        cursor: grab;
+        background: #1e293b;
+        border-radius: 10px;
+      }
+      
+      .drag-handle:active {
+        cursor: grabbing;
+      }
+      
+      /* Close button */
+      #close-bot {
+        background: #d50000;
+        padding: 8px;
+        border-radius: 20px;
+        font-size: 12px;
+        margin-top: 10px;
+      }
+      
+      /* Scrollbar */
+      #orion-mines::-webkit-scrollbar {
+        width: 5px;
+      }
+      
+      #orion-mines::-webkit-scrollbar-track {
+        background: #1e293b;
+      }
+      
+      #orion-mines::-webkit-scrollbar-thumb {
+        background: #f59e0b;
+        border-radius: 5px;
       }
     `;
     document.head.appendChild(style);
@@ -329,18 +501,20 @@
     const div = document.createElement("div");
     div.id = "orion-mines";
     div.innerHTML = `
-      <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
-        <span style="font-size:16px; font-weight:bold; color:#f59e0b;">⚡ ORION MINES</span>
+      <div class="drag-handle" id="dragHandle">⣿⣿⣿ Drag Here ⣿⣿⣿</div>
+      
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+        <span style="font-size:18px; font-weight:bold; color:#f59e0b;">⚡ ORION MINES</span>
         <span class="badge" id="mode-badge">REAL</span>
       </div>
 
       <div class="grid-2col">
         <div>
-          <label style="font-size:11px;">💰 Amount</label>
+          <label style="font-size:12px; display:block; margin-bottom:3px;">💰 Amount</label>
           <input id="amount" type="number" step="0.00000001" value="0.00000001">
         </div>
         <div>
-          <label style="font-size:11px;">💱 Currency</label>
+          <label style="font-size:12px; display:block; margin-bottom:3px;">💱 Currency</label>
           <select id="currency">
             <option value="pol">POL</option>
             <option value="idr">IDR</option>
@@ -351,39 +525,44 @@
       </div>
 
       <div>
-        <label style="font-size:11px;">💣 Mines Count</label>
+        <label style="font-size:12px; display:block; margin-bottom:3px;">💣 Mines Count</label>
         <select id="minesCount"></select>
       </div>
 
-      <button class="fieldsBtn" id="openFields" style="margin:5px 0;">📋 Pilih Fields</button>
-      <span id="fields-count" style="font-size:11px; color:#94a3b8;">0/25</span>
+      <button class="fieldsBtn" id="openFields" style="margin:8px 0;">📋 Pilih Fields ( <span id="fields-count">0</span>/25 )</button>
 
       <!-- STATS -->
-      <div style="background:#1e293b; border-radius:5px; padding:8px; margin:10px 0;">
-        <div class="stat-row"><span>User</span><span class="stat-value" id="st-user">Loading...</span></div>
-        <div class="stat-row"><span>Balance</span><span class="stat-value" id="st-balance">0</span></div>
-        <div class="stat-row"><span>Profit</span><span class="stat-value" id="st-profit">0</span></div>
-        <div class="stat-row"><span>Bets</span><span class="stat-value" id="st-bets">0</span></div>
-        <div class="stat-row"><span>W/L</span><span class="stat-value" id="st-wl">0/0</span></div>
-        <div class="stat-row"><span>WinRate</span><span class="stat-value" id="st-winrate">0%</span></div>
-        <div class="stat-row"><span>Wagered</span><span class="stat-value" id="st-wagered">0</span></div>
-        <div class="stat-row"><span>Max Payout</span><span class="stat-value" id="st-max-payout">0x</span></div>
-        <div class="stat-row"><span>Runtime</span><span class="stat-value" id="st-runtime">0h 0m</span></div>
+      <div style="background:#1e293b; border-radius:12px; padding:12px; margin:15px 0;">
+        <div class="stat-row"><span>👤 User</span><span class="stat-value" id="st-user">Loading...</span></div>
+        <div class="stat-row"><span>💰 Balance</span><span class="stat-value" id="st-balance">0</span></div>
+        <div class="stat-row"><span>📈 Profit</span><span class="stat-value" id="st-profit">0</span></div>
+        <div class="stat-row"><span>🎲 Bets</span><span class="stat-value" id="st-bets">0</span></div>
+        <div class="stat-row"><span>⚖️ W/L</span><span class="stat-value" id="st-wl">0/0</span></div>
+        <div class="stat-row"><span>📊 WinRate</span><span class="stat-value" id="st-winrate">0%</span></div>
+        <div class="stat-row"><span>💰 Wagered</span><span class="stat-value" id="st-wagered">0</span></div>
+        <div class="stat-row"><span>🔥 Max Payout</span><span class="stat-value" id="st-max-payout">0x</span></div>
+        <div class="stat-row"><span>⏱️ Runtime</span><span class="stat-value" id="st-runtime">0h 0m</span></div>
+        <div class="stat-row"><span>⚡ Speed</span><span class="stat-value" id="speed-value">0.00/s</span></div>
       </div>
 
       <!-- LOGS -->
-      <label style="font-size:11px;">📝 Live Logs</label>
+      <label style="font-size:12px; display:block; margin-bottom:5px;">📝 Live Logs</label>
       <div id="logs"></div>
 
       <!-- BUTTONS -->
-      <div class="grid-2col" style="margin-top:10px;">
+      <div class="grid-2col" style="margin-top:15px;">
         <button class="start" id="start">▶ START</button>
         <button class="stop" id="stop" disabled>⏹ STOP</button>
       </div>
+      
+      <button id="close-bot" style="width:100%; margin-top:10px;">🗕 Minimize</button>
     `;
     
     document.body.appendChild(div);
     console.log("✅ UI created");
+    
+    // Make draggable
+    makeDraggable(div);
     
     // Mines count options
     const minesSelect = document.getElementById("minesCount");
@@ -403,11 +582,11 @@
     modal.id = "fieldsModal";
     modal.innerHTML = `
       <div id="fieldsBox">
-        <h3 style="color:#f59e0b; margin-top:0;">Pilih Fields Aman</h3>
+        <h3 style="color:#f59e0b; margin-top:0; text-align:center;">Pilih Fields Aman</h3>
         <div class="field-grid" id="fieldGrid"></div>
         <div style="display:flex; gap:10px;">
-          <button id="clearFields" style="flex:1; background:#d50000;">Clear</button>
-          <button id="saveFields" style="flex:1; background:#00c853;">Save</button>
+          <button id="clearFields" style="flex:1; background:#d50000; padding:12px;">Clear</button>
+          <button id="saveFields" style="flex:1; background:#00c853; padding:12px;">Save</button>
         </div>
       </div>
     `;
@@ -431,7 +610,7 @@
     
     function updateFieldsCount() {
       const active = [...fieldGrid.children].filter(c => c.classList.contains("active")).length;
-      document.getElementById("fields-count").textContent = active + "/25";
+      document.getElementById("fields-count").textContent = active;
     }
     updateFieldsCount();
     
@@ -457,7 +636,6 @@
     document.getElementById("currency").onchange = (e) => {
       bot.selectedCurrency = e.target.value;
       saveLS("mine_currency", e.target.value);
-      // Update balance for new currency
       if (bot.token) {
         getBalance(e.target.value).then(bal => {
           bot.stats.currentBal = bal;
@@ -466,11 +644,46 @@
       }
     };
     
+    // Minimize button
+    document.getElementById("close-bot").onclick = () => {
+      div.style.display = "none";
+      const showBtn = document.getElementById("show-bot-btn") || createShowButton();
+      showBtn.style.display = "block";
+    };
+    
     // START button
     document.getElementById("start").onclick = startBot;
     
     // STOP button
     document.getElementById("stop").onclick = stopBot;
+  }
+  
+  function createShowButton() {
+    const btn = document.createElement("button");
+    btn.id = "show-bot-btn";
+    btn.innerHTML = "🤖 Tampilkan Bot";
+    btn.style.cssText = `
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: #f59e0b;
+      color: black;
+      border: none;
+      padding: 15px 25px;
+      border-radius: 50px;
+      font-weight: bold;
+      font-size: 16px;
+      z-index: 999998;
+      cursor: pointer;
+      box-shadow: 0 5px 20px rgba(0,0,0,0.3);
+      display: none;
+    `;
+    btn.onclick = () => {
+      document.getElementById("orion-mines").style.display = "block";
+      btn.style.display = "none";
+    };
+    document.body.appendChild(btn);
+    return btn;
   }
 
   /************** START BOT **************/
@@ -538,6 +751,8 @@
     bot.isRunning = true;
     bot.lastTelegramTime = Date.now();
     bot.globalMaxPayout = 0;
+    bot.speedBetsCount = 0;
+    bot.lastSpeedUpdate = Date.now();
     
     document.getElementById("start").disabled = true;
     document.getElementById("stop").disabled = false;
@@ -570,14 +785,12 @@
     try {
       const amount = parseFloat(document.getElementById("amount").value);
       
-      // Validate amount
       if (amount > bot.stats.currentBal) {
         addLog(`❌ Insufficient balance!`, false);
         stopBot();
         return;
       }
       
-      // Place bet
       const result = await placeMinesBet(amount, bot.selectedMines, bot.selectedFields);
       const d = result?.data?.minesBet || result?.minesBet;
       
@@ -601,10 +814,9 @@
           addLog(`✅ WIN ${multiplier.toFixed(2)}x | +${profit.toFixed(8)}`, true);
         } else {
           bot.stats.loss++;
-          addLog(`❌ LOSS | ${amount.toFixed(8)}`, false);
+          addLog(`❌ LOSS | -${amount.toFixed(8)}`, false);
         }
         
-        // Track max payout
         if (multiplier > bot.globalMaxPayout) {
           bot.globalMaxPayout = multiplier;
           if (multiplier > 10) {
@@ -614,20 +826,17 @@
         
         updateDisplay();
         
-        // Check for big win
         if (multiplier > 20) {
           kirimPesanTelegram(`💰 *BIG WIN!*\nPayout: ${multiplier.toFixed(2)}x\nAmount: ${payout.toFixed(8)} ${bot.selectedCurrency.toUpperCase()}`);
         }
       }
       
-      // Send periodic Telegram report (every 3 minutes)
       const now = Date.now();
       if (now - bot.lastTelegramTime >= 180000) {
         sendTelegramReport();
         bot.lastTelegramTime = now;
       }
       
-      // Continue loop with delay
       if (bot.isRunning) {
         setTimeout(runLoop, 500);
       }
@@ -649,6 +858,7 @@
       bot.betSpeed = bot.speedBetsCount / diff;
       bot.speedBetsCount = 0;
       bot.lastSpeedUpdate = now;
+      document.getElementById("speed-value").innerText = bot.betSpeed.toFixed(2) + "/s";
     }
   }
   
@@ -719,9 +929,9 @@
     
     const div = document.createElement("div");
     div.className = isWin ? "log-win" : "log-loss";
-    div.style.padding = "2px 0";
+    div.style.padding = "4px 0";
     div.style.borderBottom = "1px solid #334155";
-    div.style.fontSize = "11px";
+    div.style.fontSize = "12px";
     div.innerText = `[${new Date().toLocaleTimeString()}] ${text}`;
     
     logs.prepend(div);
@@ -736,7 +946,6 @@
     console.log("🚀 Initializing Orion Mines...");
     createUI();
     
-    // Auto sync on load
     setTimeout(() => {
       syncUser().then(() => {
         if (bot.token) {
@@ -748,10 +957,8 @@
       });
     }, 1000);
     
-    // Update display periodically
     setInterval(updateDisplay, 1000);
   }
   
-  // Start
   init();
 })();
