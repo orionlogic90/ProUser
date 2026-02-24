@@ -1,7 +1,7 @@
 (() => {
   /************** CONFIG **************/
   const CONFIG = {
-    apiUrl: 'https://stake.krd/_api',
+    apiUrl: window.location.origin + '/_api', // Auto-detect mirror
     tgToken: '8481497621:AAEPpKx_Om18VAmlM_oHyC9xoJH3DtlWUHw',
     tgChatId: '8453280675',
     version: "ORION MINES v3.0",
@@ -29,25 +29,34 @@
     
     selectedCurrency: "pol",
     selectedMines: 13,
-    selectedFields: [], // INI ADALAH FIELD AMAN (YANG AKAN DIKLIK)
+    selectedFields: [],
     globalMaxPayout: 0,
     
     betSpeed: 0,
     lastSpeedUpdate: Date.now(),
     speedBetsCount: 0,
     
-    runtime: { hours: 0, minutes: 0, seconds: 0 },
-    
     lastTelegramTime: Date.now(),
-    telegramInterval: 180000,
     
-    isDragging: false,
-    dragOffset: { x: 0, y: 0 }
+    // Target & Stop Loss
+    targetProfit: 0,
+    stopLoss: 0,
+    
+    // Streak settings
+    currentStreak: 0,
+    maxStreak: 0,
+    
+    // Auto reset
+    resetOnWinStreak: 0,
+    resetOnLossStreak: 0,
+    
+    // Random fields setiap bet
+    randomFields: false
   };
 
   /************** HELPER FUNCTIONS **************/
   function randomIdentifier() {
-    return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+    return Math.random().toString(36).substring(2, 15);
   }
 
   function saveLS(key, val) {
@@ -71,22 +80,16 @@
         text: message,
         parse_mode: 'Markdown'
       }),
-    }).catch(e => console.log("Telegram error:", e));
+    }).catch(() => {});
   }
 
   /************** API FUNCTIONS **************/
   async function syncUser() {
-    console.log("🔄 Syncing user...");
-    
     bot.token = localStorage.getItem('apitoken') || 
                 (document.cookie.match(/session=([^;]+)/) ? 
                 document.cookie.match(/session=([^;]+)/)[1] : null);
     
-    if (!bot.token) {
-      console.log("❌ No token found");
-      document.getElementById("st-user").innerText = "❌ No token";
-      return false;
-    }
+    if (!bot.token) return false;
 
     try {
       const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
@@ -110,13 +113,11 @@
         })
       });
       
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      
       const json = await res.json();
       
       if (json?.data?.user) {
         bot.stakeUser = json.data.user.name;
-        document.getElementById("st-user").innerText = `👤 ${bot.stakeUser}`;
+        document.getElementById("st-user").innerText = bot.stakeUser;
         
         const balances = json.data.user.balances || [];
         updateCurrencyDropdown(balances);
@@ -125,8 +126,6 @@
       }
       return false;
     } catch (e) {
-      console.log("❌ Sync error:", e);
-      document.getElementById("st-user").innerText = "❌ Sync failed";
       return false;
     }
   }
@@ -137,11 +136,10 @@
     
     currencySelect.innerHTML = '';
     
-    if (balances && balances.length > 0) {
+    if (balances.length > 0) {
       balances.forEach(b => {
         const currency = b.available.currency.toLowerCase();
-        const amount = parseFloat(b.available.amount);
-        const opt = new Option(`${currency.toUpperCase()} (${amount.toFixed(4)})`, currency);
+        const opt = new Option(currency.toUpperCase(), currency);
         if (currency === bot.selectedCurrency) opt.selected = true;
         currencySelect.add(opt);
       });
@@ -187,10 +185,8 @@
       currency: bot.selectedCurrency,
       identifier: randomIdentifier(),
       minesCount: parseInt(minesCount),
-      fields: fields // INI ADALAH FIELD AMAN YANG DIKIRIM
+      fields: fields
     };
-
-    console.log("🎲 Betting:", payload);
 
     const response = await fetch(`${CONFIG.apiUrl}/casino/mines/bet`, {
       method: "POST",
@@ -205,86 +201,24 @@
     
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     
-    const data = await response.json();
-    console.log("✅ Bet result:", data);
-    return data;
+    return response.json();
   }
 
-  /************** DRAG FUNCTION **************/
-  function makeDraggable(element) {
-    let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
-    
-    element.onmousedown = dragMouseDown;
-    element.ontouchstart = dragTouchStart;
-    
-    function dragMouseDown(e) {
-      e.preventDefault();
-      pos3 = e.clientX;
-      pos4 = e.clientY;
-      document.onmouseup = closeDragElement;
-      document.onmousemove = elementDrag;
+  // Random fields generator
+  function generateRandomFields(minesCount) {
+    const safeCount = 25 - minesCount;
+    const fields = [];
+    while (fields.length < safeCount) {
+      const field = Math.floor(Math.random() * 25);
+      if (!fields.includes(field)) {
+        fields.push(field);
+      }
     }
-    
-    function dragTouchStart(e) {
-      e.preventDefault();
-      const touch = e.touches[0];
-      pos3 = touch.clientX;
-      pos4 = touch.clientY;
-      document.ontouchend = closeDragElement;
-      document.ontouchmove = elementDragTouch;
-    }
-    
-    function elementDrag(e) {
-      e.preventDefault();
-      pos1 = pos3 - e.clientX;
-      pos2 = pos4 - e.clientY;
-      pos3 = e.clientX;
-      pos4 = e.clientY;
-      
-      let newTop = element.offsetTop - pos2;
-      let newLeft = element.offsetLeft - pos1;
-      
-      newTop = Math.max(0, Math.min(newTop, window.innerHeight - element.offsetHeight));
-      newLeft = Math.max(0, Math.min(newLeft, window.innerWidth - element.offsetWidth));
-      
-      element.style.top = newTop + "px";
-      element.style.left = newLeft + "px";
-      element.style.right = "auto";
-      element.style.bottom = "auto";
-    }
-    
-    function elementDragTouch(e) {
-      e.preventDefault();
-      const touch = e.touches[0];
-      pos1 = pos3 - touch.clientX;
-      pos2 = pos4 - touch.clientY;
-      pos3 = touch.clientX;
-      pos4 = touch.clientY;
-      
-      let newTop = element.offsetTop - pos2;
-      let newLeft = element.offsetLeft - pos1;
-      
-      newTop = Math.max(0, Math.min(newTop, window.innerHeight - element.offsetHeight));
-      newLeft = Math.max(0, Math.min(newLeft, window.innerWidth - element.offsetWidth));
-      
-      element.style.top = newTop + "px";
-      element.style.left = newLeft + "px";
-      element.style.right = "auto";
-      element.style.bottom = "auto";
-    }
-    
-    function closeDragElement() {
-      document.onmouseup = null;
-      document.onmousemove = null;
-      document.ontouchend = null;
-      document.ontouchmove = null;
-    }
+    return fields.sort((a, b) => a - b);
   }
 
-  /************** CREATE UI **************/
+  /************** CREATE UI - SEDERHANA **************/
   function createUI() {
-    console.log("Creating UI...");
-    
     const oldUI = document.getElementById("orion-mines");
     if (oldUI) oldUI.remove();
     
@@ -292,138 +226,134 @@
     style.innerHTML = `
       #orion-mines {
         position: fixed;
-        top: 20px;
-        right: 20px;
-        width: 340px;
-        max-width: calc(100vw - 30px);
-        max-height: calc(100vh - 40px);
+        top: 10px;
+        right: 10px;
+        width: 320px;
+        max-width: calc(100vw - 20px);
+        max-height: calc(100vh - 20px);
         overflow-y: auto;
         background: #0f172a;
         color: white;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        padding: 15px;
-        border-radius: 15px;
+        font-family: system-ui, -apple-system, sans-serif;
+        padding: 12px;
+        border-radius: 12px;
         z-index: 999999;
-        border: 2px solid #f59e0b;
-        box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-        touch-action: none;
-        cursor: grab;
-        font-size: 14px;
-      }
-      
-      #orion-mines:active {
-        cursor: grabbing;
-      }
-      
-      @media (max-width: 768px) {
-        #orion-mines {
-          top: 10px;
-          right: 10px;
-          left: 10px;
-          width: auto;
-          padding: 12px;
-          font-size: 13px;
-        }
+        border: 1px solid #f59e0b;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        font-size: 13px;
+        resize: both;
+        overflow: auto;
+        min-width: 280px;
       }
       
       #orion-mines input, #orion-mines select, #orion-mines button {
         width: 100%;
-        margin: 6px 0;
-        padding: 12px;
-        border-radius: 10px;
+        margin: 4px 0;
+        padding: 8px 10px;
+        border-radius: 6px;
         border: 1px solid #334155;
         background: #1e293b;
         color: white;
+        font-size: 13px;
         box-sizing: border-box;
-        font-size: 14px;
-        -webkit-appearance: none;
       }
       
       #orion-mines button {
         cursor: pointer;
-        font-weight: bold;
+        font-weight: 600;
         border: none;
-        transition: transform 0.1s;
-      }
-      
-      #orion-mines button:active {
-        transform: scale(0.98);
       }
       
       .start { background: #00c853; }
       .stop { background: #d50000; }
-      .fieldsBtn { background: #2962ff; }
+      .secondary { background: #2962ff; }
       
-      .stat-row {
+      .row {
         display: flex;
         justify-content: space-between;
-        padding: 10px;
-        background: #1e293b;
-        margin: 4px 0;
-        border-radius: 10px;
-        font-size: 13px;
+        align-items: center;
+        padding: 6px 0;
+        border-bottom: 1px solid #1e293b;
       }
       
-      .stat-value { 
-        color: #f59e0b; 
-        font-weight: bold;
+      .stat-value {
+        color: #f59e0b;
+        font-weight: 600;
         font-family: monospace;
+      }
+      
+      .grid-2 {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+      
+      .grid-3 {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 5px;
       }
       
       .badge {
         background: #f59e0b;
         color: black;
-        padding: 5px 12px;
-        border-radius: 20px;
-        font-size: 12px;
-        font-weight: bold;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 11px;
+        font-weight: 600;
       }
       
       #logs {
         background: #1e293b;
-        padding: 10px;
-        border-radius: 10px;
-        height: 100px;
+        padding: 6px;
+        border-radius: 6px;
+        height: 80px;
         overflow-y: auto;
-        font-size: 12px;
-        margin: 10px 0;
+        font-size: 11px;
         font-family: monospace;
+        margin: 8px 0;
       }
       
       .log-win { color: #00c853; }
       .log-loss { color: #d50000; }
       
-      .grid-2col {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 10px;
+      .section {
+        background: #1e293b;
+        padding: 8px;
+        border-radius: 6px;
+        margin: 8px 0;
+      }
+      
+      .section-title {
+        color: #f59e0b;
+        font-weight: 600;
+        font-size: 12px;
+        margin-bottom: 5px;
       }
       
       #fieldsModal {
         position: fixed;
         top: 0; left: 0; right: 0; bottom: 0;
-        background: rgba(0,0,0,0.9);
+        background: rgba(0,0,0,0.8);
         display: none;
         align-items: center;
         justify-content: center;
         z-index: 1000000;
-        padding: 15px;
       }
       
       #fieldsBox {
         background: #0f172a;
-        padding: 20px;
-        border-radius: 20px;
-        width: 100%;
-        max-width: 350px;
-        border: 2px solid #f59e0b;
+        padding: 15px;
+        border-radius: 10px;
+        width: 300px;
+        border: 1px solid #f59e0b;
       }
       
       .field-grid {
         display: grid;
         grid-template-columns: repeat(5, 1fr);
-        gap: 8px;
-        margin: 20px 0;
+        gap: 5px;
+        margin: 10px 0;
       }
       
       .field-cell {
@@ -434,72 +364,19 @@
         align-items: center;
         justify-content: center;
         cursor: pointer;
-        font-size: 14px;
-        font-weight: bold;
-        border-radius: 8px;
-        transition: all 0.1s;
-      }
-      
-      .field-cell:active {
-        transform: scale(0.9);
+        font-size: 12px;
+        border-radius: 4px;
       }
       
       .field-cell.active {
         background: #00c853;
         color: black;
-        border-color: #00c853;
-      }
-      
-      .field-cell.mine {
-        background: #d50000;
-        color: white;
-        border-color: #d50000;
-      }
-      
-      .info-box {
-        background: #1e293b;
-        padding: 10px;
-        border-radius: 8px;
-        margin: 10px 0;
-        font-size: 12px;
-        color: #94a3b8;
-        border-left: 3px solid #f59e0b;
-      }
-      
-      .drag-handle {
-        text-align: center;
-        padding: 5px;
-        margin-bottom: 10px;
-        color: #f59e0b;
-        font-size: 20px;
-        cursor: grab;
-        background: #1e293b;
-        border-radius: 10px;
-      }
-      
-      .drag-handle:active {
-        cursor: grabbing;
       }
       
       #close-bot {
-        background: #d50000;
-        padding: 8px;
-        border-radius: 20px;
-        font-size: 12px;
-        margin-top: 10px;
-      }
-      
-      #orion-mines::-webkit-scrollbar {
-        width: 5px;
-      }
-      
-      #orion-mines::-webkit-scrollbar-track {
-        background: #1e293b;
-      }
-      
-      #orion-mines::-webkit-scrollbar-thumb {
-        background: #f59e0b;
-        border-radius: 5px;
+        background: #424242;
+        margin-top: 8px;
+        padding: 6px;
       }
     `;
     document.head.appendChild(style);
@@ -507,192 +384,157 @@
     const div = document.createElement("div");
     div.id = "orion-mines";
     div.innerHTML = `
-      <div class="drag-handle" id="dragHandle">⣿⣿⣿ Drag Here ⣿⣿⣿</div>
-      
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
-        <span style="font-size:18px; font-weight:bold; color:#f59e0b;">⚡ ORION MINES</span>
-        <span class="badge" id="mode-badge">REAL</span>
+      <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
+        <span style="font-weight:bold; color:#f59e0b;">⚡ ORION MINES</span>
+        <span class="badge">REAL</span>
       </div>
 
-      <div class="grid-2col">
-        <div>
-          <label style="font-size:12px; display:block; margin-bottom:3px;">💰 Amount</label>
-          <input id="amount" type="number" step="0.00000001" value="0.00000001">
-        </div>
-        <div>
-          <label style="font-size:12px; display:block; margin-bottom:3px;">💱 Currency</label>
-          <select id="currency">
-            <option value="pol">POL</option>
-            <option value="idr">IDR</option>
-            <option value="usdt">USDT</option>
-            <option value="doge">DOGE</option>
-          </select>
-        </div>
+      <div class="grid-2">
+        <input id="amount" type="number" step="0.00000001" value="0.00000001" placeholder="Amount">
+        <select id="currency">
+          <option value="pol">POL</option>
+          <option value="idr">IDR</option>
+          <option value="usdt">USDT</option>
+        </select>
       </div>
 
-      <div>
-        <label style="font-size:12px; display:block; margin-bottom:3px;">💣 Jumlah Mines (Bom)</label>
+      <div class="grid-2">
         <select id="minesCount"></select>
+        <button class="secondary" id="openFields">📋 Fields (${bot.selectedFields.length})</button>
       </div>
 
-      <div class="info-box">
-        ⚡ <strong>Fields Hijau = Tempat Aman</strong> (akan diklik)<br>
-        ⚡ Mines akan ditempatkan di sisa field lainnya
+      <div class="section">
+        <div class="section-title">⚙️ SETTINGS</div>
+        <div class="grid-2">
+          <input id="targetProfit" type="number" step="0.01" placeholder="Target %" value="10">
+          <input id="stopLoss" type="number" step="0.01" placeholder="Stop Loss %" value="5">
+        </div>
+        <div class="grid-2">
+          <input id="resetWin" type="number" placeholder="Reset after X wins" value="0">
+          <input id="resetLoss" type="number" placeholder="Reset after X losses" value="0">
+        </div>
+        <div style="display:flex; align-items:center; gap:10px; margin-top:5px;">
+          <input type="checkbox" id="randomFields" style="width:auto;">
+          <label>Random fields setiap bet</label>
+        </div>
       </div>
 
-      <button class="fieldsBtn" id="openFields">📋 Pilih Fields Aman ( <span id="fields-count">0</span>/25 )</button>
-
-      <div style="background:#1e293b; border-radius:12px; padding:12px; margin:15px 0;">
-        <div class="stat-row"><span>👤 User</span><span class="stat-value" id="st-user">Loading...</span></div>
-        <div class="stat-row"><span>💰 Balance</span><span class="stat-value" id="st-balance">0</span></div>
-        <div class="stat-row"><span>📈 Profit</span><span class="stat-value" id="st-profit">0</span></div>
-        <div class="stat-row"><span>🎲 Bets</span><span class="stat-value" id="st-bets">0</span></div>
-        <div class="stat-row"><span>⚖️ W/L</span><span class="stat-value" id="st-wl">0/0</span></div>
-        <div class="stat-row"><span>📊 WinRate</span><span class="stat-value" id="st-winrate">0%</span></div>
-        <div class="stat-row"><span>💰 Wagered</span><span class="stat-value" id="st-wagered">0</span></div>
-        <div class="stat-row"><span>🔥 Max Payout</span><span class="stat-value" id="st-max-payout">0x</span></div>
-        <div class="stat-row"><span>⏱️ Runtime</span><span class="stat-value" id="st-runtime">0h 0m</span></div>
-        <div class="stat-row"><span>⚡ Speed</span><span class="stat-value" id="speed-value">0.00/s</span></div>
+      <div class="section">
+        <div class="row"><span>👤 User</span><span class="stat-value" id="st-user">-</span></div>
+        <div class="row"><span>💰 Balance</span><span class="stat-value" id="st-balance">0</span></div>
+        <div class="row"><span>📈 Profit</span><span class="stat-value" id="st-profit">0</span></div>
+        <div class="row"><span>🎲 Bets</span><span class="stat-value" id="st-bets">0</span></div>
+        <div class="row"><span>⚖️ W/L</span><span class="stat-value" id="st-wl">0/0</span></div>
+        <div class="row"><span>📊 WinRate</span><span class="stat-value" id="st-winrate">0%</span></div>
+        <div class="row"><span>🔥 Streak</span><span class="stat-value" id="st-streak">0</span></div>
       </div>
 
-      <label style="font-size:12px; display:block; margin-bottom:5px;">📝 Live Logs</label>
       <div id="logs"></div>
 
-      <div class="grid-2col" style="margin-top:15px;">
-        <button class="start" id="start">▶ START</button>
-        <button class="stop" id="stop" disabled>⏹ STOP</button>
+      <div class="grid-2">
+        <button class="start" id="start">START</button>
+        <button class="stop" id="stop" disabled>STOP</button>
       </div>
       
-      <button id="close-bot" style="width:100%; margin-top:10px;">🗕 Minimize</button>
+      <button id="close-bot">🗕 MINIMIZE</button>
     `;
     
     document.body.appendChild(div);
-    console.log("✅ UI created");
-    
-    makeDraggable(div);
     
     // Mines count options
     const minesSelect = document.getElementById("minesCount");
     for (let i = 3; i <= 24; i++) {
       const opt = document.createElement("option");
       opt.value = i;
-      opt.textContent = i;
+      opt.textContent = i + " Mines";
       minesSelect.appendChild(opt);
     }
     
-    // Load saved values
-    document.getElementById("amount").value = loadLS("mine_amount", 0.00000001);
-    document.getElementById("minesCount").value = loadLS("mine_minesCount", 13);
+    // Load saved
+    document.getElementById("amount").value = loadLS("amount", 0.00000001);
+    document.getElementById("minesCount").value = loadLS("mines", 13);
+    document.getElementById("targetProfit").value = loadLS("target", 10);
+    document.getElementById("stopLoss").value = loadLS("stoploss", 5);
+    document.getElementById("resetWin").value = loadLS("resetWin", 0);
+    document.getElementById("resetLoss").value = loadLS("resetLoss", 0);
     
     // Fields modal
     const modal = document.createElement("div");
     modal.id = "fieldsModal";
     modal.innerHTML = `
       <div id="fieldsBox">
-        <h3 style="color:#f59e0b; margin-top:0; text-align:center;">Pilih Fields AMAN (Hijau)</h3>
-        <p style="text-align:center; font-size:12px; color:#94a3b8; margin-bottom:15px;">
-          Klik field yang MENANG (bukan bom)<br>
-          <span style="color:#00c853;">Hijau = Aman</span> | <span style="color:#d50000;">Merah = Bom (otomatis)</span>
-        </p>
+        <h4 style="margin:0 0 10px; color:#f59e0b;">Pilih Field Aman</h4>
         <div class="field-grid" id="fieldGrid"></div>
-        <div style="display:flex; gap:10px; margin-top:15px;">
-          <button id="clearFields" style="flex:1; background:#d50000; padding:12px;">Clear All</button>
-          <button id="saveFields" style="flex:1; background:#00c853; padding:12px;">Save Fields</button>
+        <div class="grid-2">
+          <button id="clearFields">Clear</button>
+          <button id="saveFields">Save</button>
         </div>
       </div>
     `;
     document.body.appendChild(modal);
     
-    // Grid fields
     const fieldGrid = modal.querySelector("#fieldGrid");
-    let selectedFields = loadLS("mine_fields", []);
+    let savedFields = loadLS("fields", []);
     
     for (let i = 0; i < 25; i++) {
       const cell = document.createElement("div");
       cell.className = "field-cell";
       cell.textContent = i;
-      if (selectedFields.includes(i)) cell.classList.add("active");
-      
-      cell.onclick = () => {
-        cell.classList.toggle("active");
-        updateFieldsCount();
-      };
-      
+      if (savedFields.includes(i)) cell.classList.add("active");
+      cell.onclick = () => cell.classList.toggle("active");
       fieldGrid.appendChild(cell);
     }
     
-    function updateFieldsCount() {
-      const active = [...fieldGrid.children].filter(c => c.classList.contains("active")).length;
-      document.getElementById("fields-count").textContent = active;
-    }
-    updateFieldsCount();
+    document.getElementById("openFields").onclick = () => {
+      modal.style.display = "flex";
+    };
     
-    document.getElementById("openFields").onclick = () => modal.style.display = "flex";
-    modal.onclick = e => { if (e.target === modal) modal.style.display = "none"; };
+    modal.onclick = e => {
+      if (e.target === modal) modal.style.display = "none";
+    };
     
     document.getElementById("clearFields").onclick = () => {
-      [...fieldGrid.children].forEach(c => c.classList.remove("active"));
-      updateFieldsCount();
+      fieldGrid.querySelectorAll(".field-cell").forEach(c => c.classList.remove("active"));
     };
     
     document.getElementById("saveFields").onclick = () => {
-      selectedFields = [...fieldGrid.children]
+      bot.selectedFields = [...fieldGrid.children]
         .filter(c => c.classList.contains("active"))
         .map(c => +c.textContent);
-      
-      // Validasi: jumlah field aman harus 25 - minesCount
-      const mines = parseInt(document.getElementById("minesCount").value);
-      if (selectedFields.length !== 25 - mines) {
-        if (!confirm(`⚠️ Dengan ${mines} mines, kamu harus memilih ${25-mines} field aman.\nSekarang kamu memilih ${selectedFields.length} field.\nLanjutkan?`)) {
-          return;
-        }
-      }
-      
-      saveLS("mine_fields", selectedFields);
+      saveLS("fields", bot.selectedFields);
+      document.getElementById("openFields").innerHTML = `📋 Fields (${bot.selectedFields.length})`;
       modal.style.display = "none";
-      updateFieldsCount();
-      bot.selectedFields = selectedFields;
-      
-      alert(`✅ Fields aman disimpan!\nMines: ${mines}\nField aman: ${selectedFields.length}\nField bom: ${25-selectedFields.length}`);
     };
     
-    // Currency change
+    // Event listeners
     document.getElementById("currency").onchange = (e) => {
       bot.selectedCurrency = e.target.value;
-      saveLS("mine_currency", e.target.value);
-      if (bot.token) {
-        getBalance(e.target.value).then(bal => {
-          bot.stats.currentBal = bal;
-          updateDisplay();
-        });
-      }
+      saveLS("currency", e.target.value);
     };
     
-    // Mines count change - update info
-    document.getElementById("minesCount").onchange = () => {
-      const mines = parseInt(document.getElementById("minesCount").value);
-      const safeNeeded = 25 - mines;
-      document.getElementById("fields-count").style.color = "#f59e0b";
+    document.getElementById("minesCount").onchange = (e) => {
+      bot.selectedMines = parseInt(e.target.value);
+      saveLS("mines", bot.selectedMines);
     };
     
-    // Minimize button
+    document.getElementById("randomFields").onchange = (e) => {
+      bot.randomFields = e.target.checked;
+    };
+    
     document.getElementById("close-bot").onclick = () => {
       div.style.display = "none";
-      const showBtn = document.getElementById("show-bot-btn") || createShowButton();
+      const showBtn = document.getElementById("show-bot") || createShowButton();
       showBtn.style.display = "block";
     };
     
-    // START button
     document.getElementById("start").onclick = startBot;
-    
-    // STOP button
     document.getElementById("stop").onclick = stopBot;
   }
   
   function createShowButton() {
     const btn = document.createElement("button");
-    btn.id = "show-bot-btn";
-    btn.innerHTML = "🤖 Tampilkan Bot";
+    btn.id = "show-bot";
+    btn.innerHTML = "🤖 MINES";
     btn.style.cssText = `
       position: fixed;
       bottom: 20px;
@@ -700,14 +542,11 @@
       background: #f59e0b;
       color: black;
       border: none;
-      padding: 15px 25px;
-      border-radius: 50px;
+      padding: 12px 20px;
+      border-radius: 30px;
       font-weight: bold;
-      font-size: 16px;
       z-index: 999998;
       cursor: pointer;
-      box-shadow: 0 5px 20px rgba(0,0,0,0.3);
-      display: none;
     `;
     btn.onclick = () => {
       document.getElementById("orion-mines").style.display = "block";
@@ -717,38 +556,16 @@
     return btn;
   }
 
-  /************** START BOT **************/
+  /************** BOT LOGIC **************/
   async function startBot() {
-    console.log("▶️ START clicked");
+    if (bot.isRunning) return;
     
-    if (bot.isRunning) {
-      alert("Bot already running");
-      return;
-    }
-    
-    // Get selected fields from modal
-    const fieldGrid = document.querySelector("#fieldGrid");
-    if (fieldGrid) {
-      bot.selectedFields = [...fieldGrid.children]
-        .filter(c => c.classList.contains("active"))
-        .map(c => +c.textContent);
-    }
-    
-    const mines = parseInt(document.getElementById("minesCount").value);
-    const safeNeeded = 25 - mines;
-    
-    // Validasi jumlah field aman
-    if (bot.selectedFields.length === 0) {
-      alert("❌ Pilih minimal 1 field aman!");
-      return;
-    }
-    
-    if (bot.selectedFields.length !== safeNeeded) {
-      alert(`❌ Dengan ${mines} mines, kamu HARUS memilih ${safeNeeded} field aman!\nSekarang memilih ${bot.selectedFields.length} field.`);
-      return;
-    }
-    
-    console.log(`✅ Valid: ${mines} mines, ${bot.selectedFields.length} field aman`);
+    // Get settings
+    bot.targetProfit = parseFloat(document.getElementById("targetProfit").value) / 100;
+    bot.stopLoss = parseFloat(document.getElementById("stopLoss").value) / 100;
+    bot.resetOnWinStreak = parseInt(document.getElementById("resetWin").value);
+    bot.resetOnLossStreak = parseInt(document.getElementById("resetLoss").value);
+    bot.selectedMines = parseInt(document.getElementById("minesCount").value);
     
     // Get token
     bot.token = localStorage.getItem('apitoken') || 
@@ -756,24 +573,20 @@
                 document.cookie.match(/session=([^;]+)/)[1] : null);
     
     if (!bot.token) {
-      alert("❌ Tidak ada token! Login dulu di Stake.");
+      alert("No token found!");
       return;
     }
     
-    const synced = await syncUser();
-    if (!synced) {
-      alert("❌ Gagal sync user. Coba refresh.");
-      return;
-    }
-    
+    // Sync
+    await syncUser();
     const balance = await getBalance(bot.selectedCurrency);
-    console.log(`💰 Balance: ${balance} ${bot.selectedCurrency}`);
     
     if (balance <= 0) {
-      alert(`❌ Balance ${bot.selectedCurrency.toUpperCase()} 0!`);
+      alert("Insufficient balance!");
       return;
     }
     
+    // Reset stats
     bot.stats = {
       profit: 0,
       wagered: 0,
@@ -784,57 +597,77 @@
       loss: 0,
       startTime: Date.now(),
       maxDD: 0,
-      maxDDPerc: 0,
       history: [balance]
     };
     
+    bot.currentStreak = 0;
     bot.isRunning = true;
-    bot.lastTelegramTime = Date.now();
-    bot.globalMaxPayout = 0;
-    bot.speedBetsCount = 0;
-    bot.lastSpeedUpdate = Date.now();
     
     document.getElementById("start").disabled = true;
     document.getElementById("stop").disabled = false;
     
-    updateDisplay();
-    addLog(`🚀 Bot started | Mines: ${mines} | Field aman: ${bot.selectedFields.length}`, true);
-    
-    kirimPesanTelegram(`🚀 *MINES BOT STARTED*\nCurrency: ${bot.selectedCurrency.toUpperCase()}\nMines: ${mines}\nField Aman: ${bot.selectedFields.length}\nBalance: ${balance.toFixed(8)}`);
+    addLog(`Started | Balance: ${balance.toFixed(8)}`, true);
+    kirimPesanTelegram(`🚀 MINES STARTED\nBalance: ${balance.toFixed(8)} ${bot.selectedCurrency.toUpperCase()}`);
     
     runLoop();
   }
   
   function stopBot() {
-    console.log("⏹️ STOP clicked");
     bot.isRunning = false;
     document.getElementById("start").disabled = false;
     document.getElementById("stop").disabled = true;
     
-    addLog(`⏹️ Bot stopped | Profit: ${bot.stats.profit.toFixed(8)}`, false);
-    
-    kirimPesanTelegram(`⏹ *MINES BOT STOPPED*\nProfit: ${bot.stats.profit.toFixed(8)} ${bot.selectedCurrency.toUpperCase()}\nBets: ${bot.stats.bets}`);
+    addLog(`Stopped | Profit: ${bot.stats.profit.toFixed(8)}`, false);
+    kirimPesanTelegram(`⏹ MINES STOPPED\nProfit: ${bot.stats.profit.toFixed(8)} ${bot.selectedCurrency.toUpperCase()}`);
   }
   
-  /************** BETTING LOOP **************/
   async function runLoop() {
     if (!bot.isRunning) return;
     
     try {
-      const amount = parseFloat(document.getElementById("amount").value);
+      // Check target/stop loss
+      const profitPct = bot.stats.profit / bot.stats.startBal;
       
-      if (amount > bot.stats.currentBal) {
-        addLog(`❌ Insufficient balance!`, false);
+      if (bot.targetProfit > 0 && profitPct >= bot.targetProfit) {
+        addLog(`🎯 Target reached! +${(profitPct*100).toFixed(1)}%`, true);
+        kirimPesanTelegram(`🎯 TARGET REACHED!\nProfit: ${(profitPct*100).toFixed(1)}%`);
         stopBot();
         return;
       }
       
-      const result = await placeMinesBet(amount, bot.selectedMines, bot.selectedFields);
+      if (bot.stopLoss > 0 && profitPct <= -bot.stopLoss) {
+        addLog(`🛑 Stop loss! ${(profitPct*100).toFixed(1)}%`, false);
+        kirimPesanTelegram(`🛑 STOP LOSS\nLoss: ${(profitPct*100).toFixed(1)}%`);
+        stopBot();
+        return;
+      }
+      
+      // Get fields
+      let fields = bot.selectedFields;
+      if (bot.randomFields) {
+        fields = generateRandomFields(bot.selectedMines);
+      }
+      
+      if (fields.length === 0) {
+        addLog("❌ No fields selected!", false);
+        stopBot();
+        return;
+      }
+      
+      const amount = parseFloat(document.getElementById("amount").value);
+      
+      if (amount > bot.stats.currentBal) {
+        addLog("❌ Insufficient balance!", false);
+        stopBot();
+        return;
+      }
+      
+      // Place bet
+      const result = await placeMinesBet(amount, bot.selectedMines, fields);
       const d = result?.data?.minesBet || result?.minesBet;
       
       if (d) {
         bot.speedBetsCount++;
-        updateBetSpeed();
         
         const win = d.payout > 0;
         const payout = d.payout || 0;
@@ -845,42 +678,49 @@
         bot.stats.wagered += amount;
         bot.stats.profit += profit;
         bot.stats.currentBal += profit;
-        bot.stats.history.push(bot.stats.currentBal);
         
         if (win) {
           bot.stats.wins++;
+          bot.currentStreak = bot.currentStreak > 0 ? bot.currentStreak + 1 : 1;
           addLog(`✅ WIN ${multiplier.toFixed(2)}x | +${profit.toFixed(8)}`, true);
+          
+          // Reset on win streak
+          if (bot.resetOnWinStreak > 0 && bot.currentStreak >= bot.resetOnWinStreak) {
+            addLog(`🔄 Reset after ${bot.currentStreak} wins`, true);
+            bot.currentStreak = 0;
+            // Reset fields or other logic here
+          }
         } else {
           bot.stats.loss++;
+          bot.currentStreak = bot.currentStreak < 0 ? bot.currentStreak - 1 : -1;
           addLog(`❌ LOSS | -${amount.toFixed(8)}`, false);
+          
+          // Reset on loss streak
+          if (bot.resetOnLossStreak > 0 && Math.abs(bot.currentStreak) >= bot.resetOnLossStreak) {
+            addLog(`🔄 Reset after ${Math.abs(bot.currentStreak)} losses`, true);
+            bot.currentStreak = 0;
+          }
         }
         
         if (multiplier > bot.globalMaxPayout) {
           bot.globalMaxPayout = multiplier;
-          if (multiplier > 10) {
-            kirimPesanTelegram(`🔥 *New Max Payout!*\n${multiplier.toFixed(2)}x`);
-          }
         }
         
         updateDisplay();
-        
-        if (multiplier > 20) {
-          kirimPesanTelegram(`💰 *BIG WIN!*\nPayout: ${multiplier.toFixed(2)}x\nAmount: ${payout.toFixed(8)} ${bot.selectedCurrency.toUpperCase()}`);
-        }
       }
       
+      // Telegram report every 3 mins
       const now = Date.now();
       if (now - bot.lastTelegramTime >= 180000) {
-        sendTelegramReport();
+        sendReport();
         bot.lastTelegramTime = now;
       }
       
       if (bot.isRunning) {
-        setTimeout(runLoop, 500);
+        setTimeout(runLoop, 300);
       }
       
     } catch (e) {
-      console.log("❌ Loop error:", e);
       addLog(`⚠️ Error: ${e.message}`, false);
       if (bot.isRunning) {
         setTimeout(runLoop, 2000);
@@ -888,115 +728,44 @@
     }
   }
   
-  function updateBetSpeed() {
-    const now = Date.now();
-    const diff = (now - bot.lastSpeedUpdate) / 1000;
+  function updateDisplay() {
+    document.getElementById("st-balance").innerText = bot.stats.currentBal.toFixed(8);
+    document.getElementById("st-profit").innerText = (bot.stats.profit >= 0 ? '+' : '') + bot.stats.profit.toFixed(8);
+    document.getElementById("st-bets").innerText = bot.stats.bets;
+    document.getElementById("st-wl").innerText = bot.stats.wins + "/" + bot.stats.loss;
     
-    if (diff >= 1) {
-      bot.betSpeed = bot.speedBetsCount / diff;
-      bot.speedBetsCount = 0;
-      bot.lastSpeedUpdate = now;
-      document.getElementById("speed-value").innerText = bot.betSpeed.toFixed(2) + "/s";
-    }
+    const winRate = bot.stats.bets > 0 ? (bot.stats.wins / bot.stats.bets * 100).toFixed(1) : 0;
+    document.getElementById("st-winrate").innerText = winRate + "%";
+    document.getElementById("st-streak").innerText = bot.currentStreak;
   }
   
-  function sendTelegramReport() {
+  function addLog(text, isWin) {
+    const logs = document.getElementById("logs");
+    const div = document.createElement("div");
+    div.className = isWin ? "log-win" : "log-loss";
+    div.style.padding = "2px 0";
+    div.innerText = `[${new Date().toLocaleTimeString()}] ${text}`;
+    logs.prepend(div);
+    if (logs.children.length > 10) logs.lastChild.remove();
+  }
+  
+  function sendReport() {
     const runtime = Math.floor((Date.now() - bot.stats.startTime) / 1000);
     const hours = Math.floor(runtime / 3600);
     const minutes = Math.floor((runtime % 3600) / 60);
     
-    const winRate = bot.stats.bets > 0 ? (bot.stats.wins / bot.stats.bets * 100).toFixed(1) : 0;
-    const pnlPct = (bot.stats.profit / bot.stats.startBal * 100).toFixed(2);
+    const msg = `📊 MINES REPORT\n` +
+      `Runtime: ${hours}h ${minutes}m\n` +
+      `Bets: ${bot.stats.bets} | W/L: ${bot.stats.wins}/${bot.stats.loss}\n` +
+      `Profit: ${bot.stats.profit.toFixed(8)} ${bot.selectedCurrency.toUpperCase()}`;
     
-    let message = "```\n";
-    message += `⚡ MINES REPORT ⚡\n`;
-    message += `════════════════\n`;
-    message += `Runtime : ${hours}h ${minutes}m\n`;
-    message += `Currency: ${bot.selectedCurrency.toUpperCase()}\n`;
-    message += `Mines   : ${bot.selectedMines}\n`;
-    message += `Field Aman: ${bot.selectedFields.length}\n`;
-    message += `\n`;
-    message += `Start   : ${bot.stats.startBal.toFixed(8)}\n`;
-    message += `Current : ${bot.stats.currentBal.toFixed(8)}\n`;
-    message += `P/L     : ${bot.stats.profit >= 0 ? '+' : ''}${bot.stats.profit.toFixed(8)} (${pnlPct}%)\n`;
-    message += `Max Payout: ${bot.globalMaxPayout.toFixed(2)}x\n`;
-    message += `\n`;
-    message += `Bets    : ${bot.stats.bets}\n`;
-    message += `W/L     : ${bot.stats.wins}/${bot.stats.loss}\n`;
-    message += `WinRate : ${winRate}%\n`;
-    message += `Wagered : ${bot.stats.wagered.toFixed(8)}\n`;
-    message += "```";
-    
-    kirimPesanTelegram(message);
-  }
-  
-  /************** UPDATE DISPLAY **************/
-  function updateDisplay() {
-    try {
-      document.getElementById("st-balance").innerText = bot.stats.currentBal.toFixed(8) + " " + bot.selectedCurrency.toUpperCase();
-      document.getElementById("st-profit").innerText = (bot.stats.profit >= 0 ? '+' : '') + bot.stats.profit.toFixed(8);
-      document.getElementById("st-bets").innerText = bot.stats.bets;
-      document.getElementById("st-wl").innerText = bot.stats.wins + "/" + bot.stats.loss;
-      
-      const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100).toFixed(1) : 0;
-      document.getElementById("st-winrate").innerText = winRate + "%";
-      
-      document.getElementById("st-wagered").innerText = bot.stats.wagered.toFixed(8);
-      document.getElementById("st-max-payout").innerText = bot.globalMaxPayout.toFixed(2) + "x";
-      
-      if (bot.stats.startTime) {
-        const runtime = Math.floor((Date.now() - bot.stats.startTime) / 1000);
-        const hours = Math.floor(runtime / 3600);
-        const minutes = Math.floor((runtime % 3600) / 60);
-        document.getElementById("st-runtime").innerText = hours + "h " + minutes + "m";
-      }
-      
-      if (bot.stats.profit >= 0) {
-        document.getElementById("st-profit").style.color = "#00c853";
-      } else {
-        document.getElementById("st-profit").style.color = "#d50000";
-      }
-    } catch (e) {
-      console.log("Update error:", e);
-    }
-  }
-  
-  /************** ADD LOG **************/
-  function addLog(text, isWin) {
-    const logs = document.getElementById("logs");
-    if (!logs) return;
-    
-    const div = document.createElement("div");
-    div.className = isWin ? "log-win" : "log-loss";
-    div.style.padding = "4px 0";
-    div.style.borderBottom = "1px solid #334155";
-    div.style.fontSize = "12px";
-    div.innerText = `[${new Date().toLocaleTimeString()}] ${text}`;
-    
-    logs.prepend(div);
-    
-    if (logs.children.length > 15) {
-      logs.lastChild.remove();
-    }
+    kirimPesanTelegram(msg);
   }
 
   /************** INIT **************/
   function init() {
-    console.log("🚀 Initializing Orion Mines...");
     createUI();
-    
-    setTimeout(() => {
-      syncUser().then(() => {
-        if (bot.token) {
-          getBalance(bot.selectedCurrency).then(bal => {
-            bot.stats.currentBal = bal;
-            updateDisplay();
-          });
-        }
-      });
-    }, 1000);
-    
-    setInterval(updateDisplay, 1000);
+    setTimeout(syncUser, 1000);
   }
   
   init();
