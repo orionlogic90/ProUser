@@ -14,7 +14,6 @@
     token: null,
     stakeUser: "Loading...",
     
-    // Stats
     stats: {
       profit: 0,
       wagered: 0,
@@ -23,98 +22,64 @@
       bets: 0,
       wins: 0,
       loss: 0,
-      startTime: null,
+      startTime: null, // Harus null, bukan Date.now()
       maxDD: 0,
       maxDDPerc: 0,
       history: []
     },
     
-    // Mines specific
-    selectedCurrency: "idr",
+    selectedCurrency: "pol", // Default dari screenshot
     selectedMines: 13,
     selectedFields: [],
     globalMaxPayout: 0,
     
-    // Bet tracking
     betSpeed: 0,
     lastSpeedUpdate: Date.now(),
     speedBetsCount: 0,
     lastBetTime: 0,
     
-    // Runtime
     runtime: { hours: 0, minutes: 0, seconds: 0 },
     
-    // Telegram
     lastTelegramTime: Date.now(),
     telegramInterval: 180000,
     
-    // Chart report
     lastChartWagerAmount: 0,
     chartReportInterval: 500,
     
-    // Martingale Settings
-    martingale: {
-      enabled: false,
-      mode: 'dynamic',
-      multiplier: 2.0,
-      maxSteps: 5,
-      currentStep: 0,
-      baseBet: 0,
-      currentBet: 0,
-      lossStreak: 0,
-      winStreak: 0,
-      afterWin: 'reset',
-      afterLoss: 'increase'
-    },
-    
-    // Target Settings
-    target: {
-      enabled: false,
-      type: 'percent',
-      value: 10.0,
-      reached: false
-    },
-    
-    // Stop Loss Settings
-    stopLoss: {
-      enabled: false,
-      type: 'percent',
-      value: 5.0,
-      reached: false
-    },
-    
-    // Streak Settings
-    streak: {
-      enabled: false,
-      lossStreak: 0,
-      winStreak: 0,
-      lossMultiplier: 2.0,
-      winMultiplier: 1.5,
-      lossThreshold: 3,
-      winThreshold: 3,
-      resetAfterTarget: true
-    },
-    
-    // Available currencies dari API
-    availableCurrencies: []
+    // Debug mode
+    debug: true
   };
+
+  /************** DEBUG FUNCTION **************/
+  function debugLog(...args) {
+    if (bot.debug) {
+      console.log("🔍 [DEBUG]", ...args);
+    }
+  }
 
   /************** API FUNCTIONS **************/
   const API = {
     async syncOnce() {
-      // Get token from multiple sources
-      bot.token = localStorage.getItem('apitoken') || 
-                  (document.cookie.match(/session=([^;]+)/) ? 
-                  document.cookie.match(/session=([^;]+)/)[1] : null);
+      debugLog("Starting sync...");
+      
+      // Cek token dari berbagai sumber
+      bot.token = localStorage.getItem('apitoken');
+      debugLog("Token from localStorage:", bot.token ? "✅ Found" : "❌ Not found");
       
       if (!bot.token) {
-        console.log("❌ No token found");
+        const cookieMatch = document.cookie.match(/session=([^;]+)/);
+        bot.token = cookieMatch ? cookieMatch[1] : null;
+        debugLog("Token from cookie:", bot.token ? "✅ Found" : "❌ Not found");
+      }
+      
+      if (!bot.token) {
+        debugLog("❌ No token found anywhere");
         document.getElementById("st-user").innerText = "❌ No token";
         return false;
       }
 
       try {
-        console.log("🔄 Syncing with token:", bot.token.substring(0, 10) + "...");
+        debugLog("Fetching user data with token:", bot.token.substring(0, 10) + "...");
         
         const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
           method: "POST",
@@ -137,18 +102,21 @@
           })
         });
         
+        debugLog("Response status:", res.status);
+        
         if (!res.ok) {
           throw new Error(`HTTP error! status: ${res.status}`);
         }
         
         const json = await res.json();
+        debugLog("Response data:", json);
         
         if (json?.data?.user) {
           bot.stakeUser = json.data.user.name;
-          bot.availableCurrencies = json.data.user.balances || [];
+          const balances = json.data.user.balances || [];
           
-          console.log("✅ User found:", bot.stakeUser);
-          console.log("💰 Available balances:", bot.availableCurrencies.map(b => `${b.available.currency}: ${b.available.amount}`));
+          debugLog("User found:", bot.stakeUser);
+          debugLog("Balances:", balances.map(b => `${b.available.currency}: ${b.available.amount}`));
           
           // Update user display
           const userEl = document.getElementById("st-user");
@@ -156,37 +124,37 @@
             userEl.innerText = `👤 ${bot.stakeUser}`;
           }
           
-          // Populate currency dropdown
-          this.updateCurrencyDropdown();
+          // Update currency dropdown
+          this.updateCurrencyDropdown(balances);
           
           return true;
         } else {
-          console.log("❌ No user data in response");
+          debugLog("❌ No user data in response");
           return false;
         }
       } catch (e) {
-        console.log("❌ Sync error:", e);
+        debugLog("❌ Sync error:", e);
         document.getElementById("st-user").innerText = "❌ Sync failed";
         return false;
       }
     },
     
-    updateCurrencyDropdown() {
+    updateCurrencyDropdown(balances) {
       const currencySelect = document.getElementById("currency");
       if (!currencySelect) return;
       
       // Clear existing options
       currencySelect.innerHTML = '';
       
-      if (bot.availableCurrencies.length > 0) {
+      if (balances && balances.length > 0) {
         // Add currencies from API
-        bot.availableCurrencies.forEach(b => {
+        balances.forEach(b => {
           const currency = b.available.currency.toLowerCase();
           const amount = parseFloat(b.available.amount);
-          const opt = new Option(`${currency.toUpperCase()} (${amount.toFixed(4)})`, currency);
+          const opt = new Option(`${currency.toUpperCase()} (${amount.toFixed(8)})`, currency);
           
-          // Set default to idr if available, otherwise first currency
-          if (currency === "idr") {
+          // Set default to POL if available (dari screenshot)
+          if (currency === "pol") {
             opt.selected = true;
             bot.selectedCurrency = currency;
           }
@@ -195,30 +163,30 @@
         });
       } else {
         // Fallback currencies
-        const currencies = ['idr', 'ltc', 'usdt', 'sol', 'doge', 'xrp', 'trx', 'bnb'];
-        currencies.forEach(c => {
+        const fallbackCurrencies = ['pol', 'idr', 'ltc', 'usdt', 'sol', 'doge', 'xrp', 'trx', 'bnb'];
+        fallbackCurrencies.forEach(c => {
           const opt = new Option(c.toUpperCase(), c);
-          if (c === 'idr') opt.selected = true;
+          if (c === 'pol') opt.selected = true;
           currencySelect.add(opt);
         });
-        bot.selectedCurrency = "idr";
+        bot.selectedCurrency = "pol";
       }
       
-      console.log("💱 Currency dropdown updated, selected:", bot.selectedCurrency);
+      debugLog("Currency dropdown updated, selected:", bot.selectedCurrency);
     },
 
     async getBalance(coin) {
       if (bot.isDemo) {
-        return parseFloat(document.getElementById("demo-balance")?.value) || 100.0;
+        return 100.0;
       }
       
       if (!bot.token) {
-        console.log("❌ No token for balance check");
+        debugLog("❌ No token for balance check");
         return 0;
       }
       
       try {
-        console.log(`💰 Fetching balance for ${coin}...`);
+        debugLog(`Fetching balance for ${coin}...`);
         
         const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
           method: "POST",
@@ -243,17 +211,16 @@
         const json = await res.json();
         const balances = json?.data?.user?.balances || [];
         
-        // Find balance for requested coin
         const balance = balances.find(b => 
           b.available.currency.toLowerCase() === coin.toLowerCase()
         );
         
         const amount = balance ? parseFloat(balance.available.amount) : 0;
-        console.log(`💰 ${coin} balance:`, amount);
+        debugLog(`💰 ${coin} balance:`, amount);
         
         return amount;
       } catch (e) { 
-        console.log("❌ Balance error:", e);
+        debugLog("❌ Balance error:", e);
         return 0; 
       }
     },
@@ -267,10 +234,30 @@
         fields: fields
       };
 
-      console.log("🎲 Placing bet:", payload);
+      debugLog("Placing bet:", payload);
 
       if (bot.isDemo) {
-        return simulateMinesBet(amount, minesCount, fields);
+        // Demo mode simulation
+        const win = Math.random() > (minesCount / 25);
+        const multiplier = 25 / (25 - minesCount);
+        const payout = win ? amount * multiplier : 0;
+        
+        return {
+          data: {
+            minesBet: {
+              id: "demo_" + Date.now(),
+              amount: amount,
+              payout: payout,
+              payoutMultiplier: multiplier,
+              state: {
+                rounds: fields.map((f, i) => ({
+                  field: f,
+                  payoutMultiplier: i < 2 ? multiplier : 0
+                }))
+              }
+            }
+          }
+        };
       }
 
       try {
@@ -290,255 +277,16 @@
         }
         
         const data = await response.json();
-        console.log("✅ Bet result:", data);
+        debugLog("Bet result:", data);
         return data;
         
       } catch (e) {
-        console.log("❌ Bet error:", e);
+        debugLog("❌ Bet error:", e);
         throw e;
       }
     },
 
-    // ... (chart functions tetap sama)
-    generateBalanceChart() {
-      const history = bot.stats.history || [bot.stats.startBal];
-      const labels = Array(history.length).fill('').map((_, i) => `#${i+1}`);
-      
-      const chartConfig = {
-        type: 'line',
-        data: {
-          labels: labels,
-          datasets: [{
-            label: 'Balance',
-            data: history,
-            borderColor: '#f59e0b',
-            backgroundColor: 'rgba(245, 158, 11, 0.1)',
-            fill: true,
-            tension: 0.4
-          }, {
-            label: 'Start Balance',
-            data: Array(history.length).fill(bot.stats.startBal),
-            borderColor: '#ef4444',
-            borderDash: [5, 5],
-            fill: false
-          }]
-        },
-        options: {
-          title: {
-            display: true,
-            text: `💰 Balance Progress - ${bot.selectedCurrency.toUpperCase()}`
-          }
-        }
-      };
-      
-      return `https://quickchart.io/chart?width=600&height=300&c=${encodeURIComponent(JSON.stringify(chartConfig))}`;
-    },
-
-    generateProfitChart() {
-      const profitData = bot.stats.history?.map(b => b - bot.stats.startBal) || [0];
-      
-      const chartConfig = {
-        type: 'line',
-        data: {
-          labels: Array(profitData.length).fill('').map((_, i) => `#${i+1}`),
-          datasets: [{
-            label: 'Profit/Loss',
-            data: profitData,
-            borderColor: profitData[profitData.length-1] >= 0 ? '#10b981' : '#ef4444',
-            backgroundColor: profitData[profitData.length-1] >= 0 ? 
-              'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
-            fill: true
-          }]
-        },
-        options: {
-          title: {
-            display: true,
-            text: `📈 P&L Chart - ${bot.stats.profit >= 0 ? '+' : ''}${bot.stats.profit.toFixed(8)}`
-          }
-        }
-      };
-      
-      return `https://quickchart.io/chart?width=600&height=300&c=${encodeURIComponent(JSON.stringify(chartConfig))}`;
-    },
-
-    generateWinRateChart() {
-      const winRate = bot.stats.bets > 0 ? (bot.stats.wins / bot.stats.bets * 100).toFixed(1) : 0;
-      
-      const chartConfig = {
-        type: 'doughnut',
-        data: {
-          labels: ['Wins', 'Losses'],
-          datasets: [{
-            data: [bot.stats.wins, bot.stats.loss],
-            backgroundColor: ['#10b981', '#ef4444']
-          }]
-        },
-        options: {
-          title: {
-            display: true,
-            text: `🎲 Win/Loss Ratio (${winRate}%)`
-          }
-        }
-      };
-      
-      return `https://quickchart.io/chart?width=400&height=300&c=${encodeURIComponent(JSON.stringify(chartConfig))}`;
-    },
-
-    async sendChartReport() {
-      if (!bot.stats.startTime || bot.stats.bets === 0) return;
-      
-      const runtime = Math.floor((Date.now() - bot.stats.startTime) / 1000);
-      const hours = Math.floor(runtime / 3600);
-      const minutes = Math.floor((runtime % 3600) / 60);
-      const seconds = runtime % 60;
-      
-      const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100).toFixed(2) : "0";
-      const pnlPct = bot.stats.startBal > 0 ? ((bot.stats.profit / bot.stats.startBal) * 100).toFixed(2) : "0";
-      const betSpeed = bot.betSpeed.toFixed(2);
-      
-      const censoredUser = bot.stakeUser && bot.stakeUser !== "Loading..." ? 
-        bot.stakeUser.substring(0, 3) + "***" : "Loading...";
-      
-      // Generate chart URLs
-      const charts = {
-        balance: this.generateBalanceChart(),
-        profit: this.generateProfitChart(),
-        winrate: this.generateWinRateChart()
-      };
-      
-      // Text caption
-      let caption = `⚡ ORION MINES REPORT ⚡\n`;
-      caption += `═══════════════════════════\n`;
-      caption += `\n`;
-      caption += `⏱️ RUNTIME    : ${hours}h ${minutes}m ${seconds}s\n`;
-      caption += `⚡ SPEED      : ${betSpeed}/s\n`;
-      caption += `👤 USER       : ${censoredUser}\n`;
-      caption += `💱 CURRENCY   : ${bot.selectedCurrency.toUpperCase()}\n`;
-      caption += `💣 MINES      : ${bot.selectedMines}\n`;
-      caption += `💰 WAGERED    : ${bot.stats.wagered.toFixed(8)}\n`;
-      caption += `\n`;
-      caption += `💰 BALANCE\n`;
-      caption += `▪️ Start   : ${bot.stats.startBal.toFixed(8)}\n`;
-      caption += `▪️ Current : ${bot.stats.currentBal.toFixed(8)}\n`;
-      caption += `▪️ P/L     : ${bot.stats.profit >= 0 ? '+' : ''}${bot.stats.profit.toFixed(8)} (${pnlPct}%)\n`;
-      caption += `▪️ Max DD  : ${bot.stats.maxDD.toFixed(8)} (${bot.stats.maxDDPerc.toFixed(2)}%)\n`;
-      caption += `▪️ Max Payout: ${bot.globalMaxPayout.toFixed(2)}x\n`;
-      caption += `\n`;
-      caption += `🎲 STATISTICS\n`;
-      caption += `▪️ Bets    : ${bot.stats.bets.toLocaleString()}\n`;
-      caption += `▪️ W/L     : ${bot.stats.wins.toLocaleString()}/${bot.stats.loss.toLocaleString()}\n`;
-      caption += `▪️ WinRate : ${winRate}%\n`;
-      
-      // Martingale stats
-      if (bot.martingale.enabled) {
-        caption += `\n⚙️ MARTINGALE\n`;
-        caption += `▪️ Mode    : ${bot.martingale.mode}\n`;
-        caption += `▪️ Step    : ${bot.martingale.currentStep}/${bot.martingale.maxSteps}\n`;
-        caption += `▪️ Streak  : L${bot.streak.lossStreak} W${bot.streak.winStreak}\n`;
-      }
-      
-      caption += `\n═══════════════════════════\n`;
-      caption += `🕒 ${new Date().toLocaleString()}`;
-      
-      // Kirim chart sebagai media group
-      try {
-        const mediaGroup = [
-          {
-            type: 'photo',
-            media: charts.balance,
-            caption: caption,
-            parse_mode: 'HTML'
-          },
-          {
-            type: 'photo',
-            media: charts.profit
-          },
-          {
-            type: 'photo',
-            media: charts.winrate
-          }
-        ];
-        
-        await fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMediaGroup`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: CONFIG.tgChatId,
-            media: mediaGroup
-          })
-        });
-        
-        console.log(`📊 Chart report sent! Wagered: ${bot.stats.wagered.toFixed(8)}`);
-        
-      } catch (e) {
-        console.log("❌ Telegram chart send failed:", e);
-      }
-    },
-
-    async sendTelegramReport() {
-      if (!bot.stats.startTime) return;
-      
-      const runtime = Math.floor((Date.now() - bot.stats.startTime) / 1000);
-      const hours = Math.floor(runtime / 3600);
-      const minutes = Math.floor((runtime % 3600) / 60);
-      const seconds = runtime % 60;
-      
-      const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100).toFixed(2) : "0";
-      const pnlPct = bot.stats.startBal > 0 ? ((bot.stats.profit / bot.stats.startBal) * 100).toFixed(2) : "0";
-      const betSpeed = bot.betSpeed.toFixed(2);
-      
-      const censoredUser = bot.stakeUser && bot.stakeUser !== "Loading..." ? 
-        bot.stakeUser.substring(0, 3) + "***" : "Loading...";
-      
-      let message = "```\n";
-      message += `⚡ ORION MINES REPORT ⚡\n`;
-      message += `═══════════════════════════\n`;
-      message += `\n`;
-      message += `⏱️ RUNTIME    : ${hours}h ${minutes}m ${seconds}s\n`;
-      message += `⚡ SPEED      : ${betSpeed}/s\n`;
-      message += `👤 USER       : ${censoredUser}\n`;
-      message += `💱 CURRENCY   : ${bot.selectedCurrency.toUpperCase()}\n`;
-      message += `💣 MINES      : ${bot.selectedMines}\n`;
-      message += `💰 WAGERED    : ${bot.stats.wagered.toFixed(8)}\n`;
-      message += `\n`;
-      message += `💰 BALANCE\n`;
-      message += `▪️ Start   : ${bot.stats.startBal.toFixed(8)}\n`;
-      message += `▪️ Current : ${bot.stats.currentBal.toFixed(8)}\n`;
-      message += `▪️ P/L     : ${bot.stats.profit >= 0 ? '+' : ''}${bot.stats.profit.toFixed(8)} (${pnlPct}%)\n`;
-      message += `▪️ Max DD  : ${bot.stats.maxDD.toFixed(8)} (${bot.stats.maxDDPerc.toFixed(2)}%)\n`;
-      message += `▪️ Max Payout: ${bot.globalMaxPayout.toFixed(2)}x\n`;
-      message += `\n`;
-      message += `🎲 STATISTICS\n`;
-      message += `▪️ Bets    : ${bot.stats.bets.toLocaleString()}\n`;
-      message += `▪️ W/L     : ${bot.stats.wins.toLocaleString()}/${bot.stats.loss.toLocaleString()}\n`;
-      message += `▪️ WinRate : ${winRate}%\n`;
-      
-      if (bot.martingale.enabled) {
-        message += `\n⚙️ MARTINGALE\n`;
-        message += `▪️ Mode    : ${bot.martingale.mode}\n`;
-        message += `▪️ Step    : ${bot.martingale.currentStep}/${bot.martingale.maxSteps}\n`;
-        message += `▪️ Streak  : L${bot.streak.lossStreak} W${bot.streak.winStreak}\n`;
-      }
-      
-      message += `\n`;
-      message += `═══════════════════════════\n`;
-      message += `🕒 ${new Date().toLocaleString()}\n`;
-      message += "```";
-      
-      try {
-        const url = `https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`;
-        await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: CONFIG.tgChatId,
-            text: message,
-            parse_mode: 'Markdown'
-          })
-        });
-      } catch (e) {}
-    },
-
+    // Fungsi Telegram
     kirimPesan(message) {
       fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`, {
         method: 'POST',
@@ -548,14 +296,13 @@
           text: message,
           parse_mode: 'Markdown'
         }),
-      });
+      }).catch(e => debugLog("Telegram error:", e));
     }
   };
 
   /************** HELPER FUNCTIONS **************/
   function randomIdentifier() {
-    const length = Math.floor(Math.random() * (32 - 20 + 1)) + 20;
-    return Array.from({ length }, () => Math.floor(Math.random() * 10)).join("");
+    return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
   }
 
   function saveLS(key, val) {
@@ -568,29 +315,6 @@
     } catch {
       return def;
     }
-  }
-
-  function simulateMinesBet(amount, minesCount, fields) {
-    const win = Math.random() > (minesCount / 25);
-    const multiplier = 25 / (25 - minesCount);
-    const payout = win ? amount * multiplier : 0;
-    
-    return {
-      data: {
-        minesBet: {
-          id: "demo_" + Date.now(),
-          amount: amount,
-          payout: payout,
-          payoutMultiplier: multiplier,
-          state: {
-            rounds: fields.map((f, i) => ({
-              field: f,
-              payoutMultiplier: i < 2 ? multiplier : 0
-            }))
-          }
-        }
-      }
-    };
   }
 
   function updateBetSpeed() {
@@ -609,921 +333,45 @@
     }
   }
 
-  // Martingale Functions
-  function calculateMartingaleBet(baseBet, win) {
-    if (!bot.martingale.enabled) return baseBet;
-    
-    if (win) {
-      // Handle win streak
-      bot.streak.winStreak++;
-      bot.streak.lossStreak = 0;
-      bot.martingale.currentStep = 0;
-      
-      if (bot.streak.enabled && bot.streak.winStreak >= bot.streak.winThreshold) {
-        bot.martingale.currentBet = baseBet * bot.streak.winMultiplier;
-      } else {
-        switch(bot.martingale.afterWin) {
-          case 'reset':
-            bot.martingale.currentBet = bot.martingale.baseBet;
-            break;
-          case 'increase':
-            bot.martingale.currentBet = bot.martingale.currentBet * 1.2;
-            break;
-          case 'decrease':
-            bot.martingale.currentBet = bot.martingale.currentBet * 0.8;
-            break;
-        }
-      }
-    } else {
-      // Handle loss streak
-      bot.streak.lossStreak++;
-      bot.streak.winStreak = 0;
-      bot.martingale.currentStep++;
-      
-      if (bot.streak.enabled && bot.streak.lossStreak >= bot.streak.lossThreshold) {
-        bot.martingale.currentBet = baseBet * bot.streak.lossMultiplier;
-      } else {
-        switch(bot.martingale.mode) {
-          case 'fixed':
-            bot.martingale.currentBet = baseBet * Math.pow(bot.martingale.multiplier, bot.martingale.currentStep);
-            break;
-          case 'dynamic':
-            bot.martingale.currentBet = baseBet * (1 + (bot.martingale.currentStep * 0.5));
-            break;
-          case 'progressive':
-            bot.martingale.currentBet = baseBet * (bot.martingale.multiplier + (bot.martingale.currentStep * 0.3));
-            break;
-        }
-      }
-      
-      // Check max steps
-      if (bot.martingale.currentStep >= bot.martingale.maxSteps) {
-        console.log("⚠️ Max martingale steps reached, resetting");
-        bot.martingale.currentStep = 0;
-        bot.martingale.currentBet = bot.martingale.baseBet;
-      }
-    }
-    
-    // Ensure bet doesn't exceed balance
-    if (bot.martingale.currentBet > bot.stats.currentBal * 0.1) {
-      bot.martingale.currentBet = bot.stats.currentBal * 0.1;
-    }
-    
-    return bot.martingale.currentBet;
-  }
-
-  function checkTargets() {
-    // Check target profit
-    if (bot.target.enabled && !bot.target.reached) {
-      let targetMet = false;
-      
-      if (bot.target.type === 'percent') {
-        targetMet = (bot.stats.profit / bot.stats.startBal * 100) >= bot.target.value;
-      } else {
-        targetMet = bot.stats.profit >= bot.target.value;
-      }
-      
-      if (targetMet) {
-        bot.target.reached = true;
-        API.kirimPesan(`🎯 *TARGET REACHED!*\nProfit: ${bot.stats.profit.toFixed(8)} ${bot.selectedCurrency.toUpperCase()}`);
-        bot.isRunning = false;
-        return true;
-      }
-    }
-    
-    // Check stop loss
-    if (bot.stopLoss.enabled && !bot.stopLoss.reached) {
-      let stopMet = false;
-      const loss = -bot.stats.profit;
-      
-      if (bot.stopLoss.type === 'percent') {
-        stopMet = (loss / bot.stats.startBal * 100) >= bot.stopLoss.value;
-      } else {
-        stopMet = loss >= bot.stopLoss.value;
-      }
-      
-      if (stopMet) {
-        bot.stopLoss.reached = true;
-        API.kirimPesan(`🛑 *STOP LOSS TRIGGERED!*\nLoss: ${loss.toFixed(8)} ${bot.selectedCurrency.toUpperCase()}`);
-        bot.isRunning = false;
-        return true;
-      }
-    }
-    
-    return false;
-  }
-
-  /************** UI STYLES - Mobile Friendly **************/
-  const style = document.createElement("style");
-  style.innerHTML = `
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-    
-    @media (max-width: 768px) {
-      #mineUI {
-        width: 95% !important;
-        right: 2.5% !important;
-        left: 2.5% !important;
-        top: 5px !important;
-        max-height: 95vh !important;
-        font-size: 12px !important;
-      }
-      
-      .grid-2col {
-        grid-template-columns: 1fr !important;
-      }
-      
-      .tab-buttons button {
-        padding: 12px !important;
-        font-size: 14px !important;
-      }
-      
-      #fieldsBox {
-        width: 90% !important;
-      }
-      
-      .grid {
-        grid-template-columns: repeat(5, 1fr) !important;
-      }
-      
-      .cell {
-        width: 100% !important;
-        height: 50px !important;
-        font-size: 14px !important;
-      }
-    }
-    
-    #mineUI {
-      position: fixed;
-      top: 10px;
-      right: 10px;
-      width: 380px;
-      background: linear-gradient(145deg, #0f172a 0%, #1e293b 100%);
-      color: #f1f5f9;
-      font-family: 'Inter', sans-serif;
-      padding: 16px;
-      border-radius: 16px;
-      z-index: 999999;
-      box-shadow: 0 20px 35px -10px rgba(0,0,0,0.6);
-      border: 1px solid rgba(245, 158, 11, 0.2);
-      cursor: move;
-      backdrop-filter: blur(8px);
-      max-height: 90vh;
-      overflow-y: auto;
-    }
-    
-    #mineUI.hidden {
-      display: none;
-    }
-    
-    #mineUI input, #mineUI select, #mineUI button {
-      width: 100%;
-      margin: 4px 0;
-      padding: 10px 12px;
-      border-radius: 10px;
-      border: 1px solid #334155;
-      background: #0f172a;
-      color: #f1f5f9;
-      font-size: 13px;
-      box-sizing: border-box;
-      font-family: 'Inter', sans-serif;
-    }
-    
-    #mineUI input:focus, #mineUI select:focus {
-      outline: none;
-      border-color: #f59e0b;
-      box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.2);
-    }
-    
-    #mineUI button {
-      cursor: pointer;
-      font-weight: 600;
-      border: none;
-      transition: all 0.2s;
-    }
-    
-    #mineUI button:hover {
-      transform: translateY(-2px);
-    }
-    
-    #mineUI button:active {
-      transform: translateY(0);
-    }
-    
-    .start { 
-      background: linear-gradient(135deg, #00c853 0%, #00a844 100%);
-      color: white;
-    }
-    
-    .stop { 
-      background: linear-gradient(135deg, #d50000 0%, #b71c1c 100%);
-      color: white;
-    }
-    
-    .fieldsBtn, .settingsBtn { 
-      background: linear-gradient(135deg, #2962ff 0%, #1e4bd8 100%);
-      color: white;
-    }
-    
-    .toggleBtn { 
-      background: linear-gradient(135deg, #424242 0%, #212121 100%);
-      color: white;
-    }
-    
-    label { 
-      font-size: 12px; 
-      color: #94a3b8;
-      font-weight: 500;
-      text-transform: uppercase;
-      letter-spacing: 0.3px;
-      display: block;
-      margin-top: 8px;
-    }
-    
-    .tab-buttons {
-      display: flex;
-      gap: 8px;
-      margin: 16px 0;
-      background: rgba(15, 23, 42, 0.6);
-      padding: 4px;
-      border-radius: 12px;
-    }
-    
-    .tab-btn {
-      flex: 1;
-      background: transparent;
-      border: none;
-      color: #94a3b8;
-      padding: 10px;
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-      border-radius: 8px;
-      transition: all 0.2s;
-    }
-    
-    .tab-btn.active {
-      background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-      color: black;
-    }
-    
-    .tab-content {
-      display: none;
-    }
-    
-    .tab-content.active {
-      display: block;
-    }
-    
-    .section {
-      margin-bottom: 12px;
-      background: rgba(15, 23, 42, 0.5);
-      border-radius: 12px;
-      padding: 12px;
-      border: 1px solid rgba(245, 158, 11, 0.1);
-    }
-    
-    .section-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      cursor: pointer;
-      color: #f59e0b;
-      font-size: 13px;
-      font-weight: 600;
-      text-transform: uppercase;
-    }
-    
-    .section-content {
-      margin-top: 12px;
-    }
-    
-    .section-content.collapsed {
-      display: none;
-    }
-    
-    .grid-2col {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-    }
-    
-    .grid-3col {
-      display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
-      gap: 8px;
-    }
-    
-    .stat-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      font-size: 12px;
-      background: #0f172a;
-      padding: 8px 12px;
-      margin: 4px 0;
-      border-radius: 8px;
-      border-left: 3px solid #f59e0b;
-    }
-    
-    .stat-value {
-      font-weight: 600;
-      color: #f59e0b;
-    }
-    
-    .badge {
-      display: inline-block;
-      padding: 4px 10px;
-      border-radius: 20px;
-      font-size: 11px;
-      background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-      color: black;
-      font-weight: 600;
-    }
-    
-    .switch {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      background: #0f172a;
-      padding: 8px 12px;
-      border-radius: 8px;
-      border: 1px solid #334155;
-    }
-    
-    .switch input {
-      width: 20px;
-      height: 20px;
-      accent-color: #f59e0b;
-    }
-    
-    #fieldsModal {
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.9);
-      display: none;
-      align-items: center;
-      justify-content: center;
-      z-index: 1000000;
-    }
-    
-    #fieldsBox {
-      background: linear-gradient(145deg, #0f172a 0%, #1e293b 100%);
-      padding: 20px;
-      border-radius: 16px;
-      max-width: 90%;
-    }
-    
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(5, 45px);
-      gap: 8px;
-      margin: 15px 0;
-    }
-    
-    .cell {
-      width: 45px;
-      height: 45px;
-      background: #0f172a;
-      border: 1px solid #334155;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
-      border-radius: 8px;
-      font-weight: 600;
-      transition: all 0.2s;
-    }
-    
-    .cell:hover {
-      border-color: #f59e0b;
-    }
-    
-    .cell.active {
-      background: linear-gradient(135deg, #00c853 0%, #00a844 100%);
-      border-color: #00c853;
-      color: white;
-    }
-    
-    #showBotBtn {
-      position: fixed;
-      top: 10px;
-      right: 10px;
-      z-index: 999998;
-      display: none;
-      padding: 15px 20px;
-      background: linear-gradient(135deg, #00c853 0%, #00a844 100%);
-      color: white;
-      font-weight: bold;
-      border-radius: 50px;
-      cursor: pointer;
-      font-size: 20px;
-      box-shadow: 0 4px 12px rgba(0,200,83,0.3);
-    }
-    
-    #logs-container {
-      background: #0f172a;
-      border-radius: 8px;
-      padding: 10px;
-      max-height: 120px;
-      overflow-y: auto;
-      font-size: 11px;
-      font-family: monospace;
-      border: 1px solid #334155;
-    }
-    
-    .log-entry {
-      padding: 3px 0;
-      border-bottom: 1px solid #1e293b;
-    }
-    
-    .log-entry.win {
-      color: #10b981;
-    }
-    
-    .log-entry.loss {
-      color: #ef4444;
-    }
-    
-    .footer {
-      text-align: center;
-      font-size: 10px;
-      color: #475569;
-      margin-top: 16px;
-      padding-top: 8px;
-      border-top: 1px solid #334155;
-    }
-  `;
-  document.head.appendChild(style);
-
-  /************** CREATE UI **************/
-  const ui = document.createElement("div");
-  ui.id = "mineUI";
-  ui.innerHTML = `
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-      <span style="font-size:16px; font-weight:700; color:#f59e0b;">⚡ ORION MINES v3.0</span>
-      <span class="badge" id="mode-badge">MINES</span>
-    </div>
-
-    <div class="tab-buttons">
-      <button class="tab-btn active" onclick="switchTab('main')">🎮 MAIN</button>
-      <button class="tab-btn" onclick="switchTab('martingale')">⚙️ MARTINGALE</button>
-      <button class="tab-btn" onclick="switchTab('stats')">📊 STATS</button>
-    </div>
-
-    <!-- MAIN TAB -->
-    <div id="tab-main" class="tab-content active">
-      <div class="grid-2col">
-        <div>
-          <label>💰 Amount</label>
-          <input id="amount" type="number" step="0.00000001" value="0.00000001">
-        </div>
-        <div>
-          <label>💱 Currency</label>
-          <select id="currency"></select>
-        </div>
-      </div>
-
-      <div class="grid-2col">
-        <div>
-          <label>💣 Mines Count</label>
-          <select id="minesCount"></select>
-        </div>
-        <div>
-          <label>🎮 Demo Mode</label>
-          <div class="switch">
-            <input type="checkbox" id="demo-toggle">
-            <span id="demo-status">OFF</span>
-          </div>
-        </div>
-      </div>
-
-      <label>🎛️ Selected Fields (<span id="fields-count">0</span>/25)</label>
-      <button class="fieldsBtn" id="openFields">📋 Select Fields</button>
-
-      <!-- QUICK MARTINGALE TOGGLE -->
-      <div class="section" style="margin-top:12px;">
-        <div class="section-header" onclick="toggleSection('quickMartingale')">
-          <span>⚡ QUICK MARTINGALE</span>
-          <span class="collapse-btn">▼</span>
-        </div>
-        <div class="section-content" id="content-quickMartingale">
-          <div class="switch" style="margin-bottom:8px;">
-            <input type="checkbox" id="martingale-enable">
-            <span>Enable Martingale</span>
-          </div>
-          <div class="grid-2col">
-            <div>
-              <label>Mode</label>
-              <select id="martingale-mode">
-                <option value="dynamic">Dynamic</option>
-                <option value="fixed">Fixed</option>
-                <option value="progressive">Progressive</option>
-              </select>
-            </div>
-            <div>
-              <label>Multiplier</label>
-              <input id="martingale-multiplier" type="number" step="0.1" value="2.0" min="1.1">
-            </div>
-          </div>
-          <div class="grid-2col">
-            <div>
-              <label>Max Steps</label>
-              <input id="martingale-max-steps" type="number" value="5" min="1" max="10">
-            </div>
-            <div>
-              <label>After Win</label>
-              <select id="martingale-after-win">
-                <option value="reset">Reset</option>
-                <option value="increase">Increase</option>
-                <option value="decrease">Decrease</option>
-              </select>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- TARGET / STOP LOSS -->
-      <div class="grid-2col" style="margin-top:8px;">
-        <div>
-          <label>🎯 Target Profit</label>
-          <input id="target-value" type="number" step="0.1" value="10.0" placeholder="10%">
-          <div style="display:flex; gap:4px; margin-top:4px;">
-            <select id="target-type" style="width:60%;">
-              <option value="percent">Percent</option>
-              <option value="fixed">Fixed</option>
-            </select>
-            <button id="target-enable" class="settingsBtn" style="width:40%;">Enable</button>
-          </div>
-        </div>
-        <div>
-          <label>🛑 Stop Loss</label>
-          <input id="stoploss-value" type="number" step="0.1" value="5.0" placeholder="5%">
-          <div style="display:flex; gap:4px; margin-top:4px;">
-            <select id="stoploss-type" style="width:60%;">
-              <option value="percent">Percent</option>
-              <option value="fixed">Fixed</option>
-            </select>
-            <button id="stoploss-enable" class="settingsBtn" style="width:40%;">Enable</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- STREAK SETTINGS -->
-      <div class="section" style="margin-top:12px;">
-        <div class="section-header" onclick="toggleSection('streak')">
-          <span>📈 STREAK MARTINGALE</span>
-          <span class="collapse-btn">▼</span>
-        </div>
-        <div class="section-content" id="content-streak">
-          <div class="switch" style="margin-bottom:8px;">
-            <input type="checkbox" id="streak-enable">
-            <span>Enable Streak Mode</span>
-          </div>
-          <div class="grid-2col">
-            <div>
-              <label>Loss Streak</label>
-              <input id="streak-loss-threshold" type="number" value="3" min="1">
-            </div>
-            <div>
-              <label>Loss Multiplier</label>
-              <input id="streak-loss-multiplier" type="number" step="0.1" value="2.0">
-            </div>
-          </div>
-          <div class="grid-2col">
-            <div>
-              <label>Win Streak</label>
-              <input id="streak-win-threshold" type="number" value="3" min="1">
-            </div>
-            <div>
-              <label>Win Multiplier</label>
-              <input id="streak-win-multiplier" type="number" step="0.1" value="1.5">
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- MARTINGALE TAB -->
-    <div id="tab-martingale" class="tab-content">
-      <div class="section">
-        <div class="stat-row">
-          <span>Current Step</span>
-          <span class="stat-value" id="mart-step">0/0</span>
-        </div>
-        <div class="stat-row">
-          <span>Base Bet</span>
-          <span class="stat-value" id="mart-base">0</span>
-        </div>
-        <div class="stat-row">
-          <span>Current Bet</span>
-          <span class="stat-value" id="mart-current">0</span>
-        </div>
-        <div class="stat-row">
-          <span>Loss Streak</span>
-          <span class="stat-value" id="mart-loss-streak">0</span>
-        </div>
-        <div class="stat-row">
-          <span>Win Streak</span>
-          <span class="stat-value" id="mart-win-streak">0</span>
-        </div>
-      </div>
-      
-      <button id="reset-martingale" class="fieldsBtn" style="margin-top:8px;">🔄 Reset Martingale</button>
-    </div>
-
-    <!-- STATS TAB -->
-    <div id="tab-stats" class="tab-content">
-      <div class="stat-row">
-        <span>User</span>
-        <span class="stat-value" id="st-user">Loading...</span>
-      </div>
-      <div class="stat-row">
-        <span>Balance</span>
-        <span class="stat-value" id="st-balance">0</span>
-      </div>
-      <div class="stat-row">
-        <span>Profit</span>
-        <span class="stat-value" id="st-profit">0</span>
-      </div>
-      <div class="stat-row">
-        <span>Bets</span>
-        <span class="stat-value" id="st-bets">0</span>
-      </div>
-      <div class="stat-row">
-        <span>W/L</span>
-        <span class="stat-value" id="st-wl">0/0</span>
-      </div>
-      <div class="stat-row">
-        <span>WinRate</span>
-        <span class="stat-value" id="st-winrate">0%</span>
-      </div>
-      <div class="stat-row">
-        <span>Wagered</span>
-        <span class="stat-value" id="st-wagered">0</span>
-      </div>
-      <div class="stat-row">
-        <span>Speed</span>
-        <span class="stat-value" id="speed-value">0.00/s</span>
-      </div>
-      <div class="stat-row">
-        <span>Max Payout</span>
-        <span class="stat-value" id="st-max-payout">0x</span>
-      </div>
-      <div class="stat-row">
-        <span>Runtime</span>
-        <span class="stat-value" id="st-runtime">0h 0m</span>
-      </div>
-    </div>
-
-    <!-- LOGS -->
-    <label style="margin-top:12px;">📝 Live Logs</label>
-    <div id="logs-container">
-      <div class="log-entry">Ready</div>
-    </div>
-
-    <!-- CONTROL BUTTONS -->
-    <div class="grid-2col" style="margin-top:12px;">
-      <button class="start" id="start">▶ START</button>
-      <button class="stop" id="stop" disabled>⏹ STOP</button>
-    </div>
-    
-    <button class="toggleBtn" id="hideBot" style="margin-top:8px;">🙈 Minimize</button>
-    
-    <div class="footer">
-      © 2025 ORION MINES — v3.0
-    </div>
-  `;
-  document.body.appendChild(ui);
-
-  /************** SHOW BUTTON **************/
-  const showBtn = document.createElement("div");
-  showBtn.id = "showBotBtn";
-  showBtn.textContent = "🤖";
-  document.body.appendChild(showBtn);
-
-  /************** MINES COUNT SELECT **************/
-  const minesSelect = document.getElementById("minesCount");
-  for (let i = 3; i <= 24; i++) {
-    const opt = document.createElement("option");
-    opt.value = i;
-    opt.textContent = i;
-    minesSelect.appendChild(opt);
-  }
-
-  /************** FIELDS MODAL **************/
-  const modal = document.createElement("div");
-  modal.id = "fieldsModal";
-  modal.innerHTML = `
-    <div id="fieldsBox">
-      <h3 style="color:#f59e0b; margin-top:0;">Select Safe Fields</h3>
-      <div class="grid" id="grid"></div>
-      <div class="grid-2col">
-        <button id="clearFields" style="background:#ef4444;">Clear</button>
-        <button id="saveFields" style="background:#00c853;">Save</button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(modal);
-
-  const grid = modal.querySelector("#grid");
-  let selectedFields = loadLS("mine_fields", []);
-
-  for (let i = 0; i < 25; i++) {
-    const c = document.createElement("div");
-    c.className = "cell";
-    c.textContent = i;
-    if (selectedFields.includes(i)) c.classList.add("active");
-    c.onclick = () => {
-      c.classList.toggle("active");
-      updateFieldsCount();
-    };
-    grid.appendChild(c);
-  }
-
-  function updateFieldsCount() {
-    const active = [...grid.children].filter(c => c.classList.contains("active")).length;
-    document.getElementById("fields-count").textContent = active;
-  }
-  updateFieldsCount();
-
-  document.getElementById("openFields").onclick = () => modal.style.display = "flex";
-  modal.onclick = e => { if (e.target === modal) modal.style.display = "none"; };
-
-  document.getElementById("clearFields").onclick = () => {
-    [...grid.children].forEach(c => c.classList.remove("active"));
-    updateFieldsCount();
-  };
-
-  document.getElementById("saveFields").onclick = () => {
-    selectedFields = [...grid.children]
-      .filter(c => c.classList.contains("active"))
-      .map(c => +c.textContent);
-    saveLS("mine_fields", selectedFields);
-    modal.style.display = "none";
-    updateFieldsCount();
-  };
-
-  /************** LOAD SAVED **************/
-  document.getElementById("amount").value = loadLS("mine_amount", 0.00000001);
-  document.getElementById("minesCount").value = loadLS("mine_minesCount", 13);
-
-  /************** CURRENCY CHANGE HANDLER **************/
-  document.getElementById("currency").addEventListener("change", function(e) {
-    bot.selectedCurrency = e.target.value;
-    console.log("💱 Currency changed to:", bot.selectedCurrency);
-    saveLS("mine_currency", bot.selectedCurrency);
-    
-    // Update balance display with new currency
-    if (!bot.isDemo && bot.token) {
-      API.getBalance(bot.selectedCurrency).then(bal => {
-        bot.stats.currentBal = bal;
-        updateDisplay();
-      });
-    }
-  });
-
-  /************** TAB FUNCTIONS **************/
-  window.switchTab = function(tabName) {
-    document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-    document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-    
-    event.target.classList.add('active');
-    document.getElementById(`tab-${tabName}`).classList.add('active');
-  };
-
-  window.toggleSection = function(sectionId) {
-    const content = document.getElementById(`content-${sectionId}`);
-    const btn = event.currentTarget.querySelector('.collapse-btn');
-    if (content) {
-      content.classList.toggle('collapsed');
-      btn.innerHTML = content.classList.contains('collapsed') ? '►' : '▼';
-    }
-  };
-
-  /************** DEMO MODE TOGGLE **************/
-  const demoToggle = document.getElementById("demo-toggle");
-  const demoStatus = document.getElementById("demo-status");
-  
-  demoToggle.onchange = (e) => {
-    bot.isDemo = e.target.checked;
-    demoStatus.innerText = e.target.checked ? "ON" : "OFF";
-    demoStatus.style.color = e.target.checked ? "#10b981" : "#ef4444";
-  };
-
-  /************** MARTINGALE SETTINGS **************/
-  document.getElementById("martingale-enable").onchange = (e) => {
-    bot.martingale.enabled = e.target.checked;
-  };
-
-  document.getElementById("martingale-mode").onchange = (e) => {
-    bot.martingale.mode = e.target.value;
-  };
-
-  document.getElementById("martingale-multiplier").oninput = (e) => {
-    bot.martingale.multiplier = parseFloat(e.target.value);
-  };
-
-  document.getElementById("martingale-max-steps").oninput = (e) => {
-    bot.martingale.maxSteps = parseInt(e.target.value);
-  };
-
-  document.getElementById("martingale-after-win").onchange = (e) => {
-    bot.martingale.afterWin = e.target.value;
-  };
-
-  document.getElementById("streak-enable").onchange = (e) => {
-    bot.streak.enabled = e.target.checked;
-  };
-
-  document.getElementById("streak-loss-threshold").oninput = (e) => {
-    bot.streak.lossThreshold = parseInt(e.target.value);
-  };
-
-  document.getElementById("streak-loss-multiplier").oninput = (e) => {
-    bot.streak.lossMultiplier = parseFloat(e.target.value);
-  };
-
-  document.getElementById("streak-win-threshold").oninput = (e) => {
-    bot.streak.winThreshold = parseInt(e.target.value);
-  };
-
-  document.getElementById("streak-win-multiplier").oninput = (e) => {
-    bot.streak.winMultiplier = parseFloat(e.target.value);
-  };
-
-  document.getElementById("reset-martingale").onclick = () => {
-    bot.martingale.currentStep = 0;
-    bot.martingale.currentBet = bot.martingale.baseBet;
-    bot.streak.lossStreak = 0;
-    bot.streak.winStreak = 0;
-    updateDisplay();
-  };
-
-  /************** TARGET/STOPLOSS SETTINGS **************/
-  document.getElementById("target-enable").onclick = function() {
-    bot.target.enabled = !bot.target.enabled;
-    bot.target.type = document.getElementById("target-type").value;
-    bot.target.value = parseFloat(document.getElementById("target-value").value);
-    bot.target.reached = false;
-    this.innerText = bot.target.enabled ? "Disable" : "Enable";
-    this.style.background = bot.target.enabled ? "#ef4444" : "#2962ff";
-  };
-
-  document.getElementById("stoploss-enable").onclick = function() {
-    bot.stopLoss.enabled = !bot.stopLoss.enabled;
-    bot.stopLoss.type = document.getElementById("stoploss-type").value;
-    bot.stopLoss.value = parseFloat(document.getElementById("stoploss-value").value);
-    bot.stopLoss.reached = false;
-    this.innerText = bot.stopLoss.enabled ? "Disable" : "Enable";
-    this.style.background = bot.stopLoss.enabled ? "#ef4444" : "#2962ff";
-  };
-
-  /************** HIDE / SHOW **************/
-  document.getElementById("hideBot").onclick = () => {
-    ui.classList.add("hidden");
-    showBtn.style.display = "block";
-  };
-
-  showBtn.onclick = () => {
-    ui.classList.remove("hidden");
-    showBtn.style.display = "none";
-  };
-
   /************** UPDATE DISPLAY **************/
   function updateDisplay() {
-    document.getElementById("st-balance").innerText = bot.stats.currentBal.toFixed(8) + " " + bot.selectedCurrency.toUpperCase();
-    document.getElementById("st-profit").innerText = (bot.stats.profit >= 0 ? '+' : '') + bot.stats.profit.toFixed(8);
-    document.getElementById("st-bets").innerText = bot.stats.bets;
-    document.getElementById("st-wl").innerText = bot.stats.wins + "/" + bot.stats.loss;
-    
-    const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100).toFixed(1) : 0;
-    document.getElementById("st-winrate").innerText = winRate + "%";
-    
-    document.getElementById("st-wagered").innerText = bot.stats.wagered.toFixed(8);
-    document.getElementById("st-max-payout").innerText = bot.globalMaxPayout.toFixed(2) + "x";
-    
-    const runtime = Math.floor((Date.now() - bot.stats.startTime) / 1000) || 0;
-    const hours = Math.floor(runtime / 3600);
-    const minutes = Math.floor((runtime % 3600) / 60);
-    document.getElementById("st-runtime").innerText = hours + "h " + minutes + "m";
-    
-    // Martingale display
-    document.getElementById("mart-step").innerText = bot.martingale.currentStep + "/" + bot.martingale.maxSteps;
-    document.getElementById("mart-base").innerText = bot.martingale.baseBet.toFixed(8);
-    document.getElementById("mart-current").innerText = bot.martingale.currentBet.toFixed(8);
-    document.getElementById("mart-loss-streak").innerText = bot.streak.lossStreak;
-    document.getElementById("mart-win-streak").innerText = bot.streak.winStreak;
-    
-    if (bot.stats.profit >= 0) {
-      document.getElementById("st-profit").style.color = "#10b981";
-    } else {
-      document.getElementById("st-profit").style.color = "#ef4444";
+    try {
+      document.getElementById("st-balance").innerText = bot.stats.currentBal.toFixed(8) + " " + bot.selectedCurrency.toUpperCase();
+      document.getElementById("st-profit").innerText = (bot.stats.profit >= 0 ? '+' : '') + bot.stats.profit.toFixed(8);
+      document.getElementById("st-bets").innerText = bot.stats.bets;
+      document.getElementById("st-wl").innerText = bot.stats.wins + "/" + bot.stats.loss;
+      
+      const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100).toFixed(1) : 0;
+      document.getElementById("st-winrate").innerText = winRate + "%";
+      
+      document.getElementById("st-wagered").innerText = bot.stats.wagered.toFixed(8);
+      document.getElementById("st-max-payout").innerText = bot.globalMaxPayout.toFixed(2) + "x";
+      
+      // Fix runtime - jangan pakai startTime kalau null
+      if (bot.stats.startTime) {
+        const runtime = Math.floor((Date.now() - bot.stats.startTime) / 1000);
+        const hours = Math.floor(runtime / 3600);
+        const minutes = Math.floor((runtime % 3600) / 60);
+        document.getElementById("st-runtime").innerText = hours + "h " + minutes + "m";
+      } else {
+        document.getElementById("st-runtime").innerText = "0h 0m";
+      }
+      
+      if (bot.stats.profit >= 0) {
+        document.getElementById("st-profit").style.color = "#10b981";
+      } else {
+        document.getElementById("st-profit").style.color = "#ef4444";
+      }
+    } catch (e) {
+      debugLog("Update display error:", e);
     }
   }
 
   /************** ADD LOG ENTRY **************/
-  function addLog(amount, payout, multiplier, win, fields) {
+  function addLog(amount, payout, multiplier, win) {
     const logsContainer = document.getElementById("logs-container");
+    if (!logsContainer) return;
+    
     const entry = document.createElement("div");
     entry.className = "log-entry " + (win ? "win" : "loss");
     
@@ -1539,21 +387,208 @@
     }
   }
 
-  /************** START BOT **************/
-  document.getElementById("start").onclick = async () => {
-    if (bot.isRunning) return;
+  /************** CREATE UI (SINGKAT) **************/
+  function createUI() {
+    // Hanya buat UI jika belum ada
+    if (document.getElementById("mineUI")) return;
+    
+    const ui = document.createElement("div");
+    ui.id = "mineUI";
+    ui.innerHTML = `
+      <div style="display:flex; justify-content:space-between; margin-bottom:12px;">
+        <span style="font-size:16px; font-weight:700; color:#f59e0b;">⚡ ORION MINES v3.0</span>
+        <span class="badge" id="mode-badge">MINES</span>
+      </div>
+
+      <!-- MAIN CONTENT (SINGKAT) -->
+      <div>
+        <div class="grid-2col">
+          <div>
+            <label>💰 Amount</label>
+            <input id="amount" type="number" step="0.00000001" value="0.00000001">
+          </div>
+          <div>
+            <label>💱 Currency</label>
+            <select id="currency"></select>
+          </div>
+        </div>
+
+        <div class="grid-2col">
+          <div>
+            <label>💣 Mines</label>
+            <select id="minesCount"></select>
+          </div>
+          <div>
+            <label>🎮 Demo</label>
+            <div class="switch">
+              <input type="checkbox" id="demo-toggle">
+              <span id="demo-status">OFF</span>
+            </div>
+          </div>
+        </div>
+
+        <label>🎛️ Fields (<span id="fields-count">0</span>/25)</label>
+        <button class="fieldsBtn" id="openFields">📋 Select Fields</button>
+
+        <!-- STATS -->
+        <div id="stats-panel" style="background:#0f172a; border-radius:8px; padding:8px; margin:12px 0;">
+          <div class="stat-row"><span>User</span><span class="stat-value" id="st-user">Loading...</span></div>
+          <div class="stat-row"><span>Balance</span><span class="stat-value" id="st-balance">0</span></div>
+          <div class="stat-row"><span>Profit</span><span class="stat-value" id="st-profit">0</span></div>
+          <div class="stat-row"><span>Bets</span><span class="stat-value" id="st-bets">0</span></div>
+          <div class="stat-row"><span>W/L</span><span class="stat-value" id="st-wl">0/0</span></div>
+          <div class="stat-row"><span>WinRate</span><span class="stat-value" id="st-winrate">0%</span></div>
+          <div class="stat-row"><span>Wagered</span><span class="stat-value" id="st-wagered">0</span></div>
+          <div class="stat-row"><span>Speed</span><span class="stat-value" id="speed-value">0.00/s</span></div>
+          <div class="stat-row"><span>Max Payout</span><span class="stat-value" id="st-max-payout">0x</span></div>
+          <div class="stat-row"><span>Runtime</span><span class="stat-value" id="st-runtime">0h 0m</span></div>
+        </div>
+
+        <!-- LOGS -->
+        <label>📝 Live Logs</label>
+        <div id="logs-container">
+          <div class="log-entry">Ready</div>
+        </div>
+
+        <!-- BUTTONS -->
+        <div class="grid-2col" style="margin-top:12px;">
+          <button class="start" id="start">▶ START</button>
+          <button class="stop" id="stop" disabled>⏹ STOP</button>
+        </div>
+        
+        <button class="toggleBtn" id="hideBot" style="margin-top:8px;">🙈 Minimize</button>
+      </div>
+    `;
+    
+    document.body.appendChild(ui);
+    
+    // Mines count options
+    const minesSelect = document.getElementById("minesCount");
+    for (let i = 3; i <= 24; i++) {
+      const opt = document.createElement("option");
+      opt.value = i;
+      opt.textContent = i;
+      minesSelect.appendChild(opt);
+    }
+    
+    // Load saved values
+    document.getElementById("amount").value = loadLS("mine_amount", 0.00000001);
+    document.getElementById("minesCount").value = loadLS("mine_minesCount", 13);
+    
+    // Simple fields modal
+    const modal = document.createElement("div");
+    modal.id = "fieldsModal";
+    modal.innerHTML = `
+      <div id="fieldsBox">
+        <h3 style="color:#f59e0b;">Select Fields</h3>
+        <div class="grid" id="grid"></div>
+        <div class="grid-2col">
+          <button id="clearFields">Clear</button>
+          <button id="saveFields">Save</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    
+    const grid = modal.querySelector("#grid");
+    let selectedFields = loadLS("mine_fields", []);
+    
+    for (let i = 0; i < 25; i++) {
+      const c = document.createElement("div");
+      c.className = "cell";
+      c.textContent = i;
+      if (selectedFields.includes(i)) c.classList.add("active");
+      c.onclick = () => {
+        c.classList.toggle("active");
+        updateFieldsCount();
+      };
+      grid.appendChild(c);
+    }
+    
+    function updateFieldsCount() {
+      const active = [...grid.children].filter(c => c.classList.contains("active")).length;
+      document.getElementById("fields-count").textContent = active;
+    }
+    updateFieldsCount();
+    
+    document.getElementById("openFields").onclick = () => modal.style.display = "flex";
+    modal.onclick = e => { if (e.target === modal) modal.style.display = "none"; };
+    
+    document.getElementById("clearFields").onclick = () => {
+      [...grid.children].forEach(c => c.classList.remove("active"));
+      updateFieldsCount();
+    };
+    
+    document.getElementById("saveFields").onclick = () => {
+      selectedFields = [...grid.children]
+        .filter(c => c.classList.contains("active"))
+        .map(c => +c.textContent);
+      saveLS("mine_fields", selectedFields);
+      modal.style.display = "none";
+      updateFieldsCount();
+      bot.selectedFields = selectedFields;
+    };
+    
+    // Event listeners
+    document.getElementById("currency").addEventListener("change", (e) => {
+      bot.selectedCurrency = e.target.value;
+      saveLS("mine_currency", bot.selectedCurrency);
+      debugLog("Currency changed to:", bot.selectedCurrency);
+    });
+    
+    document.getElementById("demo-toggle").onchange = (e) => {
+      bot.isDemo = e.target.checked;
+      document.getElementById("demo-status").innerText = e.target.checked ? "ON" : "OFF";
+    };
+    
+    document.getElementById("hideBot").onclick = () => {
+      ui.classList.add("hidden");
+      document.getElementById("showBotBtn").style.display = "block";
+    };
+    
+    // Show button
+    const showBtn = document.createElement("div");
+    showBtn.id = "showBotBtn";
+    showBtn.textContent = "🤖";
+    showBtn.onclick = () => {
+      ui.classList.remove("hidden");
+      showBtn.style.display = "none";
+    };
+    document.body.appendChild(showBtn);
+    
+    // START BUTTON
+    document.getElementById("start").onclick = startBot;
+    
+    // STOP BUTTON
+    document.getElementById("stop").onclick = stopBot;
+  }
+
+  /************** START BOT FUNCTION **************/
+  async function startBot() {
+    debugLog("=== START BOT CLICKED ===");
+    
+    if (bot.isRunning) {
+      debugLog("Bot already running");
+      return;
+    }
 
     // Get values
     const amountEl = document.getElementById("amount");
     const currencyEl = document.getElementById("currency");
     const minesCountEl = document.getElementById("minesCount");
 
-    // Update selected currency from dropdown
     bot.selectedCurrency = currencyEl.value;
     bot.selectedMines = parseInt(minesCountEl.value);
-    bot.selectedFields = selectedFields;
+    
+    // Get selected fields from modal
+    const grid = document.querySelector("#grid");
+    if (grid) {
+      bot.selectedFields = [...grid.children]
+        .filter(c => c.classList.contains("active"))
+        .map(c => +c.textContent);
+    }
 
-    console.log("🚀 Starting bot with:", {
+    debugLog("Bot config:", {
       currency: bot.selectedCurrency,
       mines: bot.selectedMines,
       fields: bot.selectedFields.length,
@@ -1572,12 +607,7 @@
     saveLS("mine_currency", bot.selectedCurrency);
     saveLS("mine_minesCount", bot.selectedMines);
 
-    // Start bot
-    bot.isRunning = true;
-    document.getElementById("start").disabled = true;
-    document.getElementById("stop").disabled = false;
-
-    // Reset stats
+    // Reset stats - PASTIKAN startTime DI SET
     bot.stats = {
       profit: 0,
       wagered: 0,
@@ -1586,7 +616,7 @@
       bets: 0,
       wins: 0,
       loss: 0,
-      startTime: Date.now(),
+      startTime: Date.now(), // <-- INI PENTING!
       maxDD: 0,
       maxDDPerc: 0,
       history: []
@@ -1600,82 +630,99 @@
     bot.globalMaxPayout = 0;
     
     // Reset martingale
-    bot.martingale.baseBet = parseFloat(amountEl.value);
-    bot.martingale.currentBet = bot.martingale.baseBet;
-    bot.martingale.currentStep = 0;
-    bot.streak.lossStreak = 0;
-    bot.streak.winStreak = 0;
+    bot.martingale = {
+      enabled: false,
+      baseBet: parseFloat(amountEl.value),
+      currentBet: parseFloat(amountEl.value),
+      currentStep: 0,
+      maxSteps: 5,
+      mode: 'dynamic',
+      multiplier: 2.0
+    };
 
     // Get initial balance
     if (!bot.isDemo) {
-      // Sync first to ensure token is valid
+      debugLog("Real mode - getting balance...");
+      
+      // Sync first
       const synced = await API.syncOnce();
       if (!synced) {
-        alert("❌ Failed to sync with server. Please refresh the page.");
+        alert("❌ Failed to sync. Please check your login/token.");
         bot.isRunning = false;
-        document.getElementById("start").disabled = false;
-        document.getElementById("stop").disabled = true;
         return;
       }
       
       bot.stats.startBal = await API.getBalance(bot.selectedCurrency);
-      console.log(`💰 Initial ${bot.selectedCurrency} balance:`, bot.stats.startBal);
+      debugLog(`Initial balance: ${bot.stats.startBal} ${bot.selectedCurrency}`);
+      
+      if (bot.stats.startBal <= 0) {
+        alert(`❌ Insufficient ${bot.selectedCurrency.toUpperCase()} balance!`);
+        bot.isRunning = false;
+        return;
+      }
     } else {
-      bot.stats.startBal = 100.0; // Demo balance
-    }
-
-    if (bot.stats.startBal <= 0 && !bot.isDemo) {
-      alert(`❌ Insufficient ${bot.selectedCurrency.toUpperCase()} balance!`);
-      bot.isRunning = false;
-      document.getElementById("start").disabled = false;
-      document.getElementById("stop").disabled = true;
-      return;
+      debugLog("Demo mode - using fake balance");
+      bot.stats.startBal = 100.0;
     }
 
     bot.stats.currentBal = bot.stats.startBal;
     bot.stats.history = [bot.stats.startBal];
-
-    // Send start report
+    
+    // Update UI
+    bot.isRunning = true;
+    document.getElementById("start").disabled = true;
+    document.getElementById("stop").disabled = false;
+    
+    // Update display immediately
+    updateDisplay();
+    
+    // Send start notification
     API.kirimPesan(`🚀 *MINES BOT STARTED*\nCurrency: ${bot.selectedCurrency.toUpperCase()}\nMines: ${bot.selectedMines}\nFields: ${bot.selectedFields.length}\nBalance: ${bot.stats.startBal.toFixed(8)}`);
 
+    debugLog("✅ Bot started, starting loop...");
+    
     // Start betting loop
     runMinesLoop();
-  };
+  }
 
   /************** STOP BOT **************/
-  document.getElementById("stop").onclick = async () => {
+  function stopBot() {
+    debugLog("Stopping bot...");
     bot.isRunning = false;
     document.getElementById("start").disabled = false;
     document.getElementById("stop").disabled = true;
     
     API.kirimPesan(`⏹ *MINES BOT STOPPED*\nProfit: ${bot.stats.profit.toFixed(8)} ${bot.selectedCurrency.toUpperCase()}\nBets: ${bot.stats.bets}`);
-    await API.sendTelegramReport();
-  };
+  }
 
   /************** MINES BETTING LOOP **************/
   async function runMinesLoop() {
-    if (!bot.isRunning) return;
+    if (!bot.isRunning) {
+      debugLog("Loop stopped - bot not running");
+      return;
+    }
 
     try {
       bot.lastBetTime = Date.now();
       
-      // Calculate bet amount with martingale
-      let amount = bot.martingale.enabled ? bot.martingale.currentBet : parseFloat(document.getElementById("amount").value);
+      // Get amount
+      let amount = parseFloat(document.getElementById("amount").value);
       
       // Ensure amount doesn't exceed balance
       if (amount > bot.stats.currentBal) {
         amount = bot.stats.currentBal * 0.95;
+        debugLog("Adjusted amount to:", amount);
       }
       
       if (amount <= 0) {
-        console.log("❌ Invalid bet amount:", amount);
+        debugLog("❌ Invalid amount:", amount);
         bot.isRunning = false;
         document.getElementById("start").disabled = false;
         document.getElementById("stop").disabled = true;
         return;
       }
       
-      console.log(`🎲 Betting ${amount} ${bot.selectedCurrency} on mines...`);
+      debugLog(`Betting ${amount} ${bot.selectedCurrency}...`);
       
       // Place bet
       const result = await API.placeMinesBet(amount, bot.selectedMines, bot.selectedFields);
@@ -1690,24 +737,23 @@
         const payout = d.payout || 0;
         const multiplier = d.payoutMultiplier || 0;
         
-        // Calculate profit
         const profit = payout - amount;
         bot.stats.bets++;
         bot.stats.wagered += amount;
         bot.stats.profit += profit;
         bot.stats.currentBal += profit;
         
-        // Track wins/losses
         if (win) {
           bot.stats.wins++;
+          debugLog("✅ WIN -", multiplier, "x");
         } else {
           bot.stats.loss++;
+          debugLog("❌ LOSS");
         }
         
         // Track max payout
         if (multiplier > bot.globalMaxPayout) {
           bot.globalMaxPayout = multiplier;
-          API.kirimPesan(`🔥 *New Max Payout!*\n${multiplier.toFixed(2)}x`);
         }
         
         // Update history
@@ -1716,129 +762,62 @@
           bot.stats.history.shift();
         }
         
-        // Calculate drawdown
-        if (bot.stats.currentBal < bot.stats.startBal) {
-          const dd = bot.stats.startBal - bot.stats.currentBal;
-          const ddPerc = (dd / bot.stats.startBal) * 100;
-          if (dd > bot.stats.maxDD) bot.stats.maxDD = dd;
-          if (ddPerc > bot.stats.maxDDPerc) bot.stats.maxDDPerc = ddPerc;
-        }
-        
-        // Update martingale
-        if (bot.martingale.enabled) {
-          const nextBet = calculateMartingaleBet(bot.martingale.baseBet, win);
-          bot.martingale.currentBet = nextBet;
-        }
-        
         // Add log
         addLog(amount, payout, multiplier, win);
         
         // Update display
         updateDisplay();
         
-        console.log(`${win ? '✅ WIN' : '❌ LOSS'} | Payout: ${multiplier.toFixed(2)}x | Balance: ${bot.stats.currentBal.toFixed(8)}`);
-        
-        // Check for chart report
-        const currentWagerFloor = Math.floor(bot.stats.wagered / bot.chartReportInterval);
-        const lastWagerFloor = Math.floor(bot.lastChartWagerAmount / bot.chartReportInterval);
-        
-        if (currentWagerFloor > lastWagerFloor && bot.stats.bets > 0) {
-          await API.sendChartReport();
-        }
-        
-        bot.lastChartWagerAmount = bot.stats.wagered;
-        
         // Check for big win
         if (multiplier > 20) {
           API.kirimPesan(`💰 *BIG WIN!*\nPayout: ${multiplier.toFixed(2)}x\nAmount: ${payout.toFixed(8)} ${bot.selectedCurrency.toUpperCase()}`);
         }
-        
-        // Check targets
-        if (checkTargets()) {
-          bot.isRunning = false;
-          document.getElementById("start").disabled = false;
-          document.getElementById("stop").disabled = true;
-          return;
-        }
       }
       
-      // Send periodic telegram report
-      const now = Date.now();
-      if (now - bot.lastTelegramTime >= bot.telegramInterval) {
-        await API.sendTelegramReport();
-        bot.lastTelegramTime = now;
-      }
-      
-      // Continue loop
+      // Continue loop with delay
       if (bot.isRunning) {
-        setTimeout(runMinesLoop, 200);
+        setTimeout(runMinesLoop, 500); // Delay 500ms antara bet
       }
       
     } catch (e) {
-      console.error("❌ Bet error:", e);
+      debugLog("❌ Bet error:", e);
       if (bot.isRunning) {
-        setTimeout(runMinesLoop, 1000);
+        setTimeout(runMinesLoop, 2000); // Lebih lama kalau error
       }
     }
   }
 
-  /************** DRAGGABLE **************/
-  const dragElement = (el) => {
-    let offsetX = 0, offsetY = 0, startX = 0, startY = 0;
-
-    const onMouseDown = (e) => {
-      if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'BUTTON') return;
-      startX = e.clientX;
-      startY = e.clientY;
-      offsetX = el.offsetLeft;
-      offsetY = el.offsetTop;
-      document.addEventListener('mousemove', onMouseMove);
-      document.addEventListener('mouseup', onMouseUp);
-      e.preventDefault();
-    };
-
-    const onMouseMove = (e) => {
-      const dx = e.clientX - startX;
-      const dy = e.clientY - startY;
-      el.style.left = offsetX + dx + 'px';
-      el.style.top = offsetY + dy + 'px';
-      el.style.right = 'auto';
-    };
-
-    const onMouseUp = () => {
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-    };
-
-    el.addEventListener('mousedown', onMouseDown);
-  };
-
-  dragElement(ui);
-
-  // Initial sync with retry
-  async function initSync() {
-    console.log("🔄 Initializing sync...");
-    const synced = await API.syncOnce();
-    if (!synced) {
-      console.log("⏳ Retrying sync in 3 seconds...");
-      setTimeout(initSync, 3000);
-    } else {
-      // Load saved currency after sync
-      const savedCurrency = loadLS("mine_currency", "idr");
-      const currencySelect = document.getElementById("currency");
-      if (currencySelect) {
-        // Find and select saved currency
-        for (let i = 0; i < currencySelect.options.length; i++) {
-          if (currencySelect.options[i].value === savedCurrency) {
-            currencySelect.selectedIndex = i;
-            bot.selectedCurrency = savedCurrency;
-            break;
-          }
+  /************** INITIALIZATION **************/
+  function init() {
+    debugLog("Initializing Orion Mines...");
+    
+    // Create UI
+    createUI();
+    
+    // Try to sync immediately
+    setTimeout(() => {
+      API.syncOnce().then(success => {
+        if (success) {
+          debugLog("Initial sync successful");
+          // Get balance for default currency
+          API.getBalance(bot.selectedCurrency).then(bal => {
+            bot.stats.currentBal = bal;
+            updateDisplay();
+          });
+        } else {
+          debugLog("Initial sync failed, will retry...");
         }
+      });
+    }, 1000);
+    
+    // Update display periodically even when not running
+    setInterval(() => {
+      if (!bot.isRunning) {
+        updateDisplay();
       }
-      console.log("✅ Sync complete, currency:", bot.selectedCurrency);
-    }
+    }, 1000);
   }
-  
-  initSync();
+
+  // Start everything
+  init();
 })();
