@@ -55,7 +55,7 @@
     // Martingale Settings
     martingale: {
       enabled: false,
-      mode: 'dynamic', // 'dynamic', 'fixed', 'progressive'
+      mode: 'dynamic',
       multiplier: 2.0,
       maxSteps: 5,
       currentStep: 0,
@@ -63,14 +63,14 @@
       currentBet: 0,
       lossStreak: 0,
       winStreak: 0,
-      afterWin: 'reset', // 'reset', 'increase', 'decrease'
-      afterLoss: 'increase' // 'increase', 'double', 'reset'
+      afterWin: 'reset',
+      afterLoss: 'increase'
     },
     
     // Target Settings
     target: {
       enabled: false,
-      type: 'percent', // 'percent', 'fixed'
+      type: 'percent',
       value: 10.0,
       reached: false
     },
@@ -78,7 +78,7 @@
     // Stop Loss Settings
     stopLoss: {
       enabled: false,
-      type: 'percent', // 'percent', 'fixed'
+      type: 'percent',
       value: 5.0,
       reached: false
     },
@@ -93,7 +93,10 @@
       lossThreshold: 3,
       winThreshold: 3,
       resetAfterTarget: true
-    }
+    },
+    
+    // Available currencies dari API
+    availableCurrencies: []
   };
 
   /************** API FUNCTIONS **************/
@@ -107,10 +110,12 @@
       if (!bot.token) {
         console.log("❌ No token found");
         document.getElementById("st-user").innerText = "❌ No token";
-        return;
+        return false;
       }
 
       try {
+        console.log("🔄 Syncing with token:", bot.token.substring(0, 10) + "...");
+        
         const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
           method: "POST",
           headers: { 
@@ -132,10 +137,18 @@
           })
         });
         
+        if (!res.ok) {
+          throw new Error(`HTTP error! status: ${res.status}`);
+        }
+        
         const json = await res.json();
         
         if (json?.data?.user) {
           bot.stakeUser = json.data.user.name;
+          bot.availableCurrencies = json.data.user.balances || [];
+          
+          console.log("✅ User found:", bot.stakeUser);
+          console.log("💰 Available balances:", bot.availableCurrencies.map(b => `${b.available.currency}: ${b.available.amount}`));
           
           // Update user display
           const userEl = document.getElementById("st-user");
@@ -144,44 +157,54 @@
           }
           
           // Populate currency dropdown
-          const bals = json.data.user.balances || [];
-          const currencySelect = document.getElementById("currency");
+          this.updateCurrencyDropdown();
           
-          if (currencySelect) {
-            // Clear existing options
-            currencySelect.innerHTML = '';
-            
-            bals.forEach(b => {
-              const currency = b.available.currency.toLowerCase();
-              const opt = new Option(currency.toUpperCase(), currency);
-              
-              // Set default to idr if available
-              if (currency === "idr") {
-                opt.selected = true;
-                bot.selectedCurrency = currency;
-              }
-              
-              currencySelect.add(opt);
-            });
-            
-            // If no options added, add defaults
-            if (currencySelect.options.length === 0) {
-              const currencies = ['idr', 'ltc', 'usdt', 'sol', 'doge', 'xrp', 'trx', 'bnb'];
-              currencies.forEach(c => {
-                const opt = new Option(c.toUpperCase(), c);
-                if (c === 'idr') opt.selected = true;
-                currencySelect.add(opt);
-              });
-              bot.selectedCurrency = "idr";
-            }
-          }
-          
-          console.log("✅ Sync successful:", bot.stakeUser);
+          return true;
+        } else {
+          console.log("❌ No user data in response");
+          return false;
         }
       } catch (e) {
         console.log("❌ Sync error:", e);
         document.getElementById("st-user").innerText = "❌ Sync failed";
+        return false;
       }
+    },
+    
+    updateCurrencyDropdown() {
+      const currencySelect = document.getElementById("currency");
+      if (!currencySelect) return;
+      
+      // Clear existing options
+      currencySelect.innerHTML = '';
+      
+      if (bot.availableCurrencies.length > 0) {
+        // Add currencies from API
+        bot.availableCurrencies.forEach(b => {
+          const currency = b.available.currency.toLowerCase();
+          const amount = parseFloat(b.available.amount);
+          const opt = new Option(`${currency.toUpperCase()} (${amount.toFixed(4)})`, currency);
+          
+          // Set default to idr if available, otherwise first currency
+          if (currency === "idr") {
+            opt.selected = true;
+            bot.selectedCurrency = currency;
+          }
+          
+          currencySelect.add(opt);
+        });
+      } else {
+        // Fallback currencies
+        const currencies = ['idr', 'ltc', 'usdt', 'sol', 'doge', 'xrp', 'trx', 'bnb'];
+        currencies.forEach(c => {
+          const opt = new Option(c.toUpperCase(), c);
+          if (c === 'idr') opt.selected = true;
+          currencySelect.add(opt);
+        });
+        bot.selectedCurrency = "idr";
+      }
+      
+      console.log("💱 Currency dropdown updated, selected:", bot.selectedCurrency);
     },
 
     async getBalance(coin) {
@@ -189,7 +212,14 @@
         return parseFloat(document.getElementById("demo-balance")?.value) || 100.0;
       }
       
+      if (!bot.token) {
+        console.log("❌ No token for balance check");
+        return 0;
+      }
+      
       try {
+        console.log(`💰 Fetching balance for ${coin}...`);
+        
         const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
           method: "POST",
           headers: { 
@@ -211,10 +241,17 @@
         });
         
         const json = await res.json();
-        const active = json.data.user.balances.find(b => 
+        const balances = json?.data?.user?.balances || [];
+        
+        // Find balance for requested coin
+        const balance = balances.find(b => 
           b.available.currency.toLowerCase() === coin.toLowerCase()
         );
-        return active ? parseFloat(active.available.amount) : 0;
+        
+        const amount = balance ? parseFloat(balance.available.amount) : 0;
+        console.log(`💰 ${coin} balance:`, amount);
+        
+        return amount;
       } catch (e) { 
         console.log("❌ Balance error:", e);
         return 0; 
@@ -230,25 +267,39 @@
         fields: fields
       };
 
+      console.log("🎲 Placing bet:", payload);
+
       if (bot.isDemo) {
         return simulateMinesBet(amount, minesCount, fields);
       }
 
-      const response = await fetch(`${CONFIG.apiUrl}/casino/mines/bet`, {
-        method: "POST",
-        headers: {
-          "accept": "*/*",
-          "content-type": "application/json",
-          "x-access-token": bot.token
-        },
-        body: JSON.stringify(payload),
-        credentials: "include"
-      });
-      
-      return response.json();
+      try {
+        const response = await fetch(`${CONFIG.apiUrl}/casino/mines/bet`, {
+          method: "POST",
+          headers: {
+            "accept": "*/*",
+            "content-type": "application/json",
+            "x-access-token": bot.token
+          },
+          body: JSON.stringify(payload),
+          credentials: "include"
+        });
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        console.log("✅ Bet result:", data);
+        return data;
+        
+      } catch (e) {
+        console.log("❌ Bet error:", e);
+        throw e;
+      }
     },
 
-    // Chart generation functions
+    // ... (chart functions tetap sama)
     generateBalanceChart() {
       const history = bot.stats.history || [bot.stats.startBal];
       const labels = Array(history.length).fill('').map((_, i) => `#${i+1}`);
@@ -569,10 +620,8 @@
       bot.martingale.currentStep = 0;
       
       if (bot.streak.enabled && bot.streak.winStreak >= bot.streak.winThreshold) {
-        // Apply win streak multiplier
         bot.martingale.currentBet = baseBet * bot.streak.winMultiplier;
       } else {
-        // After win, reset or adjust based on settings
         switch(bot.martingale.afterWin) {
           case 'reset':
             bot.martingale.currentBet = bot.martingale.baseBet;
@@ -592,10 +641,8 @@
       bot.martingale.currentStep++;
       
       if (bot.streak.enabled && bot.streak.lossStreak >= bot.streak.lossThreshold) {
-        // Apply loss streak multiplier
         bot.martingale.currentBet = baseBet * bot.streak.lossMultiplier;
       } else {
-        // After loss, apply martingale based on mode
         switch(bot.martingale.mode) {
           case 'fixed':
             bot.martingale.currentBet = baseBet * Math.pow(bot.martingale.multiplier, bot.martingale.currentStep);
@@ -1318,8 +1365,22 @@
 
   /************** LOAD SAVED **************/
   document.getElementById("amount").value = loadLS("mine_amount", 0.00000001);
-  document.getElementById("currency").value = loadLS("mine_currency", "idr");
   document.getElementById("minesCount").value = loadLS("mine_minesCount", 13);
+
+  /************** CURRENCY CHANGE HANDLER **************/
+  document.getElementById("currency").addEventListener("change", function(e) {
+    bot.selectedCurrency = e.target.value;
+    console.log("💱 Currency changed to:", bot.selectedCurrency);
+    saveLS("mine_currency", bot.selectedCurrency);
+    
+    // Update balance display with new currency
+    if (!bot.isDemo && bot.token) {
+      API.getBalance(bot.selectedCurrency).then(bal => {
+        bot.stats.currentBal = bal;
+        updateDisplay();
+      });
+    }
+  });
 
   /************** TAB FUNCTIONS **************/
   window.switchTab = function(tabName) {
@@ -1399,7 +1460,7 @@
   };
 
   /************** TARGET/STOPLOSS SETTINGS **************/
-  document.getElementById("target-enable").onclick = () => {
+  document.getElementById("target-enable").onclick = function() {
     bot.target.enabled = !bot.target.enabled;
     bot.target.type = document.getElementById("target-type").value;
     bot.target.value = parseFloat(document.getElementById("target-value").value);
@@ -1408,7 +1469,7 @@
     this.style.background = bot.target.enabled ? "#ef4444" : "#2962ff";
   };
 
-  document.getElementById("stoploss-enable").onclick = () => {
+  document.getElementById("stoploss-enable").onclick = function() {
     bot.stopLoss.enabled = !bot.stopLoss.enabled;
     bot.stopLoss.type = document.getElementById("stoploss-type").value;
     bot.stopLoss.value = parseFloat(document.getElementById("stoploss-value").value);
@@ -1487,9 +1548,18 @@
     const currencyEl = document.getElementById("currency");
     const minesCountEl = document.getElementById("minesCount");
 
+    // Update selected currency from dropdown
     bot.selectedCurrency = currencyEl.value;
     bot.selectedMines = parseInt(minesCountEl.value);
     bot.selectedFields = selectedFields;
+
+    console.log("🚀 Starting bot with:", {
+      currency: bot.selectedCurrency,
+      mines: bot.selectedMines,
+      fields: bot.selectedFields.length,
+      amount: amountEl.value,
+      isDemo: bot.isDemo
+    });
 
     // Validate fields
     if (bot.selectedFields.length === 0) {
@@ -1499,8 +1569,8 @@
 
     // Save to localStorage
     saveLS("mine_amount", amountEl.value);
-    saveLS("mine_currency", currencyEl.value);
-    saveLS("mine_minesCount", minesCountEl.value);
+    saveLS("mine_currency", bot.selectedCurrency);
+    saveLS("mine_minesCount", bot.selectedMines);
 
     // Start bot
     bot.isRunning = true;
@@ -1538,10 +1608,28 @@
 
     // Get initial balance
     if (!bot.isDemo) {
-      await API.syncOnce();
+      // Sync first to ensure token is valid
+      const synced = await API.syncOnce();
+      if (!synced) {
+        alert("❌ Failed to sync with server. Please refresh the page.");
+        bot.isRunning = false;
+        document.getElementById("start").disabled = false;
+        document.getElementById("stop").disabled = true;
+        return;
+      }
+      
       bot.stats.startBal = await API.getBalance(bot.selectedCurrency);
+      console.log(`💰 Initial ${bot.selectedCurrency} balance:`, bot.stats.startBal);
     } else {
-      bot.stats.startBal = parseFloat(document.getElementById("demo-balance")?.value) || 100.0;
+      bot.stats.startBal = 100.0; // Demo balance
+    }
+
+    if (bot.stats.startBal <= 0 && !bot.isDemo) {
+      alert(`❌ Insufficient ${bot.selectedCurrency.toUpperCase()} balance!`);
+      bot.isRunning = false;
+      document.getElementById("start").disabled = false;
+      document.getElementById("stop").disabled = true;
+      return;
     }
 
     bot.stats.currentBal = bot.stats.startBal;
@@ -1578,6 +1666,16 @@
       if (amount > bot.stats.currentBal) {
         amount = bot.stats.currentBal * 0.95;
       }
+      
+      if (amount <= 0) {
+        console.log("❌ Invalid bet amount:", amount);
+        bot.isRunning = false;
+        document.getElementById("start").disabled = false;
+        document.getElementById("stop").disabled = true;
+        return;
+      }
+      
+      console.log(`🎲 Betting ${amount} ${bot.selectedCurrency} on mines...`);
       
       // Place bet
       const result = await API.placeMinesBet(amount, bot.selectedMines, bot.selectedFields);
@@ -1638,6 +1736,8 @@
         // Update display
         updateDisplay();
         
+        console.log(`${win ? '✅ WIN' : '❌ LOSS'} | Payout: ${multiplier.toFixed(2)}x | Balance: ${bot.stats.currentBal.toFixed(8)}`);
+        
         // Check for chart report
         const currentWagerFloor = Math.floor(bot.stats.wagered / bot.chartReportInterval);
         const lastWagerFloor = Math.floor(bot.lastChartWagerAmount / bot.chartReportInterval);
@@ -1675,7 +1775,7 @@
       }
       
     } catch (e) {
-      console.error("Bet error:", e);
+      console.error("❌ Bet error:", e);
       if (bot.isRunning) {
         setTimeout(runMinesLoop, 1000);
       }
@@ -1715,8 +1815,30 @@
 
   dragElement(ui);
 
-  // Initial sync
-  setTimeout(() => {
-    API.syncOnce();
-  }, 1000);
+  // Initial sync with retry
+  async function initSync() {
+    console.log("🔄 Initializing sync...");
+    const synced = await API.syncOnce();
+    if (!synced) {
+      console.log("⏳ Retrying sync in 3 seconds...");
+      setTimeout(initSync, 3000);
+    } else {
+      // Load saved currency after sync
+      const savedCurrency = loadLS("mine_currency", "idr");
+      const currencySelect = document.getElementById("currency");
+      if (currencySelect) {
+        // Find and select saved currency
+        for (let i = 0; i < currencySelect.options.length; i++) {
+          if (currencySelect.options[i].value === savedCurrency) {
+            currencySelect.selectedIndex = i;
+            bot.selectedCurrency = savedCurrency;
+            break;
+          }
+        }
+      }
+      console.log("✅ Sync complete, currency:", bot.selectedCurrency);
+    }
+  }
+  
+  initSync();
 })();
