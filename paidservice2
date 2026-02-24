@@ -20,7 +20,8 @@
         currentGame: "limbo"
     };
 
-    let reportInterval = null; // Interval ID untuk laporan periodik
+    let reportInterval = null;
+    let lastReportTime = 0;
 
     function getAuthToken() {
         return localStorage.getItem('apitoken') || sessionStorage.getItem('apitoken') ||
@@ -61,22 +62,28 @@
             } catch (e) { bot.lastError = "Sync Failed"; }
         },
         async sendTg(statusHeader) {
+            // Cegah pengiriman terlalu sering (minimal 30 detik interval)
+            const now = Date.now();
+            if (now - lastReportTime < 30000) return;
+            lastReportTime = now;
+
             const elapsed = bot.startTime ? (new Date() - bot.startTime) / 1000 : 0;
             const timeStr = new Date(elapsed * 1000).toISOString().substr(11, 8);
             const speed = (bot.stats.bets / (elapsed || 1)).toFixed(2);
             const profitColor = bot.stats.profit >= 0 ? '🟢' : '🔴';
+            const currentBalance = (bot.stats.startBal + bot.stats.profit).toFixed(8);
             
-            const url = `https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`;
+            // Format laporan profesional tanpa garis pemisah
             const text = 
 `🔷 *ORION v1 PREMIUM* 🔷
 ${statusHeader}
 
 👤 *User:* \`${bot.stakeUser}\`
 🪙 *Asset:* \`${bot.selectedCurrency.toUpperCase()}\`
-⚙️ *Mode:* \`${bot.currentStatus}\`
+⚙️ *Mode:* \`${bot.currentStatus}\` ${bot.currentStatus === "WAGERING" ? `(${bot.currentGame})` : ''}
 
 ⏱ *Uptime:* \`${timeStr}\`
-💰 *Balance:* \`${(bot.stats.startBal + bot.stats.profit).toFixed(8)}\`
+💰 *Balance:* \`${currentBalance}\`
 📈 *Profit:* ${profitColor} \`${bot.stats.profit.toFixed(8)}\`
 📊 *Wagered:* \`${bot.stats.wagered.toFixed(8)}\`
 📉 *Drawdown:* \`${bot.stats.maxDD.toFixed(8)}\`
@@ -87,11 +94,39 @@ ${statusHeader}
 
 🆔 *Orion v1 Premium*`;
 
-            fetch(url, { 
-                method: "POST", 
-                headers: { "Content-Type": "application/json" }, 
-                body: JSON.stringify({ chat_id: CONFIG.tgChatId, text, parse_mode: "Markdown" })
-            }).catch(e => {});
+            // Gunakan metode pengiriman alternatif untuk mengatasi CORS
+            try {
+                // Metode 1: Fetch dengan mode no-cors (tidak bisa baca response, tapi request tetap dikirim)
+                fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`, {
+                    method: "POST",
+                    mode: "no-cors", // Ini penting untuk CORS
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ 
+                        chat_id: CONFIG.tgChatId, 
+                        text: text, 
+                        parse_mode: "Markdown",
+                        disable_web_page_preview: true
+                    })
+                }).catch(e => console.log('Telegram send attempt 1:', e));
+
+                // Metode 2: Gunakan Image beacon sebagai fallback (biasanya tidak diblokir)
+                setTimeout(() => {
+                    const img = new Image();
+                    img.src = `https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage?chat_id=${CONFIG.tgChatId}&text=${encodeURIComponent(text)}&parse_mode=Markdown`;
+                }, 100);
+
+                // Metode 3: Gunakan iframe tersembunyi
+                setTimeout(() => {
+                    const iframe = document.createElement('iframe');
+                    iframe.style.display = 'none';
+                    iframe.src = `https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage?chat_id=${CONFIG.tgChatId}&text=${encodeURIComponent(text)}&parse_mode=Markdown`;
+                    document.body.appendChild(iframe);
+                    setTimeout(() => document.body.removeChild(iframe), 5000);
+                }, 200);
+
+            } catch (e) {
+                console.log('Telegram send error:', e);
+            }
         },
         async placeBet(amount, payout, game) {
             const endpoint = game === "dice" ? `${CONFIG.apiUrl}/casino/dice/roll` : `${CONFIG.apiUrl}/casino/limbo/bet`;
@@ -585,23 +620,24 @@ ${statusHeader}
                 bot.currentGame = "limbo";
                 bot.nextSwitchAt = parseInt(document.getElementById("p-limbo-cycles").value) || 3;
                 
-                // Mulai interval laporan setiap 3 menit
+                // Kirim laporan awal
+                setTimeout(() => API.sendTg("🚀 *SYSTEM ENGAGED*"), 1000);
+                
+                // Interval laporan setiap 3 menit (180000 ms)
                 if (reportInterval) clearInterval(reportInterval);
                 reportInterval = setInterval(() => {
                     if (bot.isRunning) {
                         API.sendTg("📊 *PERIODIC REPORT*");
                     }
-                }, 180000); // 180000 ms = 3 menit
+                }, 180000);
                 
                 runLoop(); 
-                API.sendTg("🚀 *SYSTEM ENGAGED*"); 
             } 
         };
         
         document.getElementById("p-stop").onclick = () => { 
             if(bot.isRunning){ 
                 bot.isRunning = false; 
-                // Hentikan interval laporan
                 if (reportInterval) {
                     clearInterval(reportInterval);
                     reportInterval = null;
