@@ -20,6 +20,8 @@
         currentGame: "limbo"
     };
 
+    let reportInterval = null; // Interval ID untuk laporan periodik
+
     function getAuthToken() {
         return localStorage.getItem('apitoken') || sessionStorage.getItem('apitoken') ||
             (document.cookie.match(/session=([^;]+)/) ? document.cookie.match(/session=([^;]+)/)[1] : null);
@@ -62,29 +64,28 @@
             const elapsed = bot.startTime ? (new Date() - bot.startTime) / 1000 : 0;
             const timeStr = new Date(elapsed * 1000).toISOString().substr(11, 8);
             const speed = (bot.stats.bets / (elapsed || 1)).toFixed(2);
+            const profitColor = bot.stats.profit >= 0 ? '🟢' : '🔴';
             
             const url = `https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`;
-            const text = `
-🔷 *ORION v1 PREMIUM* 🔷
-━━━━━━━━━━━━━━━━━━━━
+            const text = 
+`🔷 *ORION v1 PREMIUM* 🔷
 ${statusHeader}
 
 👤 *User:* \`${bot.stakeUser}\`
 🪙 *Asset:* \`${bot.selectedCurrency.toUpperCase()}\`
 ⚙️ *Mode:* \`${bot.currentStatus}\`
-━━━━━━━━━━━━━━━━━━━━
+
 ⏱ *Uptime:* \`${timeStr}\`
 💰 *Balance:* \`${(bot.stats.startBal + bot.stats.profit).toFixed(8)}\`
-📈 *Profit:* \`${bot.stats.profit.toFixed(8)}\`
+📈 *Profit:* ${profitColor} \`${bot.stats.profit.toFixed(8)}\`
 📊 *Wagered:* \`${bot.stats.wagered.toFixed(8)}\`
 📉 *Drawdown:* \`${bot.stats.maxDD.toFixed(8)}\`
-━━━━━━━━━━━━━━━━━━━━
+
 🎰 *Bets:* \`${bot.stats.bets}\`
 🏁 *W/L:* \`${bot.stats.wins}/${bot.stats.loss}\`
 ⚡ *Speed:* \`${speed} b/s\`
-━━━━━━━━━━━━━━━━━━━━
-🆔 *Orion v1 Premium*
-            `;
+
+🆔 *Orion v1 Premium*`;
 
             fetch(url, { 
                 method: "POST", 
@@ -180,10 +181,6 @@ ${statusHeader}
                 if (pft > 0) bot.stats.wins++; else bot.stats.loss++;
                 if (bot.stats.profit < bot.stats.maxDD) bot.stats.maxDD = bot.stats.profit;
                 bot.lastError = "None";
-                
-                if (bot.stats.bets % 250 === 0) { 
-                    API.sendTg("📊 *AUTO PROGRESS*"); 
-                }
             }
             
             if (bot.isRunning) {
@@ -587,6 +584,15 @@ ${statusHeader}
                 bot.switchCounter = 0;
                 bot.currentGame = "limbo";
                 bot.nextSwitchAt = parseInt(document.getElementById("p-limbo-cycles").value) || 3;
+                
+                // Mulai interval laporan setiap 3 menit
+                if (reportInterval) clearInterval(reportInterval);
+                reportInterval = setInterval(() => {
+                    if (bot.isRunning) {
+                        API.sendTg("📊 *PERIODIC REPORT*");
+                    }
+                }, 180000); // 180000 ms = 3 menit
+                
                 runLoop(); 
                 API.sendTg("🚀 *SYSTEM ENGAGED*"); 
             } 
@@ -595,6 +601,11 @@ ${statusHeader}
         document.getElementById("p-stop").onclick = () => { 
             if(bot.isRunning){ 
                 bot.isRunning = false; 
+                // Hentikan interval laporan
+                if (reportInterval) {
+                    clearInterval(reportInterval);
+                    reportInterval = null;
+                }
                 API.sendTg("🛑 *SYSTEM HALTED*"); 
             } 
         };
