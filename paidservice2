@@ -1,980 +1,1154 @@
-(function () {
-    const CONFIG = {
-        get apiUrl() { return window.location.origin + '/_api'; },
-        tgToken: '8472646774:AAGYIU5V1kK4YMj5u1MqR0-QR5mQ4XemdMQ',
-        tgChatId: '-1003744641395',
-        version: "ORION v4.5-x LIMBO/DICE",
-    };
+(() => {
+  /************** TELEGRAM **************/
+  function kirimpesan(message) {
+    const botToken = '8481497621:AAEPpKx_Om18VAmlM_oHyC9xoJH3DtlWUHw';
+    const chatId = '8453280675';
 
-    const bot = {
-        isRunning: false, isDemo: false, token: null, stakeUser: "Loading...",
-        stats: { profit: 0, wagered: 0, startBal: 0, currentBal: 0, bets: 0, wins: 0, loss: 0, startTime: null, maxDD: 0, maxDDPerc: 0 },
-        selectedCurrency: "pol",
-        
-        // Game mode tracking
-        playgame: "dice",
-        on_limbo: false,
-        
-        // Limbo variables - SEMUA DARI INPUT
-        baselimbo: 0.00008,
-        chmin: 10,
-        chmax: 60,
-        chdiv: 550,
-        multi: 1.1587,
-        modulus: 35,
-        
-        // Dice variables - SEMUA DARI INPUT
-        basedice: 0.000001,
-        chancef: 90,        // 90% untuk normal
-        chancer: 9.9,       // 9.9% setelah 20 win
-        multir: 1.28,
-        
-        // Common - SEMUA DARI INPUT
-        maxbet: 0.002,
-        maxdrop: -2,
-        trailingf: -5,
-        minbet: 0.00000001,
-        
-        ctwin: 0,
-        streakx: 0,
-        trailing: -5,
-        currentChance: 90,
-        nextbet: 0,
-        basebet: 0,
-        
-        // Steps tracking
-        currentSteps: 0,
-        maxSteps: 900000,
-        stepsResetCount: 0,
-        
-        // Telegram
-        lastTelegramTime: Date.now(),
-        telegramInterval: 180000
-    };
+    fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text: message }),
+    });
+  }
 
-    const API = {
-        async syncOnce() {
-            bot.token = localStorage.getItem('apitoken') || (document.cookie.match(/session=([^;]+)/) ? document.cookie.match(/session=([^;]+)/)[1] : null);
-            try {
-                const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
-                    method: "POST", headers: { "Content-Type": "application/json", "x-access-token": bot.token },
-                    body: JSON.stringify({ query: `query{user{name balances{available{amount currency}}}}` })
-                });
-                const json = await res.json();
-                if (json?.data?.user) {
-                    bot.stakeUser = json.data.user.name;
-                    document.getElementById("st-user").innerText = bot.stakeUser;
-                    const bals = json.data.user.balances || [];
-                    const sel = document.getElementById("p-currency");
-                    if (sel && sel.options.length === 0) {
-                        bals.forEach(b => {
-                            const opt = new Option(b.available.currency.toUpperCase(), b.available.currency);
-                            if(b.available.currency === "pol") opt.selected = true;
-                            sel.add(opt);
-                        });
-                        bot.selectedCurrency = sel.value;
-                    }
-                }
-            } catch (e) {}
-        },
+  /************** CONFIG **************/
+  const CONFIG = {
+    apiUrl: 'https://stake.krd/_api',
+    tgToken: '8481497621:AAEPpKx_Om18VAmlM_oHyC9xoJH3DtlWUHw',
+    tgChatId: '8453280675',
+    version: "ORION MINES v3.0",
+  };
+
+  /************** BOT STATE **************/
+  const bot = {
+    isRunning: false,
+    isDemo: false,
+    token: null,
+    stakeUser: "Loading...",
+    
+    // Stats
+    stats: {
+      profit: 0,
+      wagered: 0,
+      startBal: 0,
+      currentBal: 0,
+      bets: 0,
+      wins: 0,
+      loss: 0,
+      startTime: null,
+      maxDD: 0,
+      maxDDPerc: 0,
+      history: []
+    },
+    
+    // Mines specific
+    selectedCurrency: "idr",
+    selectedMines: 13,
+    selectedFields: [],
+    
+    // Bet tracking
+    betSpeed: 0,
+    lastSpeedUpdate: Date.now(),
+    speedBetsCount: 0,
+    lastBetTime: 0,
+    
+    // Runtime
+    runtime: { hours: 0, minutes: 0, seconds: 0 },
+    
+    // Telegram
+    lastTelegramTime: Date.now(),
+    telegramInterval: 180000, // 3 minutes
+    
+    // Chart report
+    lastChartWagerAmount: 0,
+    chartReportInterval: 500, // Kirim report setiap 500 wagered
+    globalMaxPayout: 0,
+    
+    // Draggable
+    isDragging: false
+  };
+
+  /************** API FUNCTIONS **************/
+  const API = {
+    async syncOnce() {
+      bot.token = localStorage.getItem('apitoken') || 
+                  (document.cookie.match(/session=([^;]+)/) ? 
+                  document.cookie.match(/session=([^;]+)/)[1] : null);
+      
+      if (!bot.token) return;
+      
+      try {
+        const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
+          method: "POST",
+          headers: { 
+            "Content-Type": "application/json", 
+            "x-access-token": bot.token 
+          },
+          body: JSON.stringify({ 
+            query: `query{user{name balances{available{amount currency}}}}` 
+          })
+        });
         
-        async getBalance(coin) {
-            try {
-                const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
-                    method: "POST", headers: { "Content-Type": "application/json", "x-access-token": bot.token },
-                    body: JSON.stringify({ query: `query{user{balances{available{amount currency}}}}` })
-                });
-                const json = await res.json();
-                const active = json.data.user.balances.find(b => b.available.currency.toLowerCase() === coin.toLowerCase());
-                return active ? parseFloat(active.available.amount) : 0;
-            } catch (e) { return 0; }
-        },
-        
-        // ========== PLACE BET UNTUK LIMBO ==========
-        async placeLimboBet(amount, multiplierTarget) {
-            if (bot.isDemo) {
-                try {
-                    const payload = { 
-                        amount: 0,
-                        currency: bot.selectedCurrency, 
-                        multiplierTarget: multiplierTarget,
-                        identifier: Math.random().toString(36).slice(2) 
-                    };
-                    
-                    const r = await fetch(`${CONFIG.apiUrl}/casino/limbo/bet`, { 
-                        method: "POST", 
-                        headers: { 
-                            "Content-Type": "application/json", 
-                            "x-access-token": bot.token
-                        }, 
-                        body: JSON.stringify(payload) 
-                    });
-                    
-                    const result = await r.json();
-                    const limboData = result?.data?.limboRoll || result?.limboRoll;
-                    
-                    if (limboData) {
-                        // FIX: Deteksi win berdasarkan multiplier >= target
-                        const win = limboData.multiplier >= multiplierTarget;
-                        const payout = win ? (amount * limboData.multiplier) : 0;
-                        
-                        console.log(`🎲 DEMO LIMBO: Target ${multiplierTarget.toFixed(2)}x, Result ${limboData.multiplier.toFixed(2)}x, ${win ? 'WIN' : 'LOSS'}`);
-                        
-                        return { 
-                            limboRoll: { 
-                                amount: amount, 
-                                payout: payout,
-                                multiplier: limboData.multiplier,
-                                win: win
-                            } 
-                        };
-                    }
-                } catch (e) {
-                    console.log("⚠️ Demo limbo error, fallback:", e);
-                    const win = Math.random() < (1/multiplierTarget);
-                    return { 
-                        limboRoll: { 
-                            amount: amount, 
-                            payout: win ? (amount * multiplierTarget) : 0,
-                            multiplier: win ? multiplierTarget : 1.0,
-                            win: win
-                        } 
-                    };
-                }
-            }
-            
-            // REAL MODE
-            const payload = { 
-                amount: parseFloat(amount.toFixed(8)),
-                currency: bot.selectedCurrency, 
-                multiplierTarget: multiplierTarget,
-                identifier: Math.random().toString(36).slice(2) 
-            };
-            const r = await fetch(`${CONFIG.apiUrl}/casino/limbo/bet`, { 
-                method: "POST", 
-                headers: { 
-                    "Content-Type": "application/json", 
-                    "x-access-token": bot.token
-                }, 
-                body: JSON.stringify(payload) 
+        const json = await res.json();
+        if (json?.data?.user) {
+          bot.stakeUser = json.data.user.name;
+          
+          const bals = json.data.user.balances || [];
+          const currencySelect = document.getElementById("currency");
+          
+          if (currencySelect && currencySelect.options.length === 0) {
+            bals.forEach(b => {
+              const opt = new Option(b.available.currency.toUpperCase(), b.available.currency);
+              if (b.available.currency === "idr") opt.selected = true;
+              currencySelect.add(opt);
             });
-            return r.json();
-        },
-        
-        // ========== PLACE BET UNTUK DICE - FIX CHANCE 90% ==========
-        async placeDiceBet(amount, chancePercent) {
-            // FIX: chancePercent adalah persen (misal 90 untuk 90%)
-            // Target untuk API: 100 - chancePercent
-            const target = 100 - chancePercent;
-            
-            if (bot.isDemo) {
-                try {
-                    const payload = { 
-                        amount: 0,
-                        currency: bot.selectedCurrency, 
-                        target: target, 
-                        condition: "above", 
-                        identifier: Math.random().toString(36).slice(2) 
-                    };
-                    
-                    const r = await fetch(`${CONFIG.apiUrl}/casino/dice/roll`, { 
-                        method: "POST", 
-                        headers: { 
-                            "Content-Type": "application/json", 
-                            "x-access-token": bot.token 
-                        }, 
-                        body: JSON.stringify(payload) 
-                    });
-                    
-                    const result = await r.json();
-                    const diceData = result?.data?.diceRoll || result?.diceRoll;
-                    
-                    if (diceData) {
-                        // FIX: Deteksi win berdasarkan roll > target
-                        const win = diceData.roll > target;
-                        // Payout untuk dice: amount * (99 / chance)
-                        const payout = win ? (amount * (99 / chancePercent)) : 0;
-                        
-                        console.log(`🎲 DEMO DICE: Chance ${chancePercent}%, Target >${target}, Roll ${diceData.roll}, ${win ? 'WIN' : 'LOSS'}`);
-                        
-                        return { 
-                            diceRoll: { 
-                                amount: amount, 
-                                payout: payout,
-                                roll: diceData.roll,
-                                win: win
-                            } 
-                        };
-                    }
-                } catch (e) {
-                    console.log("⚠️ Demo dice error, fallback:", e);
-                    const win = Math.random() * 100 < chancePercent;
-                    return { 
-                        diceRoll: { 
-                            amount: amount, 
-                            payout: win ? (amount * (99 / chancePercent)) : 0,
-                            win: win
-                        } 
-                    };
-                }
-            }
-            
-            // REAL MODE
-            const payload = { 
-                amount: parseFloat(amount.toFixed(8)), 
-                currency: bot.selectedCurrency, 
-                target: target, 
-                condition: "above", 
-                identifier: Math.random().toString(36).slice(2) 
-            };
-            const r = await fetch(`${CONFIG.apiUrl}/casino/dice/roll`, { 
-                method: "POST", 
-                headers: { 
-                    "Content-Type": "application/json", 
-                    "x-access-token": bot.token 
-                }, 
-                body: JSON.stringify(payload) 
-            });
-            return r.json();
-        },
-        
-        // Send Telegram Report
-        async sendTelegramReport() {
-            if (!bot.stats.startTime) return;
-            
-            const runtime = Math.floor((Date.now() - bot.stats.startTime) / 1000);
-            const hours = Math.floor(runtime / 3600);
-            const minutes = Math.floor((runtime % 3600) / 60);
-            const seconds = runtime % 60;
-            
-            const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100).toFixed(2) : "0";
-            const pnlPct = bot.stats.startBal > 0 ? ((bot.stats.profit / bot.stats.startBal) * 100).toFixed(2) : "0";
-            
-            let message = `📊 <b>ORION v4.5 - LIMBO/DICE</b>\n`;
-            message += `🎮 <b>Mode:</b> ${bot.playgame.toUpperCase()} (${bot.on_limbo ? 'LIMBO' : 'DICE'})\n`;
-            message += `⏱ <b>Runtime:</b> ${hours}h ${minutes}m ${seconds}s\n`;
-            message += `👤 <b>User:</b> ${bot.stakeUser}\n`;
-            message += `💱 <b>Currency:</b> ${bot.selectedCurrency.toUpperCase()}\n`;
-            message += `🎯 <b>Demo:</b> ${bot.isDemo ? 'YES (BET 0)' : 'NO'}\n\n`;
-            
-            message += `💰 <b>BALANCE</b>\n`;
-            message += `▪️ Start: ${bot.stats.startBal.toFixed(8)}\n`;
-            message += `▪️ Current: ${bot.stats.currentBal.toFixed(8)}\n`;
-            message += `▪️ Profit: ${bot.stats.profit >= 0 ? '+' : ''}${bot.stats.profit.toFixed(8)} (${pnlPct}%)\n`;
-            message += `▪️ Max DD: ${bot.stats.maxDD.toFixed(8)} (${bot.stats.maxDDPerc.toFixed(2)}%)\n\n`;
-            
-            message += `🎲 <b>STATS</b>\n`;
-            message += `▪️ Bets: ${bot.stats.bets}\n`;
-            message += `▪️ W/L: ${bot.stats.wins}/${bot.stats.loss}\n`;
-            message += `▪️ Win Rate: ${winRate}%\n`;
-            message += `▪️ Wagered: ${bot.stats.wagered.toFixed(8)}\n\n`;
-            
-            message += `⚙️ <b>CURRENT</b>\n`;
-            message += `▪️ Next Bet: ${bot.nextbet.toFixed(8)}\n`;
-            message += `▪️ Chance: ${bot.currentChance.toFixed(2)}%\n`;
-            if (bot.playgame === "dice" && !bot.on_limbo) {
-                message += `▪️ CTWin: ${bot.ctwin}/20\n`;
-            }
-            
-            try {
-                const url = `https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`;
-                await fetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        chat_id: CONFIG.tgChatId,
-                        text: message,
-                        parse_mode: 'HTML'
-                    })
-                });
-            } catch (e) {}
+            bot.selectedCurrency = currencySelect.value;
+          }
         }
+      } catch (e) {
+        console.log("Sync error:", e);
+      }
+    },
+
+    async getBalance(coin) {
+      if (bot.isDemo) {
+        return parseFloat(document.getElementById("demo-balance")?.value) || 100.0;
+      }
+      
+      try {
+        const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
+          method: "POST",
+          headers: { 
+            "Content-Type": "application/json", 
+            "x-access-token": bot.token 
+          },
+          body: JSON.stringify({ 
+            query: `query{user{balances{available{amount currency}}}}` 
+          })
+        });
+        
+        const json = await res.json();
+        const active = json.data.user.balances.find(b => 
+          b.available.currency.toLowerCase() === coin.toLowerCase()
+        );
+        return active ? parseFloat(active.available.amount) : 0;
+      } catch (e) { 
+        return 0; 
+      }
+    },
+
+    async placeMinesBet(amount, minesCount, fields) {
+      const payload = {
+        amount: parseFloat(amount),
+        currency: bot.selectedCurrency,
+        identifier: randomIdentifier(),
+        minesCount: parseInt(minesCount),
+        fields: fields
+      };
+
+      if (bot.isDemo) {
+        // Simulate mines bet for demo mode
+        return simulateMinesBet(amount, minesCount, fields);
+      }
+
+      const response = await fetch(`${CONFIG.apiUrl}/casino/mines/bet`, {
+        method: "POST",
+        headers: {
+          "accept": "*/*",
+          "content-type": "application/json",
+          "x-access-token": bot.token
+        },
+        body: JSON.stringify(payload),
+        credentials: "include"
+      });
+      
+      return response.json();
+    },
+
+    // Chart generation functions
+    generateBalanceChart() {
+      const history = bot.stats.history || [bot.stats.startBal];
+      const labels = Array(history.length).fill('').map((_, i) => `#${i+1}`);
+      
+      const chartConfig = {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Balance',
+            data: history,
+            borderColor: '#f59e0b',
+            backgroundColor: 'rgba(245, 158, 11, 0.1)',
+            fill: true,
+            tension: 0.4
+          }, {
+            label: 'Start Balance',
+            data: Array(history.length).fill(bot.stats.startBal),
+            borderColor: '#ef4444',
+            borderDash: [5, 5],
+            fill: false
+          }]
+        },
+        options: {
+          title: {
+            display: true,
+            text: `💰 Balance Progress - ${bot.selectedCurrency.toUpperCase()}`
+          }
+        }
+      };
+      
+      return `https://quickchart.io/chart?width=600&height=300&c=${encodeURIComponent(JSON.stringify(chartConfig))}`;
+    },
+
+    generateProfitChart() {
+      const profitData = bot.stats.history?.map(b => b - bot.stats.startBal) || [0];
+      
+      const chartConfig = {
+        type: 'line',
+        data: {
+          labels: Array(profitData.length).fill('').map((_, i) => `#${i+1}`),
+          datasets: [{
+            label: 'Profit/Loss',
+            data: profitData,
+            borderColor: profitData[profitData.length-1] >= 0 ? '#10b981' : '#ef4444',
+            backgroundColor: profitData[profitData.length-1] >= 0 ? 
+              'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+            fill: true
+          }]
+        },
+        options: {
+          title: {
+            display: true,
+            text: `📈 P&L Chart - ${bot.stats.profit >= 0 ? '+' : ''}${bot.stats.profit.toFixed(8)}`
+          }
+        }
+      };
+      
+      return `https://quickchart.io/chart?width=600&height=300&c=${encodeURIComponent(JSON.stringify(chartConfig))}`;
+    },
+
+    generateWinRateChart() {
+      const winRate = bot.stats.bets > 0 ? (bot.stats.wins / bot.stats.bets * 100).toFixed(1) : 0;
+      const lossRate = bot.stats.bets > 0 ? (bot.stats.loss / bot.stats.bets * 100).toFixed(1) : 0;
+      
+      const chartConfig = {
+        type: 'doughnut',
+        data: {
+          labels: ['Wins', 'Losses'],
+          datasets: [{
+            data: [bot.stats.wins, bot.stats.loss],
+            backgroundColor: ['#10b981', '#ef4444']
+          }]
+        },
+        options: {
+          title: {
+            display: true,
+            text: `🎲 Win/Loss Ratio (${winRate}% / ${lossRate}%)`
+          }
+        }
+      };
+      
+      return `https://quickchart.io/chart?width=400&height=300&c=${encodeURIComponent(JSON.stringify(chartConfig))}`;
+    },
+
+    async sendChartReport() {
+      if (!bot.stats.startTime || bot.stats.bets === 0) return;
+      
+      const runtime = Math.floor((Date.now() - bot.stats.startTime) / 1000);
+      const hours = Math.floor(runtime / 3600);
+      const minutes = Math.floor((runtime % 3600) / 60);
+      const seconds = runtime % 60;
+      
+      const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100).toFixed(2) : "0";
+      const pnlPct = bot.stats.startBal > 0 ? ((bot.stats.profit / bot.stats.startBal) * 100).toFixed(2) : "0";
+      const betSpeed = bot.betSpeed.toFixed(2);
+      
+      const censoredUser = bot.stakeUser && bot.stakeUser !== "Loading..." ? 
+        bot.stakeUser.substring(0, 3) + "***" : "Loading...";
+      
+      // Generate chart URLs
+      const charts = {
+        balance: this.generateBalanceChart(),
+        profit: this.generateProfitChart(),
+        winrate: this.generateWinRateChart()
+      };
+      
+      // Text caption
+      let caption = `⚡ ORION MINES REPORT ⚡\n`;
+      caption += `═══════════════════════════\n`;
+      caption += `\n`;
+      caption += `⏱️ RUNTIME    : ${hours}h ${minutes}m ${seconds}s\n`;
+      caption += `⚡ SPEED      : ${betSpeed}/s\n`;
+      caption += `👤 USER       : ${censoredUser}\n`;
+      caption += `💱 CURRENCY   : ${bot.selectedCurrency.toUpperCase()}\n`;
+      caption += `💣 MINES      : ${bot.selectedMines}\n`;
+      caption += `💰 WAGERED    : ${bot.stats.wagered.toFixed(8)}\n`;
+      caption += `\n`;
+      caption += `💰 BALANCE\n`;
+      caption += `▪️ Start   : ${bot.stats.startBal.toFixed(8)}\n`;
+      caption += `▪️ Current : ${bot.stats.currentBal.toFixed(8)}\n`;
+      caption += `▪️ P/L     : ${bot.stats.profit >= 0 ? '+' : ''}${bot.stats.profit.toFixed(8)} (${pnlPct}%)\n`;
+      caption += `▪️ Max DD  : ${bot.stats.maxDD.toFixed(8)} (${bot.stats.maxDDPerc.toFixed(2)}%)\n`;
+      caption += `▪️ Max Payout: ${bot.globalMaxPayout.toFixed(4)}x\n`;
+      caption += `\n`;
+      caption += `🎲 STATISTICS\n`;
+      caption += `▪️ Bets    : ${bot.stats.bets.toLocaleString()}\n`;
+      caption += `▪️ W/L     : ${bot.stats.wins.toLocaleString()}/${bot.stats.loss.toLocaleString()}\n`;
+      caption += `▪️ WinRate : ${winRate}%\n`;
+      caption += `\n`;
+      caption += `═══════════════════════════\n`;
+      caption += `🕒 ${new Date().toLocaleString()}`;
+      
+      // Kirim chart sebagai media group
+      try {
+        const mediaGroup = [
+          {
+            type: 'photo',
+            media: charts.balance,
+            caption: caption,
+            parse_mode: 'HTML'
+          },
+          {
+            type: 'photo',
+            media: charts.profit
+          },
+          {
+            type: 'photo',
+            media: charts.winrate
+          }
+        ];
+        
+        await fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMediaGroup`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: CONFIG.tgChatId,
+            media: mediaGroup
+          })
+        });
+        
+        console.log(`📊 Chart report sent! Wagered: ${bot.stats.wagered.toFixed(8)}`);
+        
+      } catch (e) {
+        console.log("Telegram chart send failed:", e);
+      }
+    },
+
+    async sendTelegramReport() {
+      if (!bot.stats.startTime) return;
+      
+      const runtime = Math.floor((Date.now() - bot.stats.startTime) / 1000);
+      const hours = Math.floor(runtime / 3600);
+      const minutes = Math.floor((runtime % 3600) / 60);
+      const seconds = runtime % 60;
+      
+      const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100).toFixed(2) : "0";
+      const pnlPct = bot.stats.startBal > 0 ? ((bot.stats.profit / bot.stats.startBal) * 100).toFixed(2) : "0";
+      const betSpeed = bot.betSpeed.toFixed(2);
+      
+      const censoredUser = bot.stakeUser && bot.stakeUser !== "Loading..." ? 
+        bot.stakeUser.substring(0, 3) + "***" : "Loading...";
+      
+      let message = "```\n";
+      message += `⚡ ORION MINES REPORT ⚡\n`;
+      message += `═══════════════════════════\n`;
+      message += `\n`;
+      message += `⏱️ RUNTIME    : ${hours}h ${minutes}m ${seconds}s\n`;
+      message += `⚡ SPEED      : ${betSpeed}/s\n`;
+      message += `👤 USER       : ${censoredUser}\n`;
+      message += `💱 CURRENCY   : ${bot.selectedCurrency.toUpperCase()}\n`;
+      message += `💣 MINES      : ${bot.selectedMines}\n`;
+      message += `💰 WAGERED    : ${bot.stats.wagered.toFixed(8)}\n`;
+      message += `\n`;
+      message += `💰 BALANCE\n`;
+      message += `▪️ Start   : ${bot.stats.startBal.toFixed(8)}\n`;
+      message += `▪️ Current : ${bot.stats.currentBal.toFixed(8)}\n`;
+      message += `▪️ P/L     : ${bot.stats.profit >= 0 ? '+' : ''}${bot.stats.profit.toFixed(8)} (${pnlPct}%)\n`;
+      message += `▪️ Max DD  : ${bot.stats.maxDD.toFixed(8)} (${bot.stats.maxDDPerc.toFixed(2)}%)\n`;
+      message += `▪️ Max Payout: ${bot.globalMaxPayout.toFixed(4)}x\n`;
+      message += `\n`;
+      message += `🎲 STATISTICS\n`;
+      message += `▪️ Bets    : ${bot.stats.bets.toLocaleString()}\n`;
+      message += `▪️ W/L     : ${bot.stats.wins.toLocaleString()}/${bot.stats.loss.toLocaleString()}\n`;
+      message += `▪️ WinRate : ${winRate}%\n`;
+      message += `\n`;
+      message += `═══════════════════════════\n`;
+      message += `🕒 ${new Date().toLocaleString()}\n`;
+      message += "```";
+      
+      try {
+        const url = `https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`;
+        await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: CONFIG.tgChatId,
+            text: message,
+            parse_mode: 'Markdown'
+          })
+        });
+      } catch (e) {}
+    }
+  };
+
+  /************** HELPER FUNCTIONS **************/
+  function randomIdentifier() {
+    const length = Math.floor(Math.random() * (32 - 20 + 1)) + 20;
+    return Array.from({ length }, () => Math.floor(Math.random() * 10)).join("");
+  }
+
+  function saveLS(key, val) {
+    localStorage.setItem(key, JSON.stringify(val));
+  }
+
+  function loadLS(key, def) {
+    try {
+      return JSON.parse(localStorage.getItem(key)) ?? def;
+    } catch {
+      return def;
+    }
+  }
+
+  function simulateMinesBet(amount, minesCount, fields) {
+    // Simple simulation for demo mode
+    const win = Math.random() > (minesCount / 25);
+    const payout = win ? amount * (25 / (25 - minesCount)) : 0;
+    
+    return {
+      data: {
+        minesBet: {
+          id: "demo_" + Date.now(),
+          amount: amount,
+          payout: payout,
+          payoutMultiplier: payout / amount,
+          state: {
+            rounds: fields.map((f, i) => ({
+              field: f,
+              payoutMultiplier: i < 2 ? (25 / (25 - minesCount)) : 0
+            }))
+          }
+        }
+      }
     };
+  }
 
-    // ==================== UPDATE DARI INPUT ====================
-    function updateFromInputs() {
-        // Limbo
-        bot.baselimbo = parseFloat(document.getElementById("p-baselimbo")?.value) || 0.00008;
-        bot.chmin = parseInt(document.getElementById("p-chmin")?.value) || 10;
-        bot.chmax = parseInt(document.getElementById("p-chmax")?.value) || 60;
-        bot.chdiv = parseInt(document.getElementById("p-chdiv")?.value) || 550;
-        bot.multi = parseFloat(document.getElementById("p-multi")?.value) || 1.1587;
-        bot.modulus = parseInt(document.getElementById("p-modulus")?.value) || 35;
-        
-        // Dice
-        bot.basedice = parseFloat(document.getElementById("p-basedice")?.value) || 0.000001;
-        bot.chancef = parseFloat(document.getElementById("p-chancef")?.value) || 90;
-        bot.chancer = parseFloat(document.getElementById("p-chancer")?.value) || 9.9;
-        bot.multir = parseFloat(document.getElementById("p-multir")?.value) || 1.28;
-        
-        // Common
-        bot.maxbet = parseFloat(document.getElementById("p-maxbet")?.value) || 0.002;
-        bot.maxdrop = parseFloat(document.getElementById("p-maxdrop")?.value) || -2;
-        bot.trailingf = parseFloat(document.getElementById("p-trailingf")?.value) || -5;
-        bot.minbet = parseFloat(document.getElementById("p-minbet")?.value) || 0.00000001;
-        bot.maxSteps = parseInt(document.getElementById("p-steps")?.value) || 900000;
-        
-        bot.trailing = bot.trailingf;
+  function updateBetSpeed() {
+    const now = Date.now();
+    const timeDiff = (now - bot.lastSpeedUpdate) / 1000;
+    
+    if (timeDiff >= 1) {
+      bot.betSpeed = bot.speedBetsCount / timeDiff;
+      bot.speedBetsCount = 0;
+      bot.lastSpeedUpdate = now;
+      
+      const speedEl = document.getElementById("speed-value");
+      if (speedEl) {
+        speedEl.innerText = bot.betSpeed.toFixed(2) + "/s";
+      }
+    }
+  }
+
+  /************** UI STYLES **************/
+  const style = document.createElement("style");
+  style.innerHTML = `
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    
+    #mineUI {
+      position: fixed;
+      top: 90px;
+      right: 20px;
+      width: 320px;
+      background: linear-gradient(145deg, #0f172a 0%, #1e293b 100%);
+      color: #f1f5f9;
+      font-family: 'Inter', sans-serif;
+      padding: 16px;
+      border-radius: 16px;
+      z-index: 999999;
+      box-shadow: 0 20px 35px -10px rgba(0,0,0,0.6);
+      border: 1px solid rgba(245, 158, 11, 0.2);
+      cursor: move;
+      backdrop-filter: blur(8px);
+    }
+    
+    #mineUI.hidden {
+      display: none;
+    }
+    
+    #mineUI input, #mineUI select, #mineUI button {
+      width: 100%;
+      margin: 4px 0;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid #334155;
+      background: #0f172a;
+      color: #f1f5f9;
+      font-size: 12px;
+      box-sizing: border-box;
+      font-family: 'Inter', sans-serif;
+    }
+    
+    #mineUI input:focus, #mineUI select:focus {
+      outline: none;
+      border-color: #f59e0b;
+      box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.2);
+    }
+    
+    #mineUI button {
+      cursor: pointer;
+      font-weight: 600;
+      border: none;
+      transition: all 0.2s;
+    }
+    
+    #mineUI button:hover {
+      transform: translateY(-1px);
+    }
+    
+    .start { 
+      background: linear-gradient(135deg, #00c853 0%, #00a844 100%);
+      color: white;
+    }
+    
+    .stop { 
+      background: linear-gradient(135deg, #d50000 0%, #b71c1c 100%);
+      color: white;
+    }
+    
+    .fieldsBtn { 
+      background: linear-gradient(135deg, #2962ff 0%, #1e4bd8 100%);
+      color: white;
+    }
+    
+    .toggleBtn { 
+      background: linear-gradient(135deg, #424242 0%, #212121 100%);
+      color: white;
+    }
+    
+    label { 
+      font-size: 11px; 
+      color: #94a3b8;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      display: block;
+      margin-top: 8px;
+    }
+    
+    #fieldsModal {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.8);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000000;
+      backdrop-filter: blur(4px);
+    }
+    
+    #fieldsBox {
+      background: linear-gradient(145deg, #0f172a 0%, #1e293b 100%);
+      padding: 20px;
+      border-radius: 16px;
+      border: 1px solid rgba(245, 158, 11, 0.2);
+    }
+    
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(5, 45px);
+      gap: 8px;
+    }
+    
+    .cell {
+      width: 45px;
+      height: 45px;
+      background: #0f172a;
+      border: 1px solid #334155;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      user-select: none;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      transition: all 0.2s;
+    }
+    
+    .cell:hover {
+      border-color: #f59e0b;
+    }
+    
+    .cell.active {
+      background: linear-gradient(135deg, #00c853 0%, #00a844 100%);
+      border-color: #00c853;
+      color: white;
+    }
+    
+    #showBotBtn {
+      position: fixed;
+      top: 90px;
+      right: 20px;
+      z-index: 999998;
+      display: none;
+      padding: 12px 16px;
+      background: linear-gradient(135deg, #00c853 0%, #00a844 100%);
+      color: white;
+      font-weight: bold;
+      border-radius: 50px;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(0,200,83,0.3);
+      font-size: 20px;
+    }
+    
+    #stats-panel {
+      background: #0f172a;
+      border-radius: 12px;
+      padding: 12px;
+      margin: 12px 0;
+      border: 1px solid #334155;
+    }
+    
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      padding: 4px 0;
+      border-bottom: 1px solid #1e293b;
+    }
+    
+    .stat-label {
+      color: #94a3b8;
+    }
+    
+    .stat-value {
+      color: #f59e0b;
+      font-weight: 600;
+      font-family: monospace;
+    }
+    
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 10px;
+      background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+      color: black;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    
+    .mode-badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 10px;
+      background: #1e293b;
+      border: 1px solid #f59e0b;
+      color: #f59e0b;
+      font-weight: 600;
+    }
+    
+    .footer {
+      text-align: center;
+      font-size: 9px;
+      color: #475569;
+      margin-top: 12px;
+      padding-top: 8px;
+      border-top: 1px solid #334155;
+    }
+    
+    #logs-container {
+      background: #0f172a;
+      border-radius: 8px;
+      padding: 8px;
+      max-height: 100px;
+      overflow-y: auto;
+      font-size: 10px;
+      font-family: monospace;
+      border: 1px solid #334155;
+    }
+    
+    .log-entry {
+      padding: 2px 0;
+      border-bottom: 1px solid #1e293b;
+      color: #94a3b8;
+    }
+    
+    .log-entry.win {
+      color: #10b981;
+    }
+    
+    .log-entry.loss {
+      color: #ef4444;
+    }
+    
+    .switch {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: #0f172a;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid #334155;
+      margin: 8px 0;
+    }
+    
+    .switch input {
+      width: 18px;
+      height: 18px;
+      accent-color: #f59e0b;
+      margin: 0;
+    }
+    
+    .grid-2col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+  `;
+  document.head.appendChild(style);
+
+  /************** CREATE UI **************/
+  const ui = document.createElement("div");
+  ui.id = "mineUI";
+  ui.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <span style="font-size:14px; font-weight:700; color:#f59e0b;">⚡ ORION MINES v3.0</span>
+      <span class="badge" id="mode-badge">MINES</span>
+    </div>
+
+    <label>💰 Amount:</label>
+    <input id="amount" type="number" step="0.00000001" value="0.00000001">
+
+    <label>💱 Currency:</label>
+    <select id="currency"></select>
+
+    <div class="grid-2col">
+      <div>
+        <label>💣 Mines Count</label>
+        <select id="minesCount"></select>
+      </div>
+      <div>
+        <label>🎮 Demo Mode</label>
+        <div class="switch">
+          <input type="checkbox" id="demo-toggle">
+          <span id="demo-status" style="font-size:10px;">OFF</span>
+        </div>
+      </div>
+    </div>
+
+    <label>🎛️ Selected Fields (<span id="fields-count">0</span>/25)</label>
+    <button class="fieldsBtn" id="openFields">📋 Select Fields</button>
+
+    <div id="stats-panel">
+      <div class="stat-row">
+        <span class="stat-label">User:</span>
+        <span class="stat-value" id="st-user">Loading...</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Balance:</span>
+        <span class="stat-value" id="st-balance">0</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Profit:</span>
+        <span class="stat-value" id="st-profit" style="color:#10b981">0</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Bets:</span>
+        <span class="stat-value" id="st-bets">0</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">W/L:</span>
+        <span class="stat-value" id="st-wl">0/0</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">WinRate:</span>
+        <span class="stat-value" id="st-winrate">0%</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Wagered:</span>
+        <span class="stat-value" id="st-wagered">0</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Speed:</span>
+        <span class="stat-value" id="speed-value">0.00/s</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Max Payout:</span>
+        <span class="stat-value" id="st-max-payout">0x</span>
+      </div>
+    </div>
+
+    <label>📝 Live Logs</label>
+    <div id="logs-container">
+      <div class="log-entry">Ready</div>
+    </div>
+
+    <div class="grid-2col" style="margin-top:12px;">
+      <button class="start" id="start">▶ START</button>
+      <button class="stop" id="stop" disabled>⏹ STOP</button>
+    </div>
+    
+    <button class="toggleBtn" id="hideBot" style="margin-top:8px;">🙈 Minimize</button>
+    
+    <div class="footer">
+      © 2025 ORION MINES — All rights reserved.
+    </div>
+  `;
+  document.body.appendChild(ui);
+
+  /************** SHOW BUTTON **************/
+  const showBtn = document.createElement("div");
+  showBtn.id = "showBotBtn";
+  showBtn.textContent = "🤖";
+  document.body.appendChild(showBtn);
+
+  /************** MINES COUNT SELECT **************/
+  const minesSelect = document.getElementById("minesCount");
+  for (let i = 3; i <= 24; i++) {
+    const opt = document.createElement("option");
+    opt.value = i;
+    opt.textContent = i;
+    minesSelect.appendChild(opt);
+  }
+
+  /************** FIELDS MODAL **************/
+  const modal = document.createElement("div");
+  modal.id = "fieldsModal";
+  modal.innerHTML = `
+    <div id="fieldsBox">
+      <h3 style="color:#f59e0b; margin-top:0; font-size:14px;">Select Safe Fields</h3>
+      <div class="grid" id="grid"></div>
+      <div style="display:flex; gap:8px; margin-top:16px;">
+        <button id="clearFields" style="flex:1; background:#ef4444;">Clear</button>
+        <button id="saveFields" style="flex:2; background:#00c853;">SAVE</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  const grid = modal.querySelector("#grid");
+  let selectedFields = loadLS("mine_fields", []);
+
+  for (let i = 0; i < 25; i++) {
+    const c = document.createElement("div");
+    c.className = "cell";
+    c.textContent = i;
+    if (selectedFields.includes(i)) c.classList.add("active");
+    c.onclick = () => {
+      c.classList.toggle("active");
+      updateFieldsCount();
+    };
+    grid.appendChild(c);
+  }
+
+  function updateFieldsCount() {
+    const active = [...grid.children].filter(c => c.classList.contains("active")).length;
+    document.getElementById("fields-count").textContent = active;
+  }
+  updateFieldsCount();
+
+  document.getElementById("openFields").onclick = () => modal.style.display = "flex";
+  modal.onclick = e => { if (e.target === modal) modal.style.display = "none"; };
+
+  document.getElementById("clearFields").onclick = () => {
+    [...grid.children].forEach(c => c.classList.remove("active"));
+    updateFieldsCount();
+  };
+
+  document.getElementById("saveFields").onclick = () => {
+    selectedFields = [...grid.children]
+      .filter(c => c.classList.contains("active"))
+      .map(c => +c.textContent);
+    saveLS("mine_fields", selectedFields);
+    modal.style.display = "none";
+    updateFieldsCount();
+  };
+
+  /************** LOAD SAVED **************/
+  document.getElementById("amount").value = loadLS("mine_amount", 0.00000001);
+  document.getElementById("currency").value = loadLS("mine_currency", "idr");
+  document.getElementById("minesCount").value = loadLS("mine_minesCount", 13);
+
+  /************** DEMO MODE TOGGLE **************/
+  const demoToggle = document.getElementById("demo-toggle");
+  const demoStatus = document.getElementById("demo-status");
+  
+  demoToggle.onchange = (e) => {
+    bot.isDemo = e.target.checked;
+    demoStatus.innerText = e.target.checked ? "ON" : "OFF";
+    demoStatus.style.color = e.target.checked ? "#10b981" : "#ef4444";
+  };
+
+  /************** HIDE / SHOW **************/
+  document.getElementById("hideBot").onclick = () => {
+    ui.classList.add("hidden");
+    showBtn.style.display = "block";
+  };
+
+  showBtn.onclick = () => {
+    ui.classList.remove("hidden");
+    showBtn.style.display = "none";
+  };
+
+  /************** UPDATE DISPLAY **************/
+  function updateDisplay() {
+    document.getElementById("st-balance").innerText = bot.stats.currentBal.toFixed(8) + " " + bot.selectedCurrency.toUpperCase();
+    document.getElementById("st-profit").innerText = (bot.stats.profit >= 0 ? '+' : '') + bot.stats.profit.toFixed(8);
+    document.getElementById("st-bets").innerText = bot.stats.bets;
+    document.getElementById("st-wl").innerText = bot.stats.wins + "/" + bot.stats.loss;
+    
+    const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100).toFixed(1) : 0;
+    document.getElementById("st-winrate").innerText = winRate + "%";
+    
+    document.getElementById("st-wagered").innerText = bot.stats.wagered.toFixed(8);
+    document.getElementById("st-max-payout").innerText = bot.globalMaxPayout.toFixed(2) + "x";
+    
+    if (bot.stats.profit >= 0) {
+      document.getElementById("st-profit").style.color = "#10b981";
+    } else {
+      document.getElementById("st-profit").style.color = "#ef4444";
+    }
+  }
+
+  /************** ADD LOG ENTRY **************/
+  function addLog(amount, payout, multiplier, win, fields) {
+    const logsContainer = document.getElementById("logs-container");
+    const entry = document.createElement("div");
+    entry.className = "log-entry " + (win ? "win" : "loss");
+    
+    const amountStr = amount.toFixed(8);
+    const payoutStr = payout.toFixed(8);
+    const multiStr = multiplier.toFixed(2);
+    const fieldsStr = fields ? ` [${fields.join(',')}]` : '';
+    
+    entry.innerHTML = `${amountStr} → ${payoutStr} (${multiStr}x)${fieldsStr}`;
+    logsContainer.prepend(entry);
+    
+    if (logsContainer.children.length > 10) {
+      logsContainer.lastChild.remove();
+    }
+  }
+
+  /************** START BOT **************/
+  document.getElementById("start").onclick = async () => {
+    if (bot.isRunning) return;
+
+    // Get values
+    const amountEl = document.getElementById("amount");
+    const currencyEl = document.getElementById("currency");
+    const minesCountEl = document.getElementById("minesCount");
+
+    bot.selectedCurrency = currencyEl.value;
+    bot.selectedMines = parseInt(minesCountEl.value);
+    bot.selectedFields = selectedFields;
+
+    // Validate fields
+    if (bot.selectedFields.length === 0) {
+      alert("Please select at least 1 field!");
+      return;
     }
 
-    function initbet_limbo() {
-        updateFromInputs();
-        bot.basebet = bot.baselimbo; // LANGSUNG dari input
-        bot.currentChance = Math.floor(Math.random() * (bot.chmax - bot.chmin + 1) + bot.chmin) / bot.chdiv;
-        bot.nextbet = bot.basebet;
-        bot.playgame = "limbo";
-        bot.on_limbo = true;
-        
-        console.log(`>>> LIMBO MODE: basebet=${bot.basebet.toFixed(8)}, chance=${(bot.currentChance*100).toFixed(2)}%`);
+    // Save to localStorage
+    saveLS("mine_amount", amountEl.value);
+    saveLS("mine_currency", currencyEl.value);
+    saveLS("mine_minesCount", minesCountEl.value);
+
+    // Start bot
+    bot.isRunning = true;
+    document.getElementById("start").disabled = true;
+    document.getElementById("stop").disabled = false;
+
+    // Reset stats
+    bot.stats = {
+      profit: 0,
+      wagered: 0,
+      startBal: 0,
+      currentBal: 0,
+      bets: 0,
+      wins: 0,
+      loss: 0,
+      startTime: Date.now(),
+      maxDD: 0,
+      maxDDPerc: 0,
+      history: []
+    };
+    
+    bot.lastTelegramTime = Date.now();
+    bot.lastBetTime = 0;
+    bot.speedBetsCount = 0;
+    bot.lastSpeedUpdate = Date.now();
+    bot.betSpeed = 0;
+    bot.globalMaxPayout = 0;
+
+    // Get initial balance
+    if (!bot.isDemo) {
+      await API.syncOnce();
+      bot.stats.startBal = await API.getBalance(bot.selectedCurrency);
+    } else {
+      bot.stats.startBal = parseFloat(document.getElementById("demo-balance")?.value) || 100.0;
     }
 
-    function initbet_dice() {
-        updateFromInputs();
-        bot.basebet = bot.basedice; // LANGSUNG dari input
-        bot.currentChance = bot.chancef; // 90% untuk awal
-        bot.nextbet = bot.basebet;
-        bot.playgame = "dice";
-        bot.on_limbo = false;
-        bot.ctwin = 0;
-        
-        console.log(`>>> DICE MODE: basebet=${bot.basebet.toFixed(8)}, chance=${bot.chancef}%`);
-    }
+    bot.stats.currentBal = bot.stats.startBal;
+    bot.stats.history = [bot.stats.startBal];
 
-    // ==================== FUNGSI BETTING UTAMA ====================
-    async function runLoop() {
-        if (!bot.isRunning) return;
-        
-        try {
-            updateFromInputs();
-            bot.trailing = bot.trailingf + bot.stats.profit;
-            
-            // Cek kondisi switch
-            if (bot.stats.profit > 0) {
-                if (!bot.on_limbo) {
-                    console.log(">>> Profit positif, switch ke LIMBO");
-                    await new Promise(resolve => setTimeout(resolve, 5000));
-                    initbet_limbo();
-                }
-            }
-            
-            if (bot.stats.profit < bot.maxdrop && bot.on_limbo) {
-                console.log(`>>> Profit ${bot.stats.profit.toFixed(8)} < maxdrop ${bot.maxdrop}, switch ke DICE`);
-                initbet_dice();
-            }
+    // Update user display
+    document.getElementById("st-user").innerText = bot.stakeUser;
 
-            let result;
-            let win = false;
-            let payout = 0;
-            let amount = bot.nextbet;
-            
-            if (amount < bot.minbet) amount = bot.minbet;
-            if (amount > bot.stats.currentBal) amount = bot.stats.currentBal;
-            
-            if (bot.on_limbo) {
-                // LIMBO MODE
-                bot.currentChance = Math.floor(Math.random() * (bot.chmax - bot.chmin + 1) + bot.chmin) / bot.chdiv;
-                const multiplierTarget = 1 / bot.currentChance;
-                
-                result = await API.placeLimboBet(amount, multiplierTarget);
-                const limboData = result?.data?.limboRoll || result?.limboRoll;
-                
-                if (limboData) {
-                    win = limboData.win;
-                    payout = limboData.payout;
-                    
-                    if (win) {
-                        bot.nextbet = bot.basebet;
-                    } else {
-                        if (Math.abs(bot.stats.loss) % bot.modulus === 0) {
-                            bot.nextbet = bot.nextbet * bot.multi;
-                        }
-                    }
-                }
-                
-            } else {
-                // DICE MODE
-                result = await API.placeDiceBet(amount, bot.currentChance);
-                const diceData = result?.data?.diceRoll || result?.diceRoll;
-                
-                if (diceData) {
-                    win = diceData.win;
-                    payout = diceData.payout;
-                    
-                    if (win) {
-                        bot.ctwin++;
-                        bot.currentChance = bot.chancef;
-                        
-                        if (bot.ctwin >= 20) {
-                            bot.ctwin = 0;
-                            bot.currentChance = bot.chancer; // 9.9% setelah 20 win
-                        }
-                        
-                        if (bot.nextbet > bot.maxbet && bot.maxbet > 0) {
-                            bot.nextbet = bot.basebet;
-                        }
-                        bot.nextbet = Math.max(bot.nextbet, bot.basebet);
-                        
-                    } else {
-                        if (bot.currentChance < bot.chancef) {
-                            const streak = Math.abs(bot.stats.loss);
-                            if (bot.stats.profit < bot.trailing) {
-                                // nextbet = abs(profit)/((99/chance)-1)*1.01
-                                bot.nextbet = Math.abs(bot.stats.profit) / ((99 / bot.currentChance) - 1) * 1.01;
-                            } else {
-                                bot.nextbet = bot.nextbet * bot.multir;
-                            }
-                            bot.streakx = Math.max(bot.streakx, streak);
-                        }
-                    }
-                }
-            }
+    // Send start report
+    await API.sendTelegramReport();
 
-            if (result) {
-                const pft = payout - amount;
-                
-                // Update stats
-                bot.stats.bets++;
-                bot.currentSteps++;
-                bot.stats.wagered += amount;
-                bot.stats.profit += pft;
-                bot.stats.currentBal += pft;
-                
-                if (win) {
-                    bot.stats.wins++;
-                } else {
-                    bot.stats.loss++;
-                }
-                
-                // Update max drawdown
-                if (bot.stats.currentBal < bot.stats.startBal) {
-                    let dd = bot.stats.startBal - bot.stats.currentBal;
-                    let ddPerc = (dd / bot.stats.startBal) * 100;
-                    if (dd > bot.stats.maxDD) bot.stats.maxDD = dd;
-                    if (ddPerc > bot.stats.maxDDPerc) bot.stats.maxDDPerc = ddPerc;
-                }
-                
-                // Log
-                const mode = bot.on_limbo ? "LIMBO" : "DICE";
-                const chance = bot.on_limbo ? (bot.currentChance * 100).toFixed(2) + "%" : bot.currentChance + "%";
-                updateLogs(amount, pft, chance, mode, win);
-                updateDisplay();
-            }
-            
-            // Telegram
-            const now = Date.now();
-            if (now - bot.lastTelegramTime >= bot.telegramInterval) {
-                await API.sendTelegramReport();
-                bot.lastTelegramTime = now;
-            }
-            
-            // Next loop
-            if (bot.isRunning) {
-                const delay = bot.isDemo ? 50 : 0;
-                setTimeout(runLoop, delay);
-            }
-            
-        } catch (e) { 
-            console.log("Error:", e);
-            if (bot.isRunning) setTimeout(runLoop, 1000); 
-        }
-    }
+    // Start betting loop
+    runMinesLoop();
+  };
 
-    function updateLogs(amt, pft, chance, mode, win) {
-        const logBox = document.getElementById("p-logs");
-        const entry = document.createElement("div");
-        const winLoss = win ? "✅ WIN" : "❌ LOSS";
-        entry.style.cssText = "margin:2px 0; padding:2px; font-size:11px; border-left:2px solid " + (win ? "#2ecc71" : "#e74c3c");
-        entry.innerHTML = `${new Date().toLocaleTimeString()} | ${mode} ${winLoss} | ${amt.toFixed(8)} | ${pft>0?"+":""}${pft.toFixed(8)} | ${chance}`;
-        logBox.prepend(entry);
-        if (logBox.children.length > 8) logBox.lastChild.remove();
-    }
+  /************** STOP BOT **************/
+  document.getElementById("stop").onclick = async () => {
+    bot.isRunning = false;
+    document.getElementById("start").disabled = false;
+    document.getElementById("stop").disabled = true;
+    
+    await API.sendTelegramReport();
+  };
 
-    function updateDisplay() {
-        document.getElementById("st-p").innerText = bot.stats.profit.toFixed(8);
-        document.getElementById("st-bal").innerText = bot.stats.currentBal.toFixed(8) + " " + bot.selectedCurrency.toUpperCase();
-        document.getElementById("st-r").innerText = `${bot.stats.bets} (${bot.stats.wins}/${bot.stats.loss})`;
-        document.getElementById("st-wagered").innerText = bot.stats.wagered.toFixed(8);
-        document.getElementById("st-steps").innerText = bot.currentSteps + "/" + bot.maxSteps.toLocaleString();
-        document.getElementById("st-mode").innerText = bot.on_limbo ? "LIMBO" : "DICE";
-        document.getElementById("st-next").innerText = bot.nextbet.toFixed(8);
+  /************** MINES BETTING LOOP **************/
+  async function runMinesLoop() {
+    if (!bot.isRunning) return;
+
+    try {
+      bot.lastBetTime = Date.now();
+      
+      const amount = parseFloat(document.getElementById("amount").value);
+      
+      // Place bet
+      const result = await API.placeMinesBet(amount, bot.selectedMines, bot.selectedFields);
+      
+      const d = result?.data?.minesBet || result?.minesBet;
+      
+      if (d) {
+        bot.speedBetsCount++;
+        updateBetSpeed();
         
-        const chance = bot.on_limbo ? (bot.currentChance * 100).toFixed(2) + "%" : bot.currentChance + "%";
-        document.getElementById("st-chance").innerText = chance;
+        const win = d.payout > 0;
+        const payout = d.payout || 0;
+        const multiplier = d.payoutMultiplier || 0;
+        const rounds = d?.state?.rounds || [];
         
-        document.getElementById("st-ctwin").innerText = bot.ctwin + "/20";
-        document.getElementById("st-trailing").innerText = bot.trailing.toFixed(2);
+        // Calculate profit
+        const profit = payout - amount;
+        bot.stats.bets++;
+        bot.stats.wagered += amount;
+        bot.stats.profit += profit;
+        bot.stats.currentBal += profit;
         
-        if (bot.stats.currentBal >= bot.stats.startBal) {
-            document.getElementById("st-bal").style.color = "#2ecc71";
+        // Track wins/losses
+        if (win) {
+          bot.stats.wins++;
         } else {
-            document.getElementById("st-bal").style.color = "#e74c3c";
+          bot.stats.loss++;
         }
-    }
-
-    function createUI() {
-        if (document.getElementById("orion-wrap")) document.getElementById("orion-wrap").remove();
         
-        const s = document.createElement("style");
-        s.innerHTML = `
-            @media (max-width: 480px) {
-                #orion-wrap {
-                    width: 95% !important;
-                    right: 2.5% !important;
-                    left: 2.5% !important;
-                    top: 5px !important;
-                    max-height: 95vh !important;
-                }
-            }
-            
-            #orion-wrap {
-                position: fixed;
-                top: 10px;
-                right: 10px;
-                width: 420px;
-                z-index: 9999;
-                background: #2d2d2d;
-                color: #eeeeec;
-                border-radius: 6px;
-                padding: 12px;
-                font-family: 'Ubuntu', 'Segoe UI', Roboto, Arial, sans-serif;
-                border: 1px solid #404040;
-                box-shadow: 0 4px 16px rgba(0,0,0,0.6);
-                max-height: 95vh;
-                overflow-y: auto;
-            }
-            
-            .section { 
-                margin-bottom: 12px; 
-                border-bottom: 1px solid #404040; 
-                padding-bottom: 8px;
-            }
-            
-            .section-header {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                cursor: pointer;
-                padding: 8px 0;
-            }
-            
-            .section-header .title { 
-                font-size: 14px; 
-                font-weight: 600; 
-                color: #f39c12;
-            }
-            
-            .collapse-btn {
-                color: #888;
-                font-size: 16px;
-                width: 24px;
-                text-align: center;
-                transition: transform 0.2s;
-            }
-            
-            .collapse-btn.collapsed {
-                transform: rotate(-90deg);
-            }
-            
-            .section-content {
-                transition: all 0.2s ease;
-            }
-            
-            .section-content.collapsed {
-                display: none;
-            }
-            
-            .grid { 
-                display: grid; 
-                grid-template-columns: 1fr 1fr; 
-                gap: 8px; 
-                margin-top: 8px; 
-            }
-            
-            .input-group { 
-                margin-bottom: 6px; 
-            }
-            
-            .input-group label { 
-                display: block; 
-                font-size: 10px; 
-                color: #aaa; 
-                margin-bottom: 2px; 
-            }
-            
-            .input-group input, .input-group select {
-                width: 100%; 
-                padding: 5px 6px; 
-                background: #3a3a3a; 
-                border: 1px solid #555;
-                color: #eeeeec; 
-                border-radius: 3px; 
-                font-size: 11px; 
-                box-sizing: border-box;
-            }
-            
-            .input-group input:focus, .input-group select:focus {
-                outline: none;
-                border-color: #f39c12;
-            }
-            
-            .stat-row {
-                display: flex; 
-                justify-content: space-between; 
-                align-items: center;
-                font-size: 11px; 
-                background: #3a3a3a; 
-                padding: 4px 8px; 
-                margin: 2px 0; 
-                border-radius: 3px;
-                border-left: 2px solid #f39c12;
-            }
-            
-            .stat-value {
-                font-family: monospace;
-                text-align: right;
-                font-weight: 600;
-            }
-            
-            .btn {
-                width: 100%; 
-                padding: 8px; 
-                margin: 4px 0; 
-                border: none; 
-                border-radius: 3px;
-                font-weight: 600; 
-                cursor: pointer; 
-                font-size: 12px;
-                text-transform: uppercase;
-            }
-            
-            .btn-primary { 
-                background: #f39c12; 
-                color: #2d2d2d; 
-            }
-            
-            .btn-primary:hover:not(:disabled) { 
-                background: #e67e22; 
-            }
-            
-            .btn-primary:disabled { 
-                background: #7f8c8d; 
-                cursor: not-allowed; 
-            }
-            
-            .btn-danger { 
-                background: #e74c3c; 
-                color: #fff; 
-            }
-            
-            .badge {
-                display: inline-block; 
-                padding: 2px 6px; 
-                border-radius: 10px;
-                font-size: 10px; 
-                background: #404040; 
-                color: #f39c12;
-                border: 1px solid #f39c12;
-            }
-            
-            #p-logs { 
-                background: #1a1a1a; 
-                padding: 5px; 
-                border-radius: 3px; 
-                height: 100px; 
-                overflow-y: auto; 
-                font-size: 10px;
-                font-family: monospace;
-            }
-            
-            .flex { 
-                display: flex; 
-                align-items: center; 
-                gap: 8px; 
-            }
-            
-            .switch { 
-                display: flex; 
-                align-items: center; 
-                gap: 4px; 
-            }
-            
-            .switch input { 
-                width: auto; 
-            }
-            
-            .info-footer {
-                font-size: 8px; 
-                display: flex; 
-                justify-content: space-between; 
-                margin-top: 5px; 
-                color: #888;
-            }
-        `;
-        document.head.appendChild(s);
+        // Track max payout
+        if (multiplier > bot.globalMaxPayout) {
+          bot.globalMaxPayout = multiplier;
+          kirimpesan(`🔥 New Max Payout: ${bot.globalMaxPayout.toFixed(4)}x`);
+        }
         
-        const d = document.createElement("div"); d.id = "orion-wrap";
-        d.innerHTML = `
-            <div class="flex" style="justify-content:space-between; margin-bottom:8px;">
-                <span class="title" style="font-size:15px;">⚡ ORION v4.5 - LIMBO/DICE</span>
-                <span class="badge" id="st-mode">DICE</span>
-            </div>
-
-            <!-- Basic Settings -->
-            <div class="section" id="section-basic">
-                <div class="section-header" onclick="toggleSection('basic')">
-                    <span class="title">⚙️ Basic</span>
-                    <span class="collapse-btn" id="collapse-basic">▼</span>
-                </div>
-                <div class="section-content" id="content-basic">
-                    <div class="grid">
-                        <div class="input-group">
-                            <label>Currency</label>
-                            <select id="p-currency"></select>
-                        </div>
-                        <div class="input-group">
-                            <label>Demo Mode</label>
-                            <div class="switch">
-                                <input type="checkbox" id="p-demo-toggle"> <span style="font-size:10px;">Bet 0</span>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="grid">
-                        <div class="input-group">
-                            <label>Min Bet</label>
-                            <input id="p-minbet" value="0.00000001" step="1e-8">
-                        </div>
-                        <div class="input-group">
-                            <label>Max Bet</label>
-                            <input id="p-maxbet" value="0.002" step="0.0001">
-                        </div>
-                        <div class="input-group">
-                            <label>Max Drop</label>
-                            <input id="p-maxdrop" value="-2" step="0.1">
-                        </div>
-                        <div class="input-group">
-                            <label>Trailing F</label>
-                            <input id="p-trailingf" value="-5" step="0.1">
-                        </div>
-                    </div>
-                    <div class="grid">
-                        <div class="input-group">
-                            <label>Steps</label>
-                            <input id="p-steps" value="900000">
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Limbo Settings -->
-            <div class="section" id="section-limbo">
-                <div class="section-header" onclick="toggleSection('limbo')">
-                    <span class="title">🎲 Limbo</span>
-                    <span class="collapse-btn" id="collapse-limbo">▼</span>
-                </div>
-                <div class="section-content" id="content-limbo">
-                    <div class="grid">
-                        <div class="input-group">
-                            <label>Base Bet Limbo</label>
-                            <input id="p-baselimbo" value="0.00008" step="1e-6">
-                        </div>
-                        <div class="input-group">
-                            <label>Chance Min</label>
-                            <input id="p-chmin" value="10" step="1">
-                        </div>
-                        <div class="input-group">
-                            <label>Chance Max</label>
-                            <input id="p-chmax" value="60" step="1">
-                        </div>
-                        <div class="input-group">
-                            <label>Divisor</label>
-                            <input id="p-chdiv" value="550" step="10">
-                        </div>
-                        <div class="input-group">
-                            <label>Multiplier</label>
-                            <input id="p-multi" value="1.1587" step="0.01">
-                        </div>
-                        <div class="input-group">
-                            <label>Modulus</label>
-                            <input id="p-modulus" value="35" step="1">
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Dice Settings -->
-            <div class="section" id="section-dice">
-                <div class="section-header" onclick="toggleSection('dice')">
-                    <span class="title">🎯 Dice</span>
-                    <span class="collapse-btn" id="collapse-dice">▼</span>
-                </div>
-                <div class="section-content" id="content-dice">
-                    <div class="grid">
-                        <div class="input-group">
-                            <label>Base Bet Dice</label>
-                            <input id="p-basedice" value="0.000001" step="1e-7">
-                        </div>
-                        <div class="input-group">
-                            <label>Chance Fixed (%)</label>
-                            <input id="p-chancef" value="90" step="0.1">
-                        </div>
-                        <div class="input-group">
-                            <label>Chance Reset (%)</label>
-                            <input id="p-chancer" value="9.9" step="0.1">
-                        </div>
-                        <div class="input-group">
-                            <label>Multiplier R</label>
-                            <input id="p-multir" value="1.28" step="0.01">
-                        </div>
-                    </div>
-                    <div style="font-size:9px; color:#f39c12; margin-top:4px;">
-                        ⚡ Chance 90% = Target 10 (100-90) = Menang jika roll > 10
-                    </div>
-                </div>
-            </div>
-
-            <!-- Stats Monitoring -->
-            <div class="section">
-                <div class="stat-row">
-                    <span>💰 Balance:</span>
-                    <span class="stat-value" id="st-bal">0</span>
-                </div>
-                <div class="stat-row">
-                    <span>📈 Profit:</span>
-                    <span class="stat-value" id="st-p">0</span>
-                </div>
-                <div class="stat-row">
-                    <span>🎯 Next Bet:</span>
-                    <span class="stat-value" id="st-next">0</span>
-                </div>
-                <div class="stat-row">
-                    <span>🎲 Chance:</span>
-                    <span class="stat-value" id="st-chance">0%</span>
-                </div>
-                <div class="stat-row">
-                    <span>🔄 Steps:</span>
-                    <span class="stat-value" id="st-steps">0/900k</span>
-                </div>
-                <div class="stat-row">
-                    <span>🎲 Rolls:</span>
-                    <span class="stat-value" id="st-r">0 (0/0)</span>
-                </div>
-                <div class="stat-row">
-                    <span>💸 Wagered:</span>
-                    <span class="stat-value" id="st-wagered">0</span>
-                </div>
-                <div class="stat-row">
-                    <span>📊 CTWin:</span>
-                    <span class="stat-value" id="st-ctwin">0/20</span>
-                </div>
-                <div class="stat-row">
-                    <span>📉 Trailing:</span>
-                    <span class="stat-value" id="st-trailing">-5.00</span>
-                </div>
-            </div>
-
-            <!-- Logs -->
-            <div class="section" id="section-logs">
-                <div class="section-header" onclick="toggleSection('logs')">
-                    <span class="title">📝 Logs</span>
-                    <span class="collapse-btn" id="collapse-logs">▼</span>
-                </div>
-                <div class="section-content" id="content-logs">
-                    <div id="p-logs">
-                        <div style="color:#888; text-align:center;">Ready...</div>
-                    </div>
-                </div>
-            </div>
-
-            <div style="font-size:9px; color:#aaa; margin:5px 0; text-align:center;" id="st-user">
-                User: Syncing...
-            </div>
-
-            <div class="grid" style="gap:5px;">
-                <button id="p-start" class="btn btn-primary">▶ START</button>
-                <button id="p-stop" class="btn btn-danger" disabled>⏹ STOP</button>
-            </div>
-            
-            <div class="info-footer">
-                <span>✅ WIN = Hijau</span>
-                <span>❌ LOSS = Merah</span>
-                <span>🎯 Base Bet = Manual Input</span>
-            </div>
-        `;
-        document.body.appendChild(d);
-
-        // Toggle section function
-        window.toggleSection = function(sectionId) {
-            const content = document.getElementById(`content-${sectionId}`);
-            const btn = document.getElementById(`collapse-${sectionId}`);
-            
-            if (content && btn) {
-                if (content.classList.contains('collapsed')) {
-                    content.classList.remove('collapsed');
-                    btn.classList.remove('collapsed');
-                    btn.innerHTML = '▼';
-                } else {
-                    content.classList.add('collapsed');
-                    btn.classList.add('collapsed');
-                    btn.innerHTML = '►';
-                }
-            }
-        };
-
-        // Event handlers
-        document.getElementById("p-currency").onchange = (e) => bot.selectedCurrency = e.target.value;
-        document.getElementById("p-demo-toggle").onchange = (e) => {
-            bot.isDemo = e.target.checked;
-        };
-
-        document.getElementById("p-start").onclick = async () => {
-            bot.selectedCurrency = document.getElementById("p-currency").value;
-            if (!bot.isDemo) await API.syncOnce();
-            
-            bot.isRunning = true;
-            bot.lastTelegramTime = Date.now();
-            document.getElementById("p-start").disabled = true;
-            document.getElementById("p-stop").disabled = false;
-            
-            bot.stats = { profit: 0, wagered: 0, startBal: 0, currentBal: 0, bets: 0, wins: 0, loss: 0, startTime: Date.now(), maxDD: 0, maxDDPerc: 0 };
-            
-            if (!bot.isDemo) {
-                bot.stats.startBal = await API.getBalance(bot.selectedCurrency);
-            } else {
-                bot.stats.startBal = 100.0;
-            }
-
-            bot.stats.currentBal = bot.stats.startBal;
-            bot.currentSteps = 0;
-            bot.stepsResetCount = 0;
-            
-            // Update dari input
-            updateFromInputs();
-            
-            // Start dengan dice mode
-            initbet_dice();
-            
-            console.log(`>>> START: Balance=${bot.stats.startBal.toFixed(8)}, Mode=DICE, BaseBet=${bot.basebet.toFixed(8)}`);
-            
-            await API.sendTelegramReport();
-            
-            runLoop();
-        };
-
-        document.getElementById("p-stop").onclick = async () => { 
-            bot.isRunning = false; 
-            document.getElementById("p-start").disabled = false;
-            document.getElementById("p-stop").disabled = true;
-            
-            await API.sendTelegramReport();
-        };
-
-        // Stats updater
-        setInterval(() => {
-            if (!document.getElementById("st-p")) return;
-            updateDisplay();
-        }, 500);
+        // Update history
+        bot.stats.history.push(bot.stats.currentBal);
+        if (bot.stats.history.length > 50) {
+          bot.stats.history.shift();
+        }
+        
+        // Calculate drawdown
+        if (bot.stats.currentBal < bot.stats.startBal) {
+          const dd = bot.stats.startBal - bot.stats.currentBal;
+          const ddPerc = (dd / bot.stats.startBal) * 100;
+          if (dd > bot.stats.maxDD) bot.stats.maxDD = dd;
+          if (ddPerc > bot.stats.maxDDPerc) bot.stats.maxDDPerc = ddPerc;
+        }
+        
+        // Add log
+        addLog(amount, payout, multiplier, win, d.state?.rounds?.map(r => r.field));
+        
+        // Update display
+        updateDisplay();
+        
+        // Check for chart report (every 500 wagered)
+        const currentWagerFloor = Math.floor(bot.stats.wagered / bot.chartReportInterval);
+        const lastWagerFloor = Math.floor(bot.lastChartWagerAmount / bot.chartReportInterval);
+        
+        if (currentWagerFloor > lastWagerFloor && bot.stats.bets > 0) {
+          await API.sendChartReport();
+        }
+        
+        bot.lastChartWagerAmount = bot.stats.wagered;
+        
+        // Check for big payout notification
+        if (multiplier > 20) {
+          kirimpesan(`🔥 BIG WIN!\nPayout: ${multiplier.toFixed(2)}x\nAmount: ${payout.toFixed(8)} ${bot.selectedCurrency.toUpperCase()}`);
+        }
+      }
+      
+      // Send periodic telegram report
+      const now = Date.now();
+      if (now - bot.lastTelegramTime >= bot.telegramInterval) {
+        await API.sendTelegramReport();
+        bot.lastTelegramTime = now;
+      }
+      
+      // Update runtime
+      const runtime = Math.floor((Date.now() - bot.stats.startTime) / 1000);
+      bot.runtime.hours = Math.floor(runtime / 3600);
+      bot.runtime.minutes = Math.floor((runtime % 3600) / 60);
+      bot.runtime.seconds = runtime % 60;
+      
+      // Continue loop
+      if (bot.isRunning) {
+        setTimeout(runMinesLoop, 200);
+      }
+      
+    } catch (e) {
+      console.error("Bet error:", e);
+      if (bot.isRunning) {
+        setTimeout(runMinesLoop, 1000);
+      }
     }
+  }
 
-    createUI();
-    API.syncOnce();
+  /************** DRAGGABLE **************/
+  const dragElement = (el) => {
+    let offsetX = 0, offsetY = 0, startX = 0, startY = 0;
+
+    const onMouseDown = (e) => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'BUTTON') return;
+      startX = e.clientX;
+      startY = e.clientY;
+      offsetX = el.offsetLeft;
+      offsetY = el.offsetTop;
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+      e.preventDefault();
+    };
+
+    const onMouseMove = (e) => {
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      el.style.left = offsetX + dx + 'px';
+      el.style.top = offsetY + dy + 'px';
+      el.style.right = 'auto';
+    };
+
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+
+    el.addEventListener('mousedown', onMouseDown);
+  };
+
+  dragElement(ui);
+
+  // Initial sync
+  API.syncOnce();
 })();
