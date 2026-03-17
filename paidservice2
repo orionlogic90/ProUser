@@ -1,9 +1,9 @@
 (function () {
     const CONFIG = {
         get apiUrl() { return window.location.origin + '/_api'; },
-        tgToken: '1234',
-        tgChatId: '12345',
-        version: "Orion v1 Premium"
+        tgToken: '8472646774:AAGYIU5V1kK4YMj5u1MqR0-QR5mQ4XemdMQ',
+        tgChatId: '-1003744641395',
+        version: "Orion Wager Machine v1"
     };
 
     const bot = {
@@ -20,198 +20,37 @@
         currentGame: "limbo",
         recoveryStatus: "DISABLED",
         
-        // BACCARAT RECOVERY MODE
+        // BLACKJACK RECOVERY MODE (menggunakan strategi perfect dari file)
         recoveryMode: false,
         recoveryStartBalance: 0,
         recoveryLossAmount: 0,
         recoveryAttempts: 0,
-        recoverySide: "player",
-        recoveryLastWinner: null,
         recoveryConsecutiveLosses: 0,
-        recoverySteps: [1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512],
-        recoveryLastResults: [],
+        recoverySteps: [1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 511], // step progression
         recoveryBetHistory: [],
-        recoveryTrendMode: "follow", // fix, rotate, follow
         recoveryBaseBet: 0.001,
+        recoveryInsurance: false, // dari config
+        
+        // Blackjack state (diperluas untuk mendukung split)
+        blackjackState: {
+            identifier: null,
+            gameId: null,
+            playerHands: [],        // array of { cards, actions, value? }
+            dealerHand: [],
+            active: false,
+            currentHandIndex: 0,     // untuk split: 0 atau 1
+            insuranceOffered: false
+        },
         
         // Original game stats
         originalGame: "limbo",
         originalSettings: {},
         
-        // Baccarat display
-        baccaratCards: {
-            player: [],
-            banker: [],
-            winner: null
-        },
-        
-        // Price cache
-        idrPrice: 0,
-        lastPriceFetch: 0,
-        priceSymbol: "IDR"
+        lastBetResult: null
     };
 
     let reportInterval = null;
     let lastReportTime = 0;
-
-    // INDODAX PRICE CACHE with CORS proxy
-    class IndodaxPriceCache {
-        constructor(ttl = 3600) {
-            this.ttl = ttl;
-            this._price = 0.0;
-            this._last_fetch = 0;
-            this._proxyUrls = [
-                'https://api.allorigins.win/raw?url=',
-                'https://cors-anywhere.herokuapp.com/',
-                'https://crossorigin.me/'
-            ];
-            this._currentProxy = 0;
-        }
-
-        async get_price(coin) {
-            const now = Math.floor(Date.now() / 1000);
-            if (this._price > 0 && (now - this._last_fetch) < this.ttl) {
-                return this._price;
-            }
-
-            const price = await this._fetch_price_with_retry(coin);
-            if (price > 0) {
-                this._price = price;
-                this._last_fetch = now;
-            } else {
-                // Fallback to static rates if fetch fails
-                return this._get_fallback_rate(coin);
-            }
-
-            return this._price;
-        }
-
-        async _fetch_price_with_retry(coin, retryCount = 0) {
-            if (retryCount > 3) return 0;
-            
-            try {
-                return await this._fetch_price(coin);
-            } catch (e) {
-                console.log(`[INDODAX RETRY ${retryCount}]`, e.message);
-                await new Promise(resolve => setTimeout(resolve, 2000 * (retryCount + 1)));
-                return this._fetch_price_with_retry(coin, retryCount + 1);
-            }
-        }
-
-        async _fetch_price(coin) {
-            coin = coin.toLowerCase();
-            if (coin === "matic") coin = "pol";
-            if (coin === "doge") coin = "doge";
-
-            try {
-                // Try direct fetch first (might work with CORS)
-                try {
-                    return await this._direct_fetch(coin);
-                } catch (e) {
-                    console.log("Direct fetch failed, trying proxy...");
-                }
-
-                // Try with different proxies
-                for (let i = 0; i < this._proxyUrls.length; i++) {
-                    try {
-                        const price = await this._proxy_fetch(coin, i);
-                        if (price > 0) return price;
-                    } catch (e) {
-                        console.log(`Proxy ${i} failed:`, e.message);
-                    }
-                }
-
-                return 0;
-            } catch (e) {
-                console.log("[INDODAX ERROR]", e);
-                return 0;
-            }
-        }
-
-        async _direct_fetch(coin) {
-            if (coin === "usdt") {
-                const usdResponse = await fetch("https://indodax.com/api/usdt_idr/ticker", {
-                    mode: 'cors',
-                    headers: { 'Accept': 'application/json' }
-                });
-                const usd = await usdResponse.json();
-                return parseFloat(usd.ticker.buy);
-            }
-
-            if (coin === "shib") {
-                const r = await fetch("https://indodax.com/api/shib_usdt/ticker", {
-                    mode: 'cors',
-                    headers: { 'Accept': 'application/json' }
-                });
-                const data = await r.json();
-                
-                const usdResponse = await fetch("https://indodax.com/api/usdt_idr/ticker", {
-                    mode: 'cors',
-                    headers: { 'Accept': 'application/json' }
-                });
-                const usd = await usdResponse.json();
-                const usd_idr = parseFloat(usd.ticker.buy);
-                
-                return parseFloat(data.ticker.buy) * usd_idr;
-            }
-
-            const r = await fetch(`https://indodax.com/api/${coin}_idr/ticker`, {
-                mode: 'cors',
-                headers: { 'Accept': 'application/json' }
-            });
-            const data = await r.json();
-            return parseFloat(data.ticker.buy);
-        }
-
-        async _proxy_fetch(coin, proxyIndex) {
-            const proxy = this._proxyUrls[proxyIndex];
-            
-            if (coin === "usdt") {
-                const usdResponse = await fetch(proxy + encodeURIComponent("https://indodax.com/api/usdt_idr/ticker"));
-                const usd = await usdResponse.json();
-                return parseFloat(usd.ticker.buy);
-            }
-
-            if (coin === "shib") {
-                const r = await fetch(proxy + encodeURIComponent("https://indodax.com/api/shib_usdt/ticker"));
-                const data = await r.json();
-                
-                const usdResponse = await fetch(proxy + encodeURIComponent("https://indodax.com/api/usdt_idr/ticker"));
-                const usd = await usdResponse.json();
-                const usd_idr = parseFloat(usd.ticker.buy);
-                
-                return parseFloat(data.ticker.buy) * usd_idr;
-            }
-
-            const r = await fetch(proxy + encodeURIComponent(`https://indodax.com/api/${coin}_idr/ticker`));
-            const data = await r.json();
-            return parseFloat(data.ticker.buy);
-        }
-
-        _get_fallback_rate(coin) {
-            // Fallback rates jika API gagal (perkiraan harga)
-            const rates = {
-                btc: 850000000,
-                eth: 35000000,
-                usdt: 15500,
-                doge: 1800,
-                shib: 0.28,
-                sol: 2500000,
-                ada: 7500,
-                matic: 8500,
-                pol: 8500,
-                dot: 95000,
-                link: 240000
-            };
-            
-            coin = coin.toLowerCase();
-            if (coin === "matic") coin = "pol";
-            
-            return rates[coin] || 15000; // Default return USDT rate
-        }
-    }
-
-    const priceCache = new IndodaxPriceCache();
 
     function getAuthToken() {
         return localStorage.getItem('apitoken') || sessionStorage.getItem('apitoken') ||
@@ -245,11 +84,7 @@
                             sel.appendChild(opt);
                         });
                     }
-                    if (sel) {
-                        bot.selectedCurrency = sel.value;
-                        // Update price when currency changes
-                        updateIdrPrice();
-                    }
+                    if (sel) bot.selectedCurrency = sel.value;
                     const active = bals.find(b => b.available.currency === bot.selectedCurrency);
                     bot.stats.startBal = active ? parseFloat(active.available.amount) : 0;
                 }
@@ -266,22 +101,23 @@
             const profitColor = bot.stats.profit >= 0 ? '🟢' : '🔴';
             const currentBalance = (bot.stats.startBal + bot.stats.profit).toFixed(8);
             
+            const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100).toFixed(2) : 0;
+            
             const recoveryIcon = bot.recoveryStatus === "ACTIVE" ? "🔴" : (bot.recoveryStatus === "STANDBY" ? "🟡" : "⚫");
             
             let gameInfo = "";
             if (bot.recoveryMode) {
-                gameInfo = `🎮 *Recovery:* BACCARAT (${bot.recoverySide.toUpperCase()}) | Step ${bot.recoveryConsecutiveLosses+1}/${bot.recoverySteps[bot.recoveryConsecutiveLosses]}x | Trend: ${bot.recoveryTrendMode.toUpperCase()}`;
+                gameInfo = `🎮 *Recovery:* BLACKJACK | Step ${bot.recoveryConsecutiveLosses+1}/${bot.recoverySteps[bot.recoveryConsecutiveLosses]}x | Hand ${bot.blackjackState.currentHandIndex+1}/${bot.blackjackState.playerHands.length}`;
             } else {
                 gameInfo = `🎮 *Game:* ${bot.currentGame.toUpperCase()} | Switch: ${bot.switchCounter}/${bot.nextSwitchAt}`;
             }
             
             const text = 
-`🔷 *ORION v1 PREMIUM* 🔷
+`🔷 *ORION WAGER MACHINE v1* 🔷
 ${statusHeader}
 
 👤 *User:* \`${bot.stakeUser}\`
 🪙 *Asset:* \`${bot.selectedCurrency.toUpperCase()}\`
-💵 *IDR Price:* \`Rp ${bot.idrPrice.toLocaleString()}\`
 ⚙️ *Status:* \`${bot.currentStatus}\`
 🔄 *Recovery:* ${recoveryIcon} \`${bot.recoveryStatus}\`
 ${gameInfo}
@@ -294,9 +130,10 @@ ${gameInfo}
 
 🎰 *Bets:* \`${bot.stats.bets}\`
 🏁 *W/L:* \`${bot.stats.wins}/${bot.stats.loss}\`
+📊 *Win Rate:* \`${winRate}%\`
 ⚡ *Speed:* \`${speed} b/s\`
 
-🆔 *Orion v1 Premium*`;
+🆔 *Orion Wager Machine v1*`;
 
             try {
                 fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`, {
@@ -328,30 +165,49 @@ ${gameInfo}
                 console.log('Telegram send error:', e);
             }
         },
-        async placeBet(amount, payout, game) {
-            const endpoint = game === "dice" ? `${CONFIG.apiUrl}/casino/dice/roll` : 
-                            (game === "baccarat" ? `${CONFIG.apiUrl}/casino/baccarat/bet` : `${CONFIG.apiUrl}/casino/limbo/bet`);
-            
-            if (game === "baccarat") {
-                const payload = {
-                    currency: bot.selectedCurrency,
-                    identifier: Math.random().toString(36).slice(2) + Date.now().toString(36),
-                    player: 0,
-                    banker: 0,
-                    tie: 0
-                };
-                payload[amount.side] = parseFloat(amount.amount);
+        async placeBet(amount, payout, game, blackjackAction = null) {
+            if (game === "blackjack") {
+                const endpoint = `${CONFIG.apiUrl}/casino/blackjack/bet`;
                 
-                return fetch(endpoint, {
-                    method: "POST",
-                    headers: { 
-                        "Content-Type": "application/json", 
-                        "x-access-token": bot.token,
-                        "x-lockdown-token": "s5MNWtjTM5TvCMkAzxov"
-                    },
-                    body: JSON.stringify(payload)
-                }).then(r => r.json());
+                if (blackjackAction) {
+                    // Ini untuk action berikutnya (hit/stand/double/split/insurance)
+                    const actionEndpoint = `${CONFIG.apiUrl}/casino/blackjack/next`;
+                    const payload = {
+                        action: blackjackAction.action,
+                        identifier: blackjackAction.identifier
+                    };
+                    
+                    return fetch(actionEndpoint, {
+                        method: "POST",
+                        headers: { 
+                            "Content-Type": "application/json", 
+                            "x-access-token": bot.token,
+                            "x-lockdown-token": "s5MNWtjTM5TvCMkAzxov"
+                        },
+                        body: JSON.stringify(payload)
+                    }).then(r => r.json());
+                } else {
+                    // Ini untuk bet awal
+                    const payload = {
+                        identifier: Math.random().toString(36).slice(2) + Date.now().toString(36),
+                        amount: parseFloat(amount),
+                        currency: bot.selectedCurrency
+                    };
+                    
+                    return fetch(endpoint, {
+                        method: "POST",
+                        headers: { 
+                            "Content-Type": "application/json", 
+                            "x-access-token": bot.token,
+                            "x-lockdown-token": "s5MNWtjTM5TvCMkAzxov"
+                        },
+                        body: JSON.stringify(payload)
+                    }).then(r => r.json());
+                }
             } else {
+                const endpoint = game === "dice" ? `${CONFIG.apiUrl}/casino/dice/roll` : 
+                                `${CONFIG.apiUrl}/casino/limbo/bet`;
+                
                 const payload = { 
                     amount: parseFloat(amount), 
                     currency: bot.selectedCurrency, 
@@ -372,35 +228,175 @@ ${gameInfo}
         }
     };
 
-    // UPDATE IDR PRICE
-    async function updateIdrPrice() {
-        const now = Math.floor(Date.now() / 1000);
-        if (now - bot.lastPriceFetch < 300 && bot.idrPrice > 0) return bot.idrPrice; // Cache 5 menit
-        
-        const currency = bot.selectedCurrency.toLowerCase();
-        try {
-            const price = await priceCache.get_price(currency);
-            if (price > 0) {
-                bot.idrPrice = price;
-                bot.lastPriceFetch = now;
-                
-                const priceEl = document.getElementById("st-idr-price");
-                if (priceEl) {
-                    priceEl.innerHTML = `💰 1 ${bot.selectedCurrency.toUpperCase()} = Rp ${price.toLocaleString('id-ID')}`;
-                    priceEl.style.color = "#FBBF24";
-                }
+    // ======================
+    // BLACKJACK PERFECT STRATEGY (dari file)
+    // ======================
+    const pairsTable = [
+        [1, 1, 1, 1, 1, 1, 0, 0, 0, 0], // 2,2
+        [1, 1, 1, 1, 1, 1, 0, 0, 0, 0], // 3,3
+        [0, 0, 0, 1, 1, 0, 0, 0, 0, 0], // 4,4
+        [2, 2, 2, 2, 2, 2, 2, 2, 0, 0], // 5,5? wait index? sebenarnya 5,5 seharusnya double, tapi di file ada 2 untuk double
+        [1, 1, 1, 1, 1, 0, 0, 0, 0, 0], // 6,6
+        [1, 1, 1, 1, 1, 1, 0, 0, 0, 0], // 7,7
+        [1, 1, 1, 1, 1, 1, 1, 1, 1, 1], // 8,8
+        [1, 1, 1, 1, 1, 0, 1, 1, 0, 0], // 9,9
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0], // 10,10
+        [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]  // A,A
+    ];
+
+    const softTable = [
+        ['H', 'H', 'H', 'H', 'D', 'H', 'H', 'H', 'H', 'H'], // A,2
+        ['H', 'H', 'H', 'D', 'D', 'H', 'H', 'H', 'H', 'H'], // A,3
+        ['H', 'H', 'H', 'D', 'D', 'H', 'H', 'H', 'H', 'H'], // A,4
+        ['H', 'H', 'D', 'D', 'D', 'H', 'H', 'H', 'H', 'H'], // A,5
+        ['H', 'D', 'D', 'D', 'D', 'H', 'H', 'H', 'H', 'H'], // A,6
+        ['S', 'Ds', 'Ds', 'Ds', 'Ds', 'S', 'S', 'H', 'H', 'H'], // A,7
+        ['S', 'S', 'S', 'S', 'S', 'S', 'S', 'S', 'S', 'S'], // A,8
+        ['S', 'S', 'S', 'S', 'S', 'S', 'S', 'S', 'S', 'S']  // A,9
+    ];
+
+    const hardTable = [
+        ['H', 'H', 'H', 'H', 'H', 'H', 'H', 'H', 'H', 'H'], // 8
+        ['H', 'D', 'D', 'D', 'D', 'H', 'H', 'H', 'H', 'H'], // 9
+        ['D', 'D', 'D', 'D', 'D', 'D', 'D', 'D', 'H', 'H'], // 10
+        ['D', 'D', 'D', 'D', 'D', 'D', 'D', 'D', 'D', 'H'], // 11
+        ['H', 'H', 'S', 'S', 'S', 'H', 'H', 'H', 'H', 'H'], // 12
+        ['S', 'S', 'S', 'S', 'S', 'H', 'H', 'H', 'H', 'H'], // 13
+        ['S', 'S', 'S', 'S', 'S', 'H', 'H', 'H', 'H', 'H'], // 14
+        ['S', 'S', 'S', 'S', 'S', 'H', 'H', 'H', 'H', 'H'], // 15
+        ['S', 'S', 'S', 'S', 'S', 'H', 'H', 'H', 'H', 'H'], // 16
+        ['S', 'S', 'S', 'S', 'S', 'S', 'S', 'S', 'S', 'S']  // 17+
+    ];
+
+    function getCardValue(rank) {
+        if (rank === 'J' || rank === 'Q' || rank === 'K') return 10;
+        if (rank === 'A') return 11;
+        return parseInt(rank, 10);
+    }
+
+    // Hitung nilai tangan (dengan soft handling)
+    function calculateHandValue(cards) {
+        if (!cards || cards.length === 0) return 0;
+        let value = 0;
+        let aces = 0;
+        for (const card of cards) {
+            const rank = card.rank;
+            if (rank === 'J' || rank === 'Q' || rank === 'K') value += 10;
+            else if (rank === 'A') { aces++; value += 11; }
+            else value += parseInt(rank, 10);
+        }
+        while (value > 21 && aces > 0) {
+            value -= 10;
+            aces--;
+        }
+        return value;
+    }
+
+    // Tentukan aksi berdasarkan strategi perfect
+    function getPerfectBlackjackDecision(playerHands, dealerHand, currentHandIndex, insuranceOffered, takeInsurance) {
+        // Jika insurance ditawarkan
+        if (insuranceOffered) {
+            return takeInsurance ? "insurance" : "noInsurance";
+        }
+
+        const hand = playerHands[currentHandIndex];
+        if (!hand) return "stand"; // fallback
+
+        const playerCards = hand.cards;
+        const playerActions = hand.actions || [];
+        const playerValue = calculateHandValue(playerCards);
+        const dealerUpcard = dealerHand.length > 0 ? dealerHand[0] : null;
+        if (!dealerUpcard) return "stand";
+
+        const dealerRank = dealerUpcard.rank;
+        const dealerValue = getCardValue(dealerRank);
+
+        // Cek apakah bisa split
+        const isSplittable = playerCards.length === 2 && playerCards[0].rank === playerCards[1].rank;
+        let splitDecision = 0; // 0=tidak split, 1=split, 2=double (khusus 5,5?)
+        if (isSplittable && playerActions.includes('split')) {
+            const rank = playerCards[0].rank;
+            let index;
+            if (rank === 'A') index = 9;
+            else if (rank === 'K' || rank === 'Q' || rank === 'J' || rank === '10') index = 8;
+            else index = parseInt(rank, 10) - 2; // 2->0, 3->1, ... 9->7
+            if (index >= 0 && index < pairsTable.length) {
+                splitDecision = pairsTable[index][dealerValue - 2] || 0;
+            }
+        }
+
+        if (splitDecision === 1) {
+            return "split";
+        } else if (splitDecision === 2) {
+            // Khusus 5,5 seharusnya double, tapi jika tidak bisa double, fallback ke hit?
+            return playerActions.includes('double') ? "double" : "hit";
+        }
+
+        // Cek soft hand (ada As dan nilai soft <= 21)
+        let isSoft = false;
+        let softValue = 0;
+        let aceCount = 0;
+        for (const card of playerCards) {
+            if (card.rank === 'A') aceCount++;
+        }
+        if (aceCount > 0) {
+            // hitung nilai dengan As = 1 dulu
+            let raw = 0;
+            for (const card of playerCards) {
+                raw += getCardValue(card.rank);
+            }
+            // jika ada As dan raw > 21, berarti soft
+            if (raw > 21) {
+                // sebenarnya ini hard karena As terpaksa jadi 1
+                isSoft = false;
             } else {
-                // Tampilkan pesan error tapi tetap jalan
-                const priceEl = document.getElementById("st-idr-price");
-                if (priceEl) {
-                    priceEl.innerHTML = `💰 Price: Using cached rate`;
-                    priceEl.style.color = "#94A3B8";
+                // hitung soft (As = 11)
+                let soft = 0;
+                for (const card of playerCards) {
+                    if (card.rank === 'A') soft += 11;
+                    else soft += getCardValue(card.rank);
+                }
+                if (soft <= 21) {
+                    isSoft = true;
+                    softValue = soft;
                 }
             }
-        } catch (e) {
-            console.log("Price update error:", e);
         }
-        return bot.idrPrice;
+
+        if (isSoft) {
+            // softValue sudah termasuk As=11
+            // softTable diindeks berdasarkan nilai soft dikurangi 3 (A,2 = 13? A,2 = 13? hitung: A=11 + 2=13 -> index 10? salah)
+            // Di file: softTable baris untuk A,2 sampai A,9. A,2 total 13, A,3=14, ... A,9=20.
+            // Jadi index = total - 13? A,2 total 13 -> index 0; A,3=14->1; ... A,9=20->7.
+            let index = softValue - 13;
+            if (index < 0) index = 0;
+            if (index > 7) index = 7; // A,9 = 20 -> index 7
+            const decision = softTable[index][dealerValue - 2];
+            if (decision === 'D') {
+                return (playerCards.length === 2 && playerActions.includes('double')) ? "double" : "hit";
+            } else if (decision === 'Ds') {
+                return (playerCards.length === 2 && playerActions.includes('double')) ? "double" : "stand";
+            } else if (decision === 'H') {
+                return "hit";
+            } else if (decision === 'S') {
+                return "stand";
+            }
+        } else {
+            // Hard hand
+            let index = playerValue - 8;
+            if (index < 0) index = 0;
+            if (index > 9) index = 9; // 17+ index 9
+            const decision = hardTable[index][dealerValue - 2];
+            if (decision === 'D') {
+                return (playerCards.length === 2 && playerActions.includes('double')) ? "double" : "hit";
+            } else if (decision === 'H') {
+                return "hit";
+            } else if (decision === 'S') {
+                return "stand";
+            }
+        }
+
+        return "stand"; // fallback
     }
 
     // CEK TRIGGER RECOVERY
@@ -420,20 +416,19 @@ ${gameInfo}
             bot.recoveryLossAmount = bot.stats.startBal - currentBalance;
             bot.recoveryConsecutiveLosses = 0;
             
-            // Ambil trend mode dari UI
-            const trendMode = document.getElementById("p-recovery-trend").value;
-            bot.recoveryTrendMode = trendMode;
+            // Ambil insurance dari config
+            bot.recoveryInsurance = document.getElementById("p-blackjack-insurance").checked;
             
-            // Tentukan side awal berdasarkan trend mode
-            if (trendMode === "fix") {
-                bot.recoverySide = document.getElementById("p-fix-side").value;
-            } else if (trendMode === "rotate") {
-                bot.recoverySide = Math.random() < 0.5 ? "player" : "banker";
-            } else {
-                bot.recoverySide = "player";
-            }
-            
-            bot.recoveryLastWinner = null;
+            // Reset blackjack state
+            bot.blackjackState = {
+                identifier: null,
+                gameId: null,
+                playerHands: [],
+                dealerHand: [],
+                active: false,
+                currentHandIndex: 0,
+                insuranceOffered: false
+            };
             
             // Simpan game original
             bot.originalGame = bot.currentGame;
@@ -441,13 +436,12 @@ ${gameInfo}
             // Update status
             bot.currentStatus = `RECOVERY #${bot.recoveryAttempts}`;
             
-            console.log(`🔥 RECOVERY TRIGGERED! Loss: ${lossPct.toFixed(2)}% | Amount: ${bot.recoveryLossAmount.toFixed(8)}`);
-            console.log(`Switching to BACCARAT until breakeven... Trend: ${trendMode}, Side: ${bot.recoverySide}`);
+            console.log(`🔥 BLACKJACK RECOVERY TRIGGERED! Loss: ${lossPct.toFixed(2)}% | Amount: ${bot.recoveryLossAmount.toFixed(8)}`);
             
             const logEl = document.getElementById("st-log");
-            if (logEl) logEl.innerText = `🔥 RECOVERY #${bot.recoveryAttempts} | Loss: ${bot.recoveryLossAmount.toFixed(8)} | Playing BACCARAT (${trendMode})`;
+            if (logEl) logEl.innerText = `🔥 RECOVERY #${bot.recoveryAttempts} | Loss: ${bot.recoveryLossAmount.toFixed(8)} | Playing BLACKJACK (Perfect Strategy)`;
             
-            API.sendTg("🔥 *RECOVERY MODE ACTIVATED* 🔥\nSwitching to BACCARAT");
+            API.sendTg("🔥 *RECOVERY MODE ACTIVATED* 🔥\nSwitching to BLACKJACK (Perfect Strategy)");
             
             return true;
         }
@@ -471,7 +465,7 @@ ${gameInfo}
             bot.currentGame = bot.originalGame;
             bot.currentStatus = "WAGERING";
             
-            console.log(`💰 RECOVERY COMPLETE! Back to breakeven. Returning to ${bot.originalGame}...`);
+            console.log(`💰 BLACKJACK RECOVERY COMPLETE! Back to breakeven. Returning to ${bot.originalGame}...`);
             
             const logEl = document.getElementById("st-log");
             if (logEl) logEl.innerText = `💰 RECOVERY COMPLETE - Back to ${bot.originalGame.toUpperCase()}`;
@@ -500,131 +494,92 @@ ${gameInfo}
         return false;
     }
 
-    // DAPATKAN SIDE UNTUK BACCARAT BERDASARKAN TREND MODE
-    function getBaccaratSide() {
-        const trendMode = bot.recoveryTrendMode;
-        
-        if (trendMode === "fix") {
-            return document.getElementById("p-fix-side").value;
-        }
-        
-        if (trendMode === "rotate") {
-            return bot.recoverySide === "player" ? "banker" : "player";
-        }
-        
-        if (trendMode === "follow") {
-            if (bot.recoveryLastWinner && bot.recoveryLastWinner !== "tie") {
-                return bot.recoveryLastWinner;
-            }
-            
-            if (bot.recoveryLastResults.length > 5) {
-                const playerWins = bot.recoveryLastResults.filter(r => r === "player").length;
-                const bankerWins = bot.recoveryLastResults.filter(r => r === "banker").length;
-                return playerWins >= bankerWins ? "player" : "banker";
-            }
-            
-            return "player";
-        }
-        
-        return "player";
-    }
-
     // DAPATKAN MULTIPLIER UNTUK RECOVERY
     function getRecoveryMultiplier() {
-        const steps = JSON.parse(document.getElementById("p-recovery-steps").value || "[1,2,3,4,8,16,32,64,128,256,512]");
+        const steps = JSON.parse(document.getElementById("p-recovery-steps").value || "[1,2,3,4,8,16,32,64,128,256,511]");
         if (bot.recoveryConsecutiveLosses < steps.length) {
             return steps[bot.recoveryConsecutiveLosses];
         }
         return steps[steps.length - 1];
     }
 
-    // HITUNG BET RECOVERY
+    // HITUNG BET RECOVERY (dibulatkan ke 0.01)
     function calculateRecoveryBet() {
-        const baseBet = parseFloat(document.getElementById("p-baccarat-basebet").value) || 0.001;
+        const baseBet = parseFloat(document.getElementById("p-blackjack-basebet").value) || 0.001;
         const multiplier = getRecoveryMultiplier();
-        return baseBet * multiplier;
+        let rawBet = baseBet * multiplier;
+        // Round to 0.01, minimal 0.01
+        let bet = Math.floor(rawBet * 100) / 100;
+        if (bet < 0.01) bet = 0.01;
+        return bet;
     }
 
-    // PARSE BACCARAT CARDS
-    function parseBaccaratCards(betResult) {
-        const state = betResult.state || {};
-        const cards = state.cards || {};
-        const result = state.result || "unknown";
+    // PARSE BLACKJACK RESPONSE
+    function parseBlackjackResponse(data) {
+        let gameData = data.blackjackBet || data.blackjackNext || data;
         
-        bot.baccaratCards = {
-            player: cards.player || [],
-            banker: cards.banker || [],
-            winner: result
-        };
-        
-        updateBaccaratDisplay();
-    }
-
-    // UPDATE BACCARAT DISPLAY
-    function updateBaccaratDisplay() {
-        const playerCardsEl = document.getElementById("baccarat-player-cards");
-        const bankerCardsEl = document.getElementById("baccarat-banker-cards");
-        const winnerEl = document.getElementById("baccarat-winner");
-        
-        if (!playerCardsEl || !bankerCardsEl || !winnerEl) return;
-        
-        const formatCards = (cards) => {
-            if (!cards || cards.length === 0) return "-";
-            return cards.map(c => {
-                const rank = c.rank || c;
-                const suit = c.suit ? (c.suit === 'H' ? '♥' : c.suit === 'D' ? '♦' : c.suit === 'C' ? '♣' : '♠') : '';
-                return `${rank}${suit}`;
-            }).join(' ');
-        };
-        
-        playerCardsEl.innerText = formatCards(bot.baccaratCards.player);
-        bankerCardsEl.innerText = formatCards(bot.baccaratCards.banker);
-        
-        const winner = bot.baccaratCards.winner;
-        if (winner === "player") {
-            winnerEl.innerText = "PLAYER WINS 🏆";
-            winnerEl.style.color = "#4ADE80";
-        } else if (winner === "banker") {
-            winnerEl.innerText = "BANKER WINS 🏆";
-            winnerEl.style.color = "#F87171";
-        } else if (winner === "tie") {
-            winnerEl.innerText = "TIE 🤝";
-            winnerEl.style.color = "#FBBF24";
-        } else {
-            winnerEl.innerText = "-";
+        if (gameData.state) {
+            const state = gameData.state;
+            const playerHands = [];
+            const dealerHand = [];
+            
+            if (state.player && state.player.length > 0) {
+                for (const hand of state.player) {
+                    if (hand.cards) {
+                        playerHands.push({
+                            cards: hand.cards,
+                            actions: hand.actions || []
+                        });
+                    }
+                }
+            }
+            
+            if (state.dealer && state.dealer.length > 0 && state.dealer[0].cards) {
+                dealerHand.push(...state.dealer[0].cards);
+            }
+            
+            // Update state, pertahankan currentHandIndex jika masih valid
+            let newIndex = bot.blackjackState.currentHandIndex;
+            if (playerHands.length > 0 && newIndex >= playerHands.length) {
+                newIndex = 0; // reset jika tidak valid
+            }
+            
+            bot.blackjackState = {
+                identifier: gameData.identifier || bot.blackjackState.identifier,
+                gameId: gameData.id,
+                playerHands: playerHands,
+                dealerHand: dealerHand,
+                active: gameData.active || false,
+                currentHandIndex: newIndex,
+                insuranceOffered: playerHands[0]?.actions?.includes("insurance") || false
+            };
         }
+        
+        return gameData;
     }
 
-    // PROCESS BACCARAT BET RESULT
-    function processBaccaratResult(betResult, betSide, betAmount) {
-        const state = betResult.state || {};
-        const result = state.result || "unknown";
-        const payout = betResult.payout || 0;
+    // PROCESS BLACKJACK BET RESULT
+    function processBlackjackResult(betResult, betAmount) {
+        const gameData = betResult.blackjackBet || betResult.blackjackNext || betResult;
+        const payout = gameData.payout || 0;
         const pnl = payout - betAmount;
         
-        // Parse cards for display
-        parseBaccaratCards(betResult);
+        // Parse state for display
+        parseBlackjackResponse(betResult);
         
-        const isWin = (result === betSide);
-        const isTie = (result === "tie");
+        const isWin = payout > betAmount * 1.5 ? "blackjack" : (payout > betAmount ? "win" : (payout === betAmount ? "push" : "loss"));
         
         bot.stats.bets++;
         bot.stats.wagered += betAmount;
         
-        if (isWin) {
+        if (isWin === "win" || isWin === "blackjack") {
             bot.stats.wins++;
             bot.recoveryConsecutiveLosses = 0;
-            bot.recoveryLastWinner = betSide;
-        } else if (isTie) {
-            bot.stats.ties = (bot.stats.ties || 0) + 1;
+        } else if (isWin === "push") {
+            // Push - tidak menang atau kalah
         } else {
             bot.stats.loss++;
             bot.recoveryConsecutiveLosses++;
-        }
-        
-        bot.recoveryLastResults.push(result);
-        if (bot.recoveryLastResults.length > 20) {
-            bot.recoveryLastResults.shift();
         }
         
         bot.stats.profit += pnl;
@@ -633,10 +588,18 @@ ${gameInfo}
             bot.stats.maxDD = bot.stats.profit;
         }
         
+        // Update last result for display
+        bot.lastBetResult = {
+            result: isWin,
+            amount: betAmount,
+            payout: payout,
+            profit: pnl
+        };
+        
         return pnl;
     }
 
-    // HITUNG BET NORMAL
+    // HITUNG BET NORMAL (limbo/dice)
     function calculateNormalBet() {
         const baseBetLimbo = parseFloat(document.getElementById("p-limbo-basebet").value) || 0.001;
         const baseBetDice = parseFloat(document.getElementById("p-dice-basebet").value) || 0.001;
@@ -649,11 +612,67 @@ ${gameInfo}
         }
     }
 
+    // UPDATE BLACKJACK DISPLAY
+    function updateBlackjackDisplay() {
+        const playerCardsEl = document.getElementById("blackjack-player-cards");
+        const dealerCardsEl = document.getElementById("blackjack-dealer-cards");
+        const playerValueEl = document.getElementById("blackjack-player-value");
+        const dealerValueEl = document.getElementById("blackjack-dealer-value");
+        const actionsEl = document.getElementById("blackjack-actions");
+        const lastResultEl = document.getElementById("blackjack-last-result");
+        
+        if (!playerCardsEl || !dealerCardsEl) return;
+        
+        // Display player hands (tampilkan hand aktif)
+        if (bot.blackjackState.playerHands.length > 0) {
+            const hand = bot.blackjackState.playerHands[bot.blackjackState.currentHandIndex] || bot.blackjackState.playerHands[0];
+            const cards = hand.cards || [];
+            playerCardsEl.innerText = cards.map(c => `${c.rank}${c.suit}`).join(' ');
+            
+            const value = calculateHandValue(cards);
+            playerValueEl.innerText = value > 0 ? `(${value})` : '';
+        } else {
+            playerCardsEl.innerText = '-';
+            playerValueEl.innerText = '';
+        }
+        
+        // Display dealer hand
+        if (bot.blackjackState.dealerHand.length > 0) {
+            const cards = bot.blackjackState.dealerHand;
+            dealerCardsEl.innerText = cards.map(c => `${c.rank}${c.suit}`).join(' ');
+            
+            const value = calculateHandValue(cards);
+            dealerValueEl.innerText = `(${value})`;
+        } else {
+            dealerCardsEl.innerText = '-';
+            dealerValueEl.innerText = '';
+        }
+        
+        // Display available actions (dari hand aktif)
+        if (bot.blackjackState.playerHands.length > 0) {
+            const hand = bot.blackjackState.playerHands[bot.blackjackState.currentHandIndex] || bot.blackjackState.playerHands[0];
+            const actions = hand.actions || [];
+            actionsEl.innerText = actions.join(' | ').toUpperCase();
+        } else {
+            actionsEl.innerText = '-';
+        }
+        
+        // Display last result
+        if (bot.lastBetResult) {
+            const profitColor = bot.lastBetResult.profit >= 0 ? "positive" : "negative";
+            lastResultEl.innerHTML = `
+                Result: ${bot.lastBetResult.result.toUpperCase()} | 
+                Bet: ${bot.lastBetResult.amount.toFixed(8)} | 
+                Payout: ${bot.lastBetResult.payout.toFixed(8)} | 
+                Profit: <span class="${profitColor}">${bot.lastBetResult.profit.toFixed(8)}</span>
+            `;
+        } else {
+            lastResultEl.innerText = "No result yet";
+        }
+    }
+
     async function runLoop() {
         if (!bot.isRunning) return;
-        
-        // Update IDR price periodically (every 5 minutes)
-        updateIdrPrice();
         
         // CEK TRIGGER RECOVERY
         checkRecoveryTrigger();
@@ -671,52 +690,105 @@ ${gameInfo}
         
         let payout, nextbet, gameToPlay;
         
-        // JIKA SEDANG DALAM MODE RECOVERY - GUNAKAN BACCARAT
+        // JIKA SEDANG DALAM MODE RECOVERY - GUNAKAN BLACKJACK
         if (bot.recoveryMode) {
-            gameToPlay = "baccarat";
+            gameToPlay = "blackjack";
             bot.currentStatus = `RECOVERY #${bot.recoveryAttempts}`;
-            
-            // Dapatkan side berdasarkan trend mode
-            const side = getBaccaratSide();
-            bot.recoverySide = side;
             
             // Hitung bet dengan progression
             const multiplier = getRecoveryMultiplier();
             nextbet = calculateRecoveryBet();
             
-            bot.currentStatus = `RECOVERY #${bot.recoveryAttempts} (${side} | Step ${bot.recoveryConsecutiveLosses+1}/${multiplier}x | ${bot.recoveryTrendMode})`;
+            bot.currentStatus = `RECOVERY #${bot.recoveryAttempts} (Step ${bot.recoveryConsecutiveLosses+1}/${multiplier}x)`;
             
             try {
-                const betData = {
-                    side: side,
-                    amount: nextbet
-                };
-                
-                const res = await API.placeBet(betData, null, "baccarat");
-                
-                if (res.errors) { 
-                    bot.lastError = res.errors[0].message; 
-                    setTimeout(runLoop, 800); 
-                    return; 
+                // Cek apakah ada game Blackjack yang sedang aktif
+                if (bot.blackjackState.active && bot.blackjackState.identifier) {
+                    // Ada game aktif, kita perlu menentukan hand mana yang sedang aktif
+                    // Cek apakah hand pertama sudah selesai (jika split)
+                    if (bot.blackjackState.playerHands.length > 1) {
+                        // Split terjadi
+                        const hand0 = bot.blackjackState.playerHands[0];
+                        const hand0Value = calculateHandValue(hand0.cards);
+                        const hand0Actions = hand0.actions || [];
+                        // Jika hand0 sudah selesai (stand/bust/value>=21) maka pindah ke hand1
+                        if (hand0Actions.includes('stand') || hand0Actions.includes('bust') || hand0Value >= 21) {
+                            bot.blackjackState.currentHandIndex = 1;
+                        } else {
+                            bot.blackjackState.currentHandIndex = 0;
+                        }
+                    } else {
+                        bot.blackjackState.currentHandIndex = 0;
+                    }
+
+                    // Dapatkan aksi berdasarkan strategi perfect
+                    const decision = getPerfectBlackjackDecision(
+                        bot.blackjackState.playerHands,
+                        bot.blackjackState.dealerHand,
+                        bot.blackjackState.currentHandIndex,
+                        bot.blackjackState.insuranceOffered,
+                        bot.recoveryInsurance
+                    );
+
+                    console.log(`Blackjack decision: ${decision} (Perfect Strategy)`);
+
+                    // Kirim aksi
+                    const res = await API.placeBet(null, null, "blackjack", {
+                        action: decision,
+                        identifier: bot.blackjackState.identifier
+                    });
+
+                    if (res.errors) {
+                        bot.lastError = res.errors[0].message;
+                        setTimeout(runLoop, 800);
+                        return;
+                    }
+
+                    const gameData = parseBlackjackResponse(res);
+
+                    // Cek apakah game sudah selesai
+                    if (!bot.blackjackState.active) {
+                        const betAmount = nextbet; // Gunakan nextbet yang sudah dihitung
+                        const pnl = processBlackjackResult(res, betAmount);
+                        console.log(`Blackjack hand completed | PnL: ${pnl.toFixed(8)}`);
+                    }
+
+                    updateBlackjackDisplay();
+                } else {
+                    // Tidak ada game aktif, place bet baru
+                    const res = await API.placeBet(nextbet, null, "blackjack");
+
+                    if (res.errors) {
+                        bot.lastError = res.errors[0].message;
+                        setTimeout(runLoop, 800);
+                        return;
+                    }
+
+                    const gameData = parseBlackjackResponse(res);
+
+                    // Cek apakah langsung selesai (blackjack)
+                    if (gameData.blackjack || gameData.payout > 0) {
+                        const pnl = processBlackjackResult(res, nextbet);
+                        console.log(`Blackjack immediate result | PnL: ${pnl.toFixed(8)}`);
+                        bot.blackjackState.active = false;
+                        bot.blackjackState.identifier = null;
+                    } else {
+                        // Game masih aktif, simpan identifier
+                        bot.blackjackState.identifier = gameData.identifier;
+                        bot.blackjackState.active = true;
+                        bot.blackjackState.currentHandIndex = 0; // mulai dari hand pertama
+                    }
+
+                    updateBlackjackDisplay();
                 }
-                
-                const data = res?.data || res;
-                const betResult = data.baccaratBet || data;
-                
-                if (betResult && bot.isRunning) {
-                    const pnl = processBaccaratResult(betResult, side, nextbet);
-                    bot.lastError = "None";
-                    
-                    const result = betResult.state?.result || "unknown";
-                    console.log(`Baccarat ${side} -> ${result} | PnL: ${pnl.toFixed(8)} | Step: ${bot.recoveryConsecutiveLosses}`);
-                }
-                
+
                 if (bot.isRunning) {
                     setTimeout(runLoop, 0);
                 }
-                
+
             } catch (e) { 
                 bot.lastError = "Network Error"; 
+                console.error(e);
                 if (bot.isRunning) setTimeout(runLoop, 1000); 
             }
         }
@@ -854,17 +926,6 @@ ${gameInfo}
                 border: 1px solid #1E293B;
                 margin: 8px 0 4px;
                 word-break: break-word;
-            }
-            .orion-price {
-                font-size: 11px;
-                color: #FBBF24;
-                background: rgba(251, 191, 36, 0.1);
-                padding: 8px 12px;
-                border-radius: 30px;
-                border: 1px solid rgba(251, 191, 36, 0.2);
-                margin: 8px 0;
-                text-align: center;
-                font-weight: 500;
             }
             .orion-section {
                 background: rgba(2, 6, 23, 0.6);
@@ -1054,14 +1115,14 @@ ${gameInfo}
                 color: #94A3B8;
                 border: 1px solid rgba(100, 116, 139, 0.3);
             }
-            .baccarat-display {
+            .blackjack-display {
                 background: #030712;
                 border-radius: 16px;
                 padding: 12px;
                 margin: 12px 0;
                 border: 1px solid #1E293B;
             }
-            .baccarat-row {
+            .blackjack-row {
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
@@ -1070,33 +1131,49 @@ ${gameInfo}
                 border-radius: 12px;
                 margin-bottom: 8px;
             }
-            .baccarat-label {
+            .blackjack-label {
                 font-size: 11px;
                 font-weight: 600;
                 color: #94A3B8;
                 text-transform: uppercase;
+                min-width: 60px;
             }
-            .baccarat-cards {
+            .blackjack-cards {
                 font-size: 14px;
                 font-weight: 600;
                 font-family: 'SF Mono', Monaco, monospace;
                 color: #F1F5F9;
+                flex: 1;
             }
-            .baccarat-cards.player {
+            .blackjack-cards.player {
                 color: #4ADE80;
             }
-            .baccarat-cards.banker {
+            .blackjack-cards.dealer {
                 color: #F87171;
             }
-            .baccarat-winner {
-                text-align: center;
-                font-size: 14px;
-                font-weight: 700;
+            .blackjack-value {
+                font-size: 12px;
+                color: #FBBF24;
+                margin-left: 8px;
+            }
+            .blackjack-actions {
                 margin-top: 8px;
                 padding: 8px;
                 background: rgba(56, 189, 248, 0.1);
                 border-radius: 30px;
                 border: 1px solid rgba(56, 189, 248, 0.2);
+                text-align: center;
+                font-size: 11px;
+            }
+            .blackjack-last-result {
+                margin-top: 8px;
+                padding: 8px;
+                background: rgba(0,0,0,0.5);
+                border-radius: 8px;
+                font-size: 11px;
+                color: #CBD5E1;
+                border: 1px solid #1E293B;
+                text-align: center;
             }
             .recovery-status-text {
                 font-size: 10px;
@@ -1132,17 +1209,13 @@ ${gameInfo}
         d.innerHTML = `
             <div class="orion-header">
                 <div class="orion-title">
-                    <span>⚡</span> ORION v1 <span>⚡</span>
+                    <span>⚡</span> ORION WAGER MACHINE <span>⚡</span>
                 </div>
-                <div class="orion-badge">PREMIUM EDITION</div>
+                <div class="orion-badge">v1 PREMIUM</div>
             </div>
             
             <div class="orion-user" id="st-user">
                 Loading...
-            </div>
-            
-            <div class="orion-price" id="st-idr-price">
-                Loading price...
             </div>
             
             <div class="orion-section">
@@ -1205,23 +1278,23 @@ ${gameInfo}
             
             <div class="orion-section">
                 <div class="orion-section-title">
-                    <span>🔄</span> BACCARAT RECOVERY MODE
+                    <span>🃏</span> BLACKJACK RECOVERY MODE (PERFECT STRATEGY)
                     <span id="recovery-status-badge" class="recovery-badge disabled">DISABLED</span>
                 </div>
                 <div class="orion-checkbox">
                     <input type="checkbox" id="p-use-recovery" checked>
-                    <label>Enable Baccarat Recovery</label>
+                    <label>Enable Blackjack Recovery</label>
                 </div>
-                <div id="recovery-toggle-status" class="recovery-status-text enabled">✓ RECOVERY IS ENABLED</div>
+                <div id="recovery-toggle-status" class="recovery-status-text enabled">✓ BLACKJACK RECOVERY IS ENABLED</div>
                 
                 <div class="orion-grid">
                     <div class="orion-input-group">
                         <label>BASE BET</label>
-                        <input id="p-baccarat-basebet" class="orion-input" value="0.001" step="any">
+                        <input id="p-blackjack-basebet" class="orion-input" value="0.001" step="any">
                     </div>
                     <div class="orion-input-group">
                         <label>PROGRESSION STEPS</label>
-                        <input id="p-recovery-steps" class="orion-input" value="[1,2,3,4,8,16,32,64,128,256,512]">
+                        <input id="p-recovery-steps" class="orion-input" value="[1,2,3,4,8,16,32,64,128,256,511]">
                     </div>
                     <div class="orion-input-group">
                         <label>LOSS TRIGGER %</label>
@@ -1231,34 +1304,26 @@ ${gameInfo}
                         <label>MAX ATTEMPTS</label>
                         <input id="p-max-recovery" class="orion-input" value="3" step="1">
                     </div>
-                    <div class="orion-input-group" style="grid-column: span 2">
-                        <label>TREND MODE</label>
-                        <select id="p-recovery-trend" class="orion-select">
-                            <option value="follow">Follow Winner</option>
-                            <option value="fix">Fix Position</option>
-                            <option value="rotate">Rotate</option>
-                        </select>
-                    </div>
-                    <div class="orion-input-group" style="grid-column: span 2" id="fix-side-container">
-                        <label>FIX SIDE</label>
-                        <select id="p-fix-side" class="orion-select">
-                            <option value="player">PLAYER</option>
-                            <option value="banker">BANKER</option>
-                        </select>
+                    <div class="orion-checkbox" style="grid-column: span 2">
+                        <input type="checkbox" id="p-blackjack-insurance">
+                        <label>Take Insurance when offered</label>
                     </div>
                 </div>
                 
-                <!-- BACCARAT DISPLAY -->
-                <div class="baccarat-display" id="baccarat-display">
-                    <div class="baccarat-row">
-                        <span class="baccarat-label">PLAYER</span>
-                        <span class="baccarat-cards player" id="baccarat-player-cards">-</span>
+                <!-- BLACKJACK DISPLAY -->
+                <div class="blackjack-display" id="blackjack-display">
+                    <div class="blackjack-row">
+                        <span class="blackjack-label">PLAYER</span>
+                        <span class="blackjack-cards player" id="blackjack-player-cards">-</span>
+                        <span class="blackjack-value" id="blackjack-player-value"></span>
                     </div>
-                    <div class="baccarat-row">
-                        <span class="baccarat-label">BANKER</span>
-                        <span class="baccarat-cards banker" id="baccarat-banker-cards">-</span>
+                    <div class="blackjack-row">
+                        <span class="blackjack-label">DEALER</span>
+                        <span class="blackjack-cards dealer" id="blackjack-dealer-cards">-</span>
+                        <span class="blackjack-value" id="blackjack-dealer-value"></span>
                     </div>
-                    <div class="baccarat-winner" id="baccarat-winner">-</div>
+                    <div class="blackjack-actions" id="blackjack-actions">-</div>
+                    <div class="blackjack-last-result" id="blackjack-last-result">No result yet</div>
                 </div>
             </div>
             
@@ -1300,6 +1365,10 @@ ${gameInfo}
                     <span class="orion-stat-value" id="st-wl">0/0</span>
                 </div>
                 <div class="orion-stat-row">
+                    <span class="orion-stat-label">WIN RATE</span>
+                    <span class="orion-stat-value" id="st-winrate">0%</span>
+                </div>
+                <div class="orion-stat-row">
                     <span class="orion-stat-label">SPEED</span>
                     <span class="orion-stat-value" id="st-speed">0 b/s</span>
                 </div>
@@ -1317,33 +1386,23 @@ ${gameInfo}
         
         document.body.appendChild(d);
         
-        // Event listener untuk trend mode
-        document.getElementById("p-recovery-trend").addEventListener("change", function(e) {
-            const fixSideContainer = document.getElementById("fix-side-container");
-            if (e.target.value === "fix") {
-                fixSideContainer.style.display = "block";
+        // Fungsi untuk update status toggle
+        function updateRecoveryToggleStatus(enabled) {
+            const statusEl = document.getElementById("recovery-toggle-status");
+            if (enabled) {
+                statusEl.className = "recovery-status-text enabled";
+                statusEl.innerHTML = "✓ BLACKJACK RECOVERY IS ENABLED";
             } else {
-                fixSideContainer.style.display = "none";
+                statusEl.className = "recovery-status-text disabled";
+                statusEl.innerHTML = "✗ BLACKJACK RECOVERY IS DISABLED";
             }
-        });
+        }
         
         // Event listener untuk checkbox recovery
         document.getElementById("p-use-recovery").addEventListener("change", function(e) {
             updateRecoveryToggleStatus(e.target.checked);
             updateRecoveryUI();
         });
-        
-        // Fungsi untuk update status toggle
-        function updateRecoveryToggleStatus(enabled) {
-            const statusEl = document.getElementById("recovery-toggle-status");
-            if (enabled) {
-                statusEl.className = "recovery-status-text enabled";
-                statusEl.innerHTML = "✓ BACCARAT RECOVERY IS ENABLED";
-            } else {
-                statusEl.className = "recovery-status-text disabled";
-                statusEl.innerHTML = "✗ BACCARAT RECOVERY IS DISABLED";
-            }
-        }
         
         function updateRecoveryUI() {
             const enabled = document.getElementById("p-use-recovery").checked;
@@ -1369,7 +1428,6 @@ ${gameInfo}
         
         // Set initial toggle status
         updateRecoveryToggleStatus(true);
-        document.getElementById("fix-side-container").style.display = "none";
         
         document.getElementById("p-start").onclick = async () => { 
             if(!bot.isRunning){ 
@@ -1390,7 +1448,16 @@ ${gameInfo}
                 bot.recoveryMode = false;
                 bot.recoveryAttempts = 0;
                 bot.recoveryConsecutiveLosses = 0;
-                bot.baccaratCards = { player: [], banker: [], winner: null };
+                bot.blackjackState = {
+                    identifier: null,
+                    gameId: null,
+                    playerHands: [],
+                    dealerHand: [],
+                    active: false,
+                    currentHandIndex: 0,
+                    insuranceOffered: false
+                };
+                bot.lastBetResult = null;
                 
                 updateRecoveryUI();
                 
@@ -1430,18 +1497,24 @@ ${gameInfo}
         
         let statusText = bot.currentStatus;
         if (bot.recoveryMode) {
-            statusText = `🔥 RECOVERY #${bot.recoveryAttempts} (${bot.recoverySide} | Step ${bot.recoveryConsecutiveLosses+1})`;
+            statusText = `🔥 RECOVERY #${bot.recoveryAttempts} (Step ${bot.recoveryConsecutiveLosses+1})`;
         } else {
             statusText = `${bot.currentStatus} (${bot.currentGame})`;
         }
         document.getElementById("st-status").innerText = statusText;
         
-        document.getElementById("st-startbal").innerText = (bot.stats.startBal + bot.stats.profit).toFixed(8);
+        const currentBalance = bot.stats.startBal + bot.stats.profit;
+        document.getElementById("st-startbal").innerText = currentBalance.toFixed(8);
         document.getElementById("st-profit").innerText = bot.stats.profit.toFixed(8);
         document.getElementById("st-wager").innerText = bot.stats.wagered.toFixed(8);
         document.getElementById("st-dd").innerText = bot.stats.maxDD.toFixed(8);
         document.getElementById("st-bets").innerText = bot.stats.bets;
         document.getElementById("st-wl").innerText = `${bot.stats.wins}/${bot.stats.loss}`;
+        
+        // Hitung win rate
+        const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100).toFixed(2) : 0;
+        document.getElementById("st-winrate").innerText = `${winRate}%`;
+        
         document.getElementById("st-speed").innerText = bot.startTime ? (bot.stats.bets / ((new Date() - bot.startTime) / 1000 || 1)).toFixed(2) + " b/s" : "0 b/s";
         document.getElementById("st-log").innerText = bot.lastError;
         
@@ -1469,11 +1542,11 @@ ${gameInfo}
                 recoveryStat.innerText = bot.recoveryStatus;
             }
         }
+        
+        // Update Blackjack display
+        updateBlackjackDisplay();
     }, 400);
 
     createUI(); 
     API.syncOnce();
-    
-    // Initial price update
-    setTimeout(updateIdrPrice, 2000);
 })();
