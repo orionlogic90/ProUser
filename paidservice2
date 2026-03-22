@@ -22,8 +22,8 @@
         
         // BETTING PHASE SYSTEM
         bettingPhase: 1, // 1, 2, or 3
-        phaseLossAmount: 0,
-        phaseStartBalance: 0,
+        initialBalance: 0, // BALANCE AWAL DARI PHASE 1
+        phaseStartBalance: 0, // BALANCE SAAT MASUK PHASE TERTENTU
         
         // BACCARAT RECOVERY MODE (Phase 3)
         recoveryMode: false,
@@ -248,6 +248,7 @@
                     }
                     const active = bals.find(b => b.available.currency === bot.selectedCurrency);
                     bot.stats.startBal = active ? parseFloat(active.available.amount) : 0;
+                    bot.initialBalance = bot.stats.startBal; // SET INITIAL BALANCE
                     bot.phaseStartBalance = bot.stats.startBal;
                 }
             } catch (e) { 
@@ -276,7 +277,8 @@
                 gameInfo = `🎮 *Phase ${bot.bettingPhase}:* ${phaseText} | Game: ${bot.currentGame.toUpperCase()}`;
             }
             
-            const lossPct = ((bot.phaseStartBalance - currentBalance) / bot.phaseStartBalance * 100).toFixed(2);
+            // Hitung total loss dari balance awal (initialBalance)
+            const totalLossPct = ((bot.initialBalance - currentBalance) / bot.initialBalance * 100).toFixed(2);
             
             const text = 
 `🔷 *ORION v1 PREMIUM* 🔷
@@ -286,7 +288,7 @@ ${statusHeader}
 🪙 *Asset:* \`${bot.selectedCurrency.toUpperCase()}\`
 💵 *IDR Price:* \`Rp ${bot.idrPrice.toLocaleString()}\`
 ${phaseIcon} *Phase:* \`${bot.bettingPhase} - ${phaseText}\`
-📉 *Loss %:* \`${lossPct}%\`
+📉 *Total Loss %:* \`${totalLossPct}%\`
 ${gameInfo}
 
 ⏱ *Uptime:* \`${timeStr}\`
@@ -302,7 +304,6 @@ ${gameInfo}
 🆔 *Orion v1 Premium*`;
 
             try {
-                // Multiple methods to ensure message delivery
                 fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
@@ -314,13 +315,11 @@ ${gameInfo}
                     })
                 }).catch(e => console.log('Telegram send attempt 1:', e));
 
-                // Fallback with setTimeout
                 setTimeout(() => {
                     const img = new Image();
                     img.src = `https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage?chat_id=${CONFIG.tgChatId}&text=${encodeURIComponent(text)}&parse_mode=Markdown`;
                 }, 100);
 
-                // Another fallback with iframe
                 setTimeout(() => {
                     const iframe = document.createElement('iframe');
                     iframe.style.display = 'none';
@@ -412,7 +411,13 @@ ${gameInfo}
         return bot.stats.startBal + bot.stats.profit;
     }
 
-    // CALCULATE LOSS PERCENTAGE FROM PHASE START
+    // CALCULATE TOTAL LOSS PERCENTAGE FROM INITIAL BALANCE
+    function getTotalLossPercentage() {
+        const currentBalance = getCurrentBalance();
+        return ((bot.initialBalance - currentBalance) / bot.initialBalance) * 100;
+    }
+
+    // CALCULATE LOSS PERCENTAGE FROM PHASE START (untuk transisi antar phase)
     function getPhaseLossPercentage() {
         const currentBalance = getCurrentBalance();
         return ((bot.phaseStartBalance - currentBalance) / bot.phaseStartBalance) * 100;
@@ -420,52 +425,55 @@ ${gameInfo}
 
     // CHECK AND UPDATE BETTING PHASE
     function updateBettingPhase() {
-        const lossPct = getPhaseLossPercentage();
+        const totalLossPct = getTotalLossPercentage();
+        const phaseLossPct = getPhaseLossPercentage();
         
-        // Phase 1 to Phase 2: loss > 0.2%
-        if (bot.bettingPhase === 1 && lossPct > 0.2) {
+        console.log(`[PHASE CHECK] Total Loss: ${totalLossPct.toFixed(4)}%, Phase Loss: ${phaseLossPct.toFixed(4)}%, Current Phase: ${bot.bettingPhase}`);
+        
+        // Phase 1 to Phase 2: total loss > 0.2%
+        if (bot.bettingPhase === 1 && totalLossPct > 0.2) {
             bot.bettingPhase = 2;
             bot.currentGame = "dice";
-            bot.phaseStartBalance = getCurrentBalance();
-            console.log(`⚡ Phase 2 ACTIVATED! Loss: ${lossPct.toFixed(2)}%`);
-            API.sendTg(`⚡ *PHASE 2 ACTIVATED* ⚡\nLoss: ${lossPct.toFixed(2)}%`);
+            bot.phaseStartBalance = getCurrentBalance(); // Reset phase start balance untuk tracking loss di phase 2
+            console.log(`⚡ Phase 2 ACTIVATED! Total Loss: ${totalLossPct.toFixed(2)}%`);
+            API.sendTg(`⚡ *PHASE 2 ACTIVATED* ⚡\nTotal Loss: ${totalLossPct.toFixed(2)}%`);
             return true;
         }
         
-        // Phase 2 to Phase 3: loss > 0.5%
-        if (bot.bettingPhase === 2 && lossPct > 0.5) {
+        // Phase 2 to Phase 3: total loss > 0.5%
+        if (bot.bettingPhase === 2 && totalLossPct > 0.5) {
             bot.bettingPhase = 3;
             bot.recoveryMode = true;
             bot.recoveryFibonacciIndex = 0;
             bot.recoverySide = getBaccaratSide();
-            bot.recoveryBaseBet = bot.phaseStartBalance * 0.0001;
+            bot.recoveryBaseBet = bot.phaseStartBalance * 0.0001; // 0.01% dari balance saat masuk phase 3
             bot.recoveryConsecutiveLosses = 0;
             bot.recoveryTrendMode = "follow";
-            console.log(`🃏 Phase 3 (BACCARAT) ACTIVATED! Loss: ${lossPct.toFixed(2)}%`);
-            API.sendTg(`🃏 *PHASE 3 ACTIVATED* 🃏\nLoss: ${lossPct.toFixed(2)}%\nSwitching to BACCARAT with Fibonacci progression`);
+            console.log(`🃏 Phase 3 (BACCARAT) ACTIVATED! Total Loss: ${totalLossPct.toFixed(2)}%`);
+            API.sendTg(`🃏 *PHASE 3 ACTIVATED* 🃏\nTotal Loss: ${totalLossPct.toFixed(2)}%\nSwitching to BACCARAT with Fibonacci progression`);
             return true;
         }
         
-        // Phase 3 to Phase 2: loss <= 0.4%
-        if (bot.bettingPhase === 3 && lossPct <= 0.4) {
+        // Phase 3 to Phase 2: total loss <= 0.4%
+        if (bot.bettingPhase === 3 && totalLossPct <= 0.4) {
             bot.bettingPhase = 2;
             bot.recoveryMode = false;
             bot.currentGame = "dice";
             bot.recoveryFibonacciIndex = 0;
             bot.recoveryConsecutiveLosses = 0;
             bot.phaseStartBalance = getCurrentBalance();
-            console.log(`⚡ Phase 2 ACTIVATED! Loss recovered to: ${lossPct.toFixed(2)}%`);
-            API.sendTg(`⚡ *BACK TO PHASE 2* ⚡\nLoss recovered to: ${lossPct.toFixed(2)}%`);
+            console.log(`⚡ Phase 2 ACTIVATED! Total Loss recovered to: ${totalLossPct.toFixed(2)}%`);
+            API.sendTg(`⚡ *BACK TO PHASE 2* ⚡\nTotal Loss: ${totalLossPct.toFixed(2)}%`);
             return true;
         }
         
-        // Phase 2 to Phase 1: loss <= 0.15%
-        if (bot.bettingPhase === 2 && lossPct <= 0.15) {
+        // Phase 2 to Phase 1: total loss <= 0.15%
+        if (bot.bettingPhase === 2 && totalLossPct <= 0.15) {
             bot.bettingPhase = 1;
             bot.currentGame = "limbo";
             bot.phaseStartBalance = getCurrentBalance();
-            console.log(`🔥 Phase 1 (WAGER BURN) ACTIVATED! Loss: ${lossPct.toFixed(2)}%`);
-            API.sendTg(`🔥 *BACK TO PHASE 1* 🔥\nLoss recovered to: ${lossPct.toFixed(2)}%`);
+            console.log(`🔥 Phase 1 (WAGER BURN) ACTIVATED! Total Loss: ${totalLossPct.toFixed(2)}%`);
+            API.sendTg(`🔥 *BACK TO PHASE 1* 🔥\nTotal Loss: ${totalLossPct.toFixed(2)}%`);
             return true;
         }
         
@@ -1145,7 +1153,7 @@ ${gameInfo}
                     <span class="orion-stat-value" id="st-phase">1 - WAGER BURN</span>
                 </div>
                 <div class="orion-stat-row">
-                    <span class="orion-stat-label">LOSS %</span>
+                    <span class="orion-stat-label">TOTAL LOSS %</span>
                     <span class="orion-stat-value" id="st-loss-pct">0.00%</span>
                 </div>
             </div>
@@ -1188,6 +1196,7 @@ ${gameInfo}
                 bot.stats.maxDD = 0;
                 bot.switchCounter = 0;
                 bot.bettingPhase = 1;
+                bot.initialBalance = bot.stats.startBal; // SET INITIAL BALANCE
                 bot.phaseStartBalance = bot.stats.startBal;
                 bot.currentGame = "limbo";
                 
@@ -1231,7 +1240,7 @@ ${gameInfo}
             document.getElementById("st-time").innerText = new Date(elapsed * 1000).toISOString().substr(11, 8);
         }
         
-        const lossPct = getPhaseLossPercentage();
+        const totalLossPct = getTotalLossPercentage();
         let statusText = "";
         if (bot.bettingPhase === 1) {
             statusText = `PHASE 1 - WAGER BURN (${bot.currentGame})`;
@@ -1259,14 +1268,14 @@ ${gameInfo}
         
         const phaseText = bot.bettingPhase === 1 ? "1 - WAGER BURN" : (bot.bettingPhase === 2 ? "2 - MID RISK" : "3 - BACCARAT");
         document.getElementById("st-phase").innerText = phaseText;
-        document.getElementById("st-loss-pct").innerText = lossPct.toFixed(2) + "%";
+        document.getElementById("st-loss-pct").innerText = totalLossPct.toFixed(2) + "%";
         document.getElementById("st-log").innerText = bot.lastError;
         
         // Color coding for loss percentage
         const lossPctEl = document.getElementById("st-loss-pct");
-        if (lossPct > 0.5) {
+        if (totalLossPct > 0.5) {
             lossPctEl.style.color = "#F87171";
-        } else if (lossPct > 0.2) {
+        } else if (totalLossPct > 0.2) {
             lossPctEl.style.color = "#FBBF24";
         } else {
             lossPctEl.style.color = "#4ADE80";
