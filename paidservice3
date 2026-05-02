@@ -15,7 +15,6 @@
         selectedCurrency: "DOGE",
         lastError: "None",
         
-        wgrdiv: 50000,
         minbet: 0.0015,
         targetWager: 10,
         
@@ -29,7 +28,7 @@
         floatingLossP1: 0,
         phase2StartBalance: 0,
         playgame: "dice",
-        chance: 97,
+        chance: 99.98,
         nextbet: 0,
         balst: 0,
         wager: 0,
@@ -70,10 +69,10 @@
         bot.lossPhase3 = 0;
         bot.floatingLossP1 = 0;
         bot.phase3LossStreak = 0;
-        bot.chance = 97;
+        bot.chance = 99.98;
         bot.playgame = "dice";
-        bot.nextbet = getCurrentBalance() / bot.wgrdiv;
-        bot.nextbet = Math.max(bot.minbet, bot.nextbet);
+        bot.nextbet = getCurrentBalance() * 0.005;
+        if (bot.nextbet < bot.minbet) bot.nextbet = bot.minbet;
     }
 
     function goToPhase2() {
@@ -91,7 +90,7 @@
         bot.playgame = "dice";
         bot.chance = 60;
         bot.nextbet = getCurrentBalance() * 0.0015;
-        bot.nextbet = Math.max(bot.minbet, bot.nextbet);
+        if (bot.nextbet < bot.minbet) bot.nextbet = bot.minbet;
     }
 
     function stopBot() {
@@ -112,14 +111,12 @@
         if (isRunning) {
             badge.innerText = "RUNNING";
             badge.style.background = "rgba(45, 212, 191, 0.14)";
-            badge.style.border = "1px solid rgba(45, 212, 191, 0.3)";
             dot.style.background = "#2dd4bf";
             if (startBtn) startBtn.disabled = true;
             if (stopBtn) stopBtn.disabled = false;
         } else {
             badge.innerText = "STOPPED";
             badge.style.background = "rgba(239, 68, 68, 0.18)";
-            badge.style.border = "1px solid rgba(239, 68, 68, 0.3)";
             dot.style.background = "#ef4444";
             if (startBtn) startBtn.disabled = false;
             if (stopBtn) stopBtn.disabled = true;
@@ -150,7 +147,7 @@
             profitEl.style.color = sProfit >= 0 ? "#4ade80" : "#f87171";
         }
         if (wagerEl) wagerEl.innerText = bot.stats.wagered.toFixed(2);
-        if (phaseEl) phaseEl.innerText = bot.phase === 1 ? "DICE 97%" : (bot.phase === 2 ? "LIMBO 1.3-1.5x" : "RECOVERY 60%");
+        if (phaseEl) phaseEl.innerText = bot.phase === 1 ? "DICE 99.98%" : (bot.phase === 2 ? "LIMBO" : "RECOVERY");
         if (streakEl) streakEl.innerText = bot.phase === 3 ? bot.phase3LossStreak : "-";
         if (barEl) barEl.style.width = Math.min(wagerPct, 100).toFixed(1) + "%";
         if (targetEl) targetEl.innerText = targetWager.toFixed(0);
@@ -164,6 +161,7 @@
         const elapsed = bot.startTime ? (new Date() - bot.startTime) / 1000 : 0;
         const hours = (elapsed / 3600).toFixed(1);
         const wph = (bot.stats.wagered / (elapsed || 1) * 3600).toFixed(2);
+        const bps = (bot.stats.bets / (elapsed || 1)).toFixed(2);
         const currentBalance = getCurrentBalance();
         const targetWager = bot.startBalance * bot.targetWager;
         const profit = currentBalance - bot.startBalance;
@@ -177,9 +175,10 @@
 📊 Wager    : ${bot.stats.wagered.toFixed(2)}
 🎯 Target   : ${targetWager.toFixed(2)}
 📈 Profit   : ${profit >= 0 ? "+" : ""}${profit.toFixed(6)}
-⚡ Speed    : ${wph}/h
+⚡ Wager/h  : ${wph}
+🚀 Bet/sec  : ${bps}
 ⏱ Uptime   : ${hours}h
-🔄 Phase    : ${bot.phase === 1 ? "DICE 97%" : (bot.phase === 2 ? "LIMBO" : "RECOVERY")}
+🔄 Phase    : ${bot.phase === 1 ? "DICE 99.98%" : (bot.phase === 2 ? "LIMBO" : "RECOVERY")}
 \`\`\`
 📞 @OrionLogic`;
 
@@ -199,7 +198,7 @@
         const targetWager = bot.startBalance * bot.targetWager;
         const profit = currentBalance - bot.startBalance;
         const date = new Date().toLocaleString('en-GB', { timeZone: 'UTC' });
-        const reason = bot.wagerTargetReached ? "WAGER TARGET REACHED" : "MANUAL STOP";
+        const reason = bot.wagerTargetReached ? "WAGER TARGET" : "MANUAL STOP";
 
         const text = `*Orion V3 - STOPPED*
 \`\`\`
@@ -222,115 +221,102 @@
         } catch (e) {}
     }
 
+    async function placeBet(amount, payout, game) {
+        const endpoint = game === "dice" ? `${window.location.origin}/_api/casino/dice/roll` : `${window.location.origin}/_api/casino/limbo/bet`;
+        const payload = { 
+            amount: parseFloat(amount), 
+            currency: bot.selectedCurrency, 
+            identifier: Math.random().toString(36).slice(2) + Date.now().toString(36) 
+        };
+        if (game === "dice") { 
+            payload.target = 100 - (100 / payout); 
+            payload.condition = "above"; 
+        } else { 
+            payload.multiplierTarget = parseFloat(payout); 
+        }
+        const res = await fetch(endpoint, { 
+            method: "POST", 
+            headers: { "Content-Type": "application/json", "x-access-token": bot.token }, 
+            body: JSON.stringify(payload) 
+        });
+        return res.json();
+    }
+
     async function runLoop() {
-        if (!bot.isRunning) return;
-        
-        const balance = getCurrentBalance();
-        const previousbet = bot.nextbet;
-        
-        bot.wager += previousbet;
-        
-        // WAGER TARGET CHECK - STOP APAPUN YANG TERJADI
-        if (bot.wager >= bot.wagtarget) {
-            bot.wagerTargetReached = true;
-            stopBot();
-            return;
-        }
-        
-        if (!bot.lastWin) {
-            bot.DD = bot.stats.profit;
-            if (bot.MaXDD > bot.DD) bot.MaXDD = bot.DD;
-        } else { bot.DD = 0; }
-        
-        bot.tick++;
-        if (bot.tick >= 20) { bot.tick = 0; }
-        
-        if ((Date.now() / 1000) - bot.stime >= bot.HRstop * 3600 && bot.lastWin) {
-            stopBot();
-            return;
-        }
-        
-        if (balance >= bot.target || balance <= bot.balst * 0.075) {
-            stopBot();
-            return;
-        }
-        
-        if (balance > bot.balhigh) bot.balhigh = balance;
-        const netLossPercent = ((bot.balhigh - balance) / bot.balhigh) * 100;
-        
-        if (bot.phase === 1) {
-            bot.playgame = "dice";
-            bot.chance = 97;
-            const payout = 100 / bot.chance;
-            bot.nextbet = balance / bot.wgrdiv;
-            bot.nextbet = Math.max(bot.minbet, bot.nextbet);
-            bot.floatingLossP1 = netLossPercent;
-            if (bot.floatingLossP1 >= 0.5) goToPhase2();
+        while (bot.isRunning) {
+            const balance = getCurrentBalance();
+            const previousbet = bot.nextbet;
             
-            try {
-                const res = await API.placeBet(bot.nextbet, payout, "dice");
-                if (res.errors) { setTimeout(runLoop, 100); return; }
-                const bet = res?.data?.diceRoll || res?.diceRoll;
-                if (bet && bot.isRunning) {
-                    bot.stats.bets++;
-                    bot.stats.wagered += bet.amount;
-                    const pft = bet.payout - bet.amount;
-                    bot.stats.profit += pft;
-                    bot.lastWin = pft > 0;
-                    if (pft > 0) bot.stats.wins++; else bot.stats.loss++;
-                    if (bot.stats.profit < bot.stats.maxDD) bot.stats.maxDD = bot.stats.profit;
-                }
-                updateUI();
-                if (bot.isRunning) setTimeout(runLoop, 0);
-            } catch (e) { if (bot.isRunning) setTimeout(runLoop, 300); }
-        }
-        else if (bot.phase === 2) {
-            bot.playgame = "limbo";
-            const payout = (Math.floor(Math.random() * 21) + 130) / 100;
-            bot.nextbet = balance * 0.0010 * bot.factor;
-            bot.nextbet = Math.max(bot.minbet, bot.nextbet);
-            const phase2NetLoss = ((bot.phase2StartBalance - balance) / bot.phase2StartBalance) * 100;
-            bot.lossPhase2 = phase2NetLoss;
-            if (bot.lossPhase2 >= 7.0) goToPhase3();
-            if (balance >= bot.startBalance) resetToPhase1();
+            bot.wager += previousbet;
             
-            try {
-                const res = await API.placeBet(bot.nextbet, payout, "limbo");
-                if (res.errors) { setTimeout(runLoop, 100); return; }
-                const bet = res?.data?.limboBet || res?.limboBet;
-                if (bet && bot.isRunning) {
-                    bot.stats.bets++;
-                    bot.stats.wagered += bet.amount;
-                    const pft = bet.payout - bet.amount;
-                    bot.stats.profit += pft;
-                    bot.lastWin = pft > 0;
-                    if (pft > 0) bot.stats.wins++; else bot.stats.loss++;
-                    if (bot.stats.profit < bot.stats.maxDD) bot.stats.maxDD = bot.stats.profit;
-                }
-                updateUI();
-                if (bot.isRunning) setTimeout(runLoop, 0);
-            } catch (e) { if (bot.isRunning) setTimeout(runLoop, 300); }
-        }
-        else if (bot.phase === 3) {
-            bot.playgame = "dice";
-            bot.chance = 60;
-            const payout = 100 / bot.chance;
-            if (bot.lastWin) {
-                bot.phase3LossStreak = 0;
-                bot.nextbet = balance * 0.0008 * bot.factor;
-            } else {
-                bot.phase3LossStreak++;
-                bot.nextbet = previousbet * 2.5;
+            if (bot.wager >= bot.wagtarget) {
+                bot.wagerTargetReached = true;
+                stopBot();
+                break;
             }
-            if (bot.nextbet > balance * 0.1) bot.nextbet = balance * 0.1;
-            if (bot.phase3LossStreak >= 12) { resetToPhase1(); if (bot.isRunning) setTimeout(runLoop, 0); return; }
-            bot.nextbet = Math.max(bot.minbet, bot.nextbet);
-            if (balance >= bot.startBalance) resetToPhase1();
+            
+            if ((Date.now() / 1000) - bot.stime >= bot.HRstop * 3600 && bot.lastWin) {
+                stopBot();
+                break;
+            }
+            
+            if (balance >= bot.target || balance <= bot.balst * 0.075) {
+                stopBot();
+                break;
+            }
+            
+            if (balance > bot.balhigh) bot.balhigh = balance;
+            const netLossPercent = ((bot.balhigh - balance) / bot.balhigh) * 100;
+            
+            let payout, betAmount;
+            
+            if (bot.phase === 1) {
+                bot.playgame = "dice";
+                bot.chance = 99.98;
+                payout = 100 / bot.chance;
+                betAmount = balance * 0.005;
+                if (betAmount < bot.minbet) betAmount = bot.minbet;
+                bot.nextbet = betAmount;
+                bot.floatingLossP1 = netLossPercent;
+                if (bot.floatingLossP1 >= 0.5) goToPhase2();
+            }
+            else if (bot.phase === 2) {
+                bot.playgame = "limbo";
+                payout = (Math.floor(Math.random() * 21) + 130) / 100;
+                betAmount = balance * 0.0010 * bot.factor;
+                if (betAmount < bot.minbet) betAmount = bot.minbet;
+                bot.nextbet = betAmount;
+                const phase2NetLoss = ((bot.phase2StartBalance - balance) / bot.phase2StartBalance) * 100;
+                bot.lossPhase2 = phase2NetLoss;
+                if (bot.lossPhase2 >= 7.0) goToPhase3();
+                if (balance >= bot.startBalance) resetToPhase1();
+            }
+            else {
+                bot.playgame = "dice";
+                bot.chance = 60;
+                payout = 100 / bot.chance;
+                if (bot.lastWin) {
+                    bot.phase3LossStreak = 0;
+                    betAmount = balance * 0.0008 * bot.factor;
+                } else {
+                    bot.phase3LossStreak++;
+                    betAmount = previousbet * 2.5;
+                }
+                if (betAmount > balance * 0.1) betAmount = balance * 0.1;
+                if (betAmount < bot.minbet) betAmount = bot.minbet;
+                bot.nextbet = betAmount;
+                if (bot.phase3LossStreak >= 12) { resetToPhase1(); continue; }
+                if (balance >= bot.startBalance) resetToPhase1();
+            }
             
             try {
-                const res = await API.placeBet(bot.nextbet, payout, "dice");
-                if (res.errors) { setTimeout(runLoop, 100); return; }
-                const bet = res?.data?.diceRoll || res?.diceRoll;
+                const res = await placeBet(betAmount, payout, bot.playgame);
+                if (res.errors) {
+                    if (bot.isRunning) continue;
+                    break;
+                }
+                
+                const bet = res?.data?.diceRoll || res?.diceRoll || res?.data?.limboBet || res?.limboBet;
                 if (bet && bot.isRunning) {
                     bot.stats.bets++;
                     bot.stats.wagered += bet.amount;
@@ -340,9 +326,13 @@
                     if (pft > 0) bot.stats.wins++; else bot.stats.loss++;
                     if (bot.stats.profit < bot.stats.maxDD) bot.stats.maxDD = bot.stats.profit;
                 }
+                
                 updateUI();
-                if (bot.isRunning) setTimeout(runLoop, 0);
-            } catch (e) { if (bot.isRunning) setTimeout(runLoop, 300); }
+                
+            } catch (e) {
+                if (bot.isRunning) continue;
+                break;
+            }
         }
     }
 
@@ -378,13 +368,6 @@
                     bot.stats.startBal = active ? parseFloat(active.available.amount) : 0;
                 }
             } catch (e) { bot.lastError = "Sync Failed"; }
-        },
-        async placeBet(amount, payout, game) {
-            const endpoint = game === "dice" ? `${window.location.origin}/_api/casino/dice/roll` : `${window.location.origin}/_api/casino/limbo/bet`;
-            const payload = { amount: parseFloat(amount), currency: bot.selectedCurrency, identifier: Math.random().toString(36).slice(2) + Date.now().toString(36) };
-            if (game === "dice") { payload.target = 100 - (100 / payout); payload.condition = "above"; }
-            else { payload.multiplierTarget = parseFloat(payout); }
-            return fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", "x-access-token": bot.token }, body: JSON.stringify(payload) }).then(r => r.json());
         }
     };
 
@@ -401,14 +384,12 @@
                 z-index: 999999;
                 background: rgba(8, 12, 20, 0.65);
                 backdrop-filter: blur(20px);
-                -webkit-backdrop-filter: blur(20px);
                 border-radius: 28px;
                 border: 1px solid rgba(255, 255, 255, 0.12);
-                box-shadow: 0 25px 45px rgba(0,0,0,0.4), 0 0 0 0.5px rgba(255,255,255,0.05) inset;
-                font-family: 'Inter', system-ui, -apple-system, sans-serif;
+                box-shadow: 0 25px 45px rgba(0,0,0,0.4);
+                font-family: system-ui, -apple-system, sans-serif;
                 color: #f1f5f9;
                 cursor: move;
-                transition: box-shadow 0.2s;
             }
             #ORION_UNIFIED_UI.dragging { opacity: 0.9; cursor: grabbing; }
             .ui-header {
@@ -421,29 +402,25 @@
                 border-radius: 28px 28px 0 0;
                 cursor: grab;
             }
-            .ui-header:active { cursor: grabbing; }
             .ui-title { display: flex; align-items: center; gap: 10px; }
-            .ui-dot { width: 10px; height: 10px; border-radius: 50%; background: #475569; box-shadow: 0 0 0 2px rgba(71,85,105,0.2); transition: all 0.2s; }
-            .ui-title-text { font-size: 14px; font-weight: 700; letter-spacing: 0.3px; background: linear-gradient(135deg, #38bdf8, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-            .ui-badge { font-size: 9px; font-weight: 700; padding: 4px 12px; border-radius: 30px; background: rgba(71,85,105,0.2); border: 1px solid rgba(71,85,105,0.3); transition: all 0.2s; }
+            .ui-dot { width: 10px; height: 10px; border-radius: 50%; background: #475569; transition: all 0.2s; }
+            .ui-title-text { font-size: 14px; font-weight: 700; background: linear-gradient(135deg, #38bdf8, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+            .ui-badge { font-size: 9px; font-weight: 700; padding: 4px 12px; border-radius: 30px; background: rgba(71,85,105,0.2); border: 1px solid rgba(71,85,105,0.3); }
             .ui-content { padding: 16px 18px; }
             .ui-row { display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 12px; }
             .ui-label { opacity: 0.6; font-weight: 500; }
-            .ui-value { font-weight: 700; font-family: 'SF Mono', 'Fira Code', monospace; }
-            .ui-profit { font-weight: 700; }
+            .ui-value { font-weight: 700; font-family: monospace; }
             .ui-bar-wrap { background: rgba(255,255,255,0.08); border-radius: 12px; height: 6px; margin: 14px 0; overflow: hidden; }
             .ui-bar-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #2dd4bf, #3b82f6); border-radius: 12px; transition: width 0.2s; }
             .ui-footer { display: flex; justify-content: space-between; font-size: 10px; opacity: 0.5; margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.06); }
             .ui-params { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.06); }
-            .ui-input { width: 100%; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1); color: #f1f5f9; padding: 9px 12px; border-radius: 14px; font-size: 11px; margin-bottom: 10px; box-sizing: border-box; font-family: monospace; cursor: text; backdrop-filter: blur(4px); }
-            .ui-input:focus { outline: none; border-color: #38bdf8; background: rgba(0,0,0,0.6); }
-            .ui-select { width: 100%; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1); color: #f1f5f9; padding: 9px 12px; border-radius: 14px; font-size: 11px; margin-bottom: 10px; cursor: pointer; backdrop-filter: blur(4px); }
+            .ui-input { width: 100%; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1); color: #f1f5f9; padding: 9px 12px; border-radius: 14px; font-size: 11px; margin-bottom: 10px; box-sizing: border-box; font-family: monospace; cursor: text; }
+            .ui-input:focus { outline: none; border-color: #38bdf8; }
+            .ui-select { width: 100%; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1); color: #f1f5f9; padding: 9px 12px; border-radius: 14px; font-size: 11px; margin-bottom: 10px; cursor: pointer; }
             .ui-buttons { display: flex; gap: 10px; margin-top: 14px; }
-            .ui-btn-start { flex: 1; padding: 10px; background: linear-gradient(135deg, #38bdf8, #818cf8); border: none; border-radius: 40px; font-weight: 700; font-size: 12px; color: #0a0e17; cursor: pointer; transition: all 0.15s; }
-            .ui-btn-start:hover { transform: scale(1.02); filter: brightness(1.05); }
-            .ui-btn-start:disabled { opacity: 0.5; transform: none; cursor: not-allowed; }
-            .ui-btn-stop { flex: 1; padding: 10px; background: rgba(239,68,68,0.2); border: 1px solid rgba(239,68,68,0.4); border-radius: 40px; font-weight: 700; font-size: 12px; color: #fca5a5; cursor: pointer; transition: all 0.15s; }
-            .ui-btn-stop:hover { background: rgba(239,68,68,0.3); }
+            .ui-btn-start { flex: 1; padding: 10px; background: linear-gradient(135deg, #38bdf8, #818cf8); border: none; border-radius: 40px; font-weight: 700; font-size: 12px; color: #0a0e17; cursor: pointer; }
+            .ui-btn-start:disabled { opacity: 0.5; cursor: not-allowed; }
+            .ui-btn-stop { flex: 1; padding: 10px; background: rgba(239,68,68,0.2); border: 1px solid rgba(239,68,68,0.4); border-radius: 40px; font-weight: 700; font-size: 12px; color: #fca5a5; cursor: pointer; }
             .ui-btn-stop:disabled { opacity: 0.5; cursor: not-allowed; }
         `;
         document.head.appendChild(style);
@@ -458,15 +435,14 @@
             <div class="ui-content">
                 <div class="ui-row"><span class="ui-label">ACCOUNT</span><span class="ui-value" id="UI_USER">---</span></div>
                 <div class="ui-row"><span class="ui-label">BALANCE</span><span class="ui-value" id="UI_BALANCE">0.000000</span></div>
-                <div class="ui-row"><span class="ui-label">PROFIT</span><span class="ui-value ui-profit" id="UI_PROFIT">0.000000</span></div>
+                <div class="ui-row"><span class="ui-label">PROFIT</span><span class="ui-value" id="UI_PROFIT">0.000000</span></div>
                 <div class="ui-row"><span class="ui-label">WAGER</span><span class="ui-value" id="UI_WAGER">0.00</span></div>
-                <div class="ui-row"><span class="ui-label">PHASE</span><span class="ui-value" id="UI_PHASE">DICE 97%</span></div>
+                <div class="ui-row"><span class="ui-label">PHASE</span><span class="ui-value" id="UI_PHASE">DICE 99.98%</span></div>
                 <div class="ui-row"><span class="ui-label">LOSS STREAK</span><span class="ui-value" id="UI_STREAK">-</span></div>
                 <div class="ui-bar-wrap"><div class="ui-bar-fill" id="UI_BAR"></div></div>
                 <div class="ui-footer"><span>🎯 WAGER TARGET</span><span id="UI_TARGET">0</span></div>
                 
                 <div class="ui-params">
-                    <input type="number" id="PARAM_WGRDIV" class="ui-input" placeholder="WGRDIV" value="50000">
                     <input type="number" id="PARAM_MINBET" class="ui-input" placeholder="MINBET" value="0.0015" step="0.0001">
                     <input type="number" id="PARAM_TARGET_WAGER" class="ui-input" placeholder="TARGET WAGER (x balance)" value="10" step="1">
                     <select id="UI_CURRENCY" class="ui-select"></select>
@@ -517,8 +493,6 @@
         document.getElementById("BTN_START").onclick = async () => {
             if (!bot.isRunning) {
                 await API.syncOnce();
-                const w = parseFloat(document.getElementById("PARAM_WGRDIV")?.value);
-                if (!isNaN(w) && w > 0) bot.wgrdiv = w;
                 const m = parseFloat(document.getElementById("PARAM_MINBET")?.value);
                 if (!isNaN(m) && m > 0) bot.minbet = m;
                 const t = parseFloat(document.getElementById("PARAM_TARGET_WAGER")?.value);
