@@ -42,10 +42,13 @@
         stime: 0,
         lastWin: false,
         lastUiMs: 0,
-        lastTgReport: 0
+        lastTgReport: 0,
+        wagerTargetReached: false
     };
 
     let reportInterval = null;
+    let isDragging = false;
+    let dragOffsetX = 0, dragOffsetY = 0;
 
     function getAuthToken() {
         return localStorage.getItem('apitoken') || sessionStorage.getItem('apitoken') ||
@@ -95,26 +98,35 @@
         if (bot.isRunning) {
             bot.isRunning = false;
             if (reportInterval) { clearInterval(reportInterval); reportInterval = null; }
-            updateHUDStatus(false);
+            updateUIStatus(false);
+            sendTelegramStop();
         }
     }
 
-    function updateHUDStatus(isRunning) {
-        const badge = document.getElementById("HUD_BADGE");
-        const dot = document.getElementById("HUD_DOT");
+    function updateUIStatus(isRunning) {
+        const badge = document.getElementById("UI_BADGE");
+        const dot = document.getElementById("UI_DOT");
+        const startBtn = document.getElementById("BTN_START");
+        const stopBtn = document.getElementById("BTN_STOP");
         if (!badge || !dot) return;
         if (isRunning) {
             badge.innerText = "RUNNING";
             badge.style.background = "rgba(45, 212, 191, 0.14)";
-            dot.style.background = "rgba(45, 212, 191, 0.95)";
+            badge.style.border = "1px solid rgba(45, 212, 191, 0.3)";
+            dot.style.background = "#2dd4bf";
+            if (startBtn) startBtn.disabled = true;
+            if (stopBtn) stopBtn.disabled = false;
         } else {
             badge.innerText = "STOPPED";
             badge.style.background = "rgba(239, 68, 68, 0.18)";
-            dot.style.background = "rgba(239, 68, 68, 0.95)";
+            badge.style.border = "1px solid rgba(239, 68, 68, 0.3)";
+            dot.style.background = "#ef4444";
+            if (startBtn) startBtn.disabled = false;
+            if (stopBtn) stopBtn.disabled = true;
         }
     }
 
-    function updateHUD() {
+    function updateUI() {
         const now = Date.now();
         if (now - bot.lastUiMs < 200) return;
         bot.lastUiMs = now;
@@ -124,19 +136,24 @@
         const targetWager = bot.startBalance * bot.targetWager;
         const wagerPct = targetWager > 0 ? (bot.stats.wagered / targetWager) * 100 : 0;
 
-        const balEl = document.getElementById("HUD_BALANCE");
-        const profitEl = document.getElementById("HUD_PROFIT");
-        const wagerEl = document.getElementById("HUD_WAGER");
-        const phaseEl = document.getElementById("HUD_PHASE");
-        const streakEl = document.getElementById("HUD_STREAK");
-        const barEl = document.getElementById("HUD_BAR");
+        const balEl = document.getElementById("UI_BALANCE");
+        const profitEl = document.getElementById("UI_PROFIT");
+        const wagerEl = document.getElementById("UI_WAGER");
+        const phaseEl = document.getElementById("UI_PHASE");
+        const streakEl = document.getElementById("UI_STREAK");
+        const barEl = document.getElementById("UI_BAR");
+        const targetEl = document.getElementById("UI_TARGET");
 
         if (balEl) balEl.innerText = curB.toFixed(6);
-        if (profitEl) profitEl.innerText = (sProfit >= 0 ? "+" : "") + sProfit.toFixed(6);
+        if (profitEl) {
+            profitEl.innerText = (sProfit >= 0 ? "+" : "") + sProfit.toFixed(6);
+            profitEl.style.color = sProfit >= 0 ? "#4ade80" : "#f87171";
+        }
         if (wagerEl) wagerEl.innerText = bot.stats.wagered.toFixed(2);
-        if (phaseEl) phaseEl.innerText = bot.phase === 1 ? "DICE 97%" : (bot.phase === 2 ? "LIMBO" : "RECOVERY");
+        if (phaseEl) phaseEl.innerText = bot.phase === 1 ? "DICE 97%" : (bot.phase === 2 ? "LIMBO 1.3-1.5x" : "RECOVERY 60%");
         if (streakEl) streakEl.innerText = bot.phase === 3 ? bot.phase3LossStreak : "-";
         if (barEl) barEl.style.width = Math.min(wagerPct, 100).toFixed(1) + "%";
+        if (targetEl) targetEl.innerText = targetWager.toFixed(0);
     }
 
     async function sendTelegram() {
@@ -149,18 +166,52 @@
         const wph = (bot.stats.wagered / (elapsed || 1) * 3600).toFixed(2);
         const currentBalance = getCurrentBalance();
         const targetWager = bot.startBalance * bot.targetWager;
+        const profit = currentBalance - bot.startBalance;
+        const date = new Date().toLocaleString('en-GB', { timeZone: 'UTC' });
 
-        const text = `🔷 *Orion Wager Service* 🔷
-*V3.*
-⏱ *time :* ${hours}h
-👤 *account :* ${maskUsername(bot.stakeUser)}
-💰 *balance :* ${currentBalance.toFixed(6)} ${bot.selectedCurrency.toUpperCase()}
-📊 *wager :* ${bot.stats.wagered.toFixed(2)}
-⚡ *wager/h :* ${wph}
-🎯 *target wager :* ${targetWager.toFixed(2)}
-📈 *profit :* ${(currentBalance - bot.startBalance).toFixed(6)}
+        const text = `*Orion V3*
+\`\`\`
+📅 Date     : ${date}
+👤 Account  : ${maskUsername(bot.stakeUser)}
+💰 Balance  : ${currentBalance.toFixed(6)} ${bot.selectedCurrency.toUpperCase()}
+📊 Wager    : ${bot.stats.wagered.toFixed(2)}
+🎯 Target   : ${targetWager.toFixed(2)}
+📈 Profit   : ${profit >= 0 ? "+" : ""}${profit.toFixed(6)}
+⚡ Speed    : ${wph}/h
+⏱ Uptime   : ${hours}h
+🔄 Phase    : ${bot.phase === 1 ? "DICE 97%" : (bot.phase === 2 ? "LIMBO" : "RECOVERY")}
+\`\`\`
+📞 @OrionLogic`;
 
-📞 *contact :* @OrionLogic`;
+        try {
+            await fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ chat_id: CONFIG.tgChatId, text: text, parse_mode: "Markdown", disable_web_page_preview: true })
+            });
+        } catch (e) {}
+    }
+
+    async function sendTelegramStop() {
+        const elapsed = bot.startTime ? (new Date() - bot.startTime) / 1000 : 0;
+        const hours = (elapsed / 3600).toFixed(1);
+        const currentBalance = getCurrentBalance();
+        const targetWager = bot.startBalance * bot.targetWager;
+        const profit = currentBalance - bot.startBalance;
+        const date = new Date().toLocaleString('en-GB', { timeZone: 'UTC' });
+        const reason = bot.wagerTargetReached ? "WAGER TARGET REACHED" : "MANUAL STOP";
+
+        const text = `*Orion V3 - STOPPED*
+\`\`\`
+📅 Date     : ${date}
+👤 Account  : ${maskUsername(bot.stakeUser)}
+🛑 Reason   : ${reason}
+💰 Balance  : ${currentBalance.toFixed(6)} ${bot.selectedCurrency.toUpperCase()}
+📊 Wager    : ${bot.stats.wagered.toFixed(2)} / ${targetWager.toFixed(2)}
+📈 Profit   : ${profit >= 0 ? "+" : ""}${profit.toFixed(6)}
+⏱ Uptime   : ${hours}h
+\`\`\`
+📞 @OrionLogic`;
 
         try {
             await fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`, {
@@ -179,7 +230,9 @@
         
         bot.wager += previousbet;
         
-        if (bot.wager >= bot.wagtarget && balance >= bot.balst - bot.balst/120) {
+        // WAGER TARGET CHECK - STOP APAPUN YANG TERJADI
+        if (bot.wager >= bot.wagtarget) {
+            bot.wagerTargetReached = true;
             stopBot();
             return;
         }
@@ -216,7 +269,7 @@
             
             try {
                 const res = await API.placeBet(bot.nextbet, payout, "dice");
-                if (res.errors) { setTimeout(runLoop, 200); return; }
+                if (res.errors) { setTimeout(runLoop, 100); return; }
                 const bet = res?.data?.diceRoll || res?.diceRoll;
                 if (bet && bot.isRunning) {
                     bot.stats.bets++;
@@ -227,9 +280,9 @@
                     if (pft > 0) bot.stats.wins++; else bot.stats.loss++;
                     if (bot.stats.profit < bot.stats.maxDD) bot.stats.maxDD = bot.stats.profit;
                 }
-                updateHUD();
+                updateUI();
                 if (bot.isRunning) setTimeout(runLoop, 0);
-            } catch (e) { if (bot.isRunning) setTimeout(runLoop, 500); }
+            } catch (e) { if (bot.isRunning) setTimeout(runLoop, 300); }
         }
         else if (bot.phase === 2) {
             bot.playgame = "limbo";
@@ -243,7 +296,7 @@
             
             try {
                 const res = await API.placeBet(bot.nextbet, payout, "limbo");
-                if (res.errors) { setTimeout(runLoop, 200); return; }
+                if (res.errors) { setTimeout(runLoop, 100); return; }
                 const bet = res?.data?.limboBet || res?.limboBet;
                 if (bet && bot.isRunning) {
                     bot.stats.bets++;
@@ -254,9 +307,9 @@
                     if (pft > 0) bot.stats.wins++; else bot.stats.loss++;
                     if (bot.stats.profit < bot.stats.maxDD) bot.stats.maxDD = bot.stats.profit;
                 }
-                updateHUD();
+                updateUI();
                 if (bot.isRunning) setTimeout(runLoop, 0);
-            } catch (e) { if (bot.isRunning) setTimeout(runLoop, 500); }
+            } catch (e) { if (bot.isRunning) setTimeout(runLoop, 300); }
         }
         else if (bot.phase === 3) {
             bot.playgame = "dice";
@@ -276,7 +329,7 @@
             
             try {
                 const res = await API.placeBet(bot.nextbet, payout, "dice");
-                if (res.errors) { setTimeout(runLoop, 200); return; }
+                if (res.errors) { setTimeout(runLoop, 100); return; }
                 const bet = res?.data?.diceRoll || res?.diceRoll;
                 if (bet && bot.isRunning) {
                     bot.stats.bets++;
@@ -287,9 +340,9 @@
                     if (pft > 0) bot.stats.wins++; else bot.stats.loss++;
                     if (bot.stats.profit < bot.stats.maxDD) bot.stats.maxDD = bot.stats.profit;
                 }
-                updateHUD();
+                updateUI();
                 if (bot.isRunning) setTimeout(runLoop, 0);
-            } catch (e) { if (bot.isRunning) setTimeout(runLoop, 500); }
+            } catch (e) { if (bot.isRunning) setTimeout(runLoop, 300); }
         }
     }
 
@@ -306,11 +359,11 @@
                 const json = await res.json();
                 if (json?.data?.user) {
                     bot.stakeUser = json.data.user.name;
-                    const userEl = document.getElementById("HUD_USER");
+                    const userEl = document.getElementById("UI_USER");
                     if (userEl) userEl.innerText = maskUsername(bot.stakeUser);
                     
                     const bals = json.data.user.balances || [];
-                    const sel = document.getElementById("HUD_CURRENCY");
+                    const sel = document.getElementById("UI_CURRENCY");
                     if (sel && sel.options.length === 0) {
                         bals.forEach(b => {
                             const opt = document.createElement("option");
@@ -335,43 +388,131 @@
         }
     };
 
-    function createGlassHUD() {
-        if (document.getElementById("ORION_GLASS_HUD")) return;
+    function createUnifiedUI() {
+        if (document.getElementById("ORION_UNIFIED_UI")) return;
         
         const style = document.createElement("style");
-        style.innerHTML = `#ORION_GLASS_HUD{position:fixed;right:14px;bottom:20px;z-index:999999;width:290px;border-radius:20px;padding:14px;background:rgba(18,18,22,0.75);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.12);box-shadow:0 10px 35px rgba(0,0,0,0.4);font-family:'Inter',system-ui,sans-serif;color:#EDEDED;pointer-events:none}.hud-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}.hud-title{display:flex;align-items:center;gap:8px}.hud-dot{width:10px;height:10px;border-radius:50%;background:#2dd4bf;box-shadow:0 0 0 3px rgba(45,212,191,0.2)}.hud-title-text{font-size:13px;font-weight:700;letter-spacing:0.3px}.hud-badge{font-size:9px;font-weight:700;padding:4px 10px;border-radius:20px;background:rgba(45,212,191,0.15);border:1px solid rgba(45,212,191,0.3)}.hud-row{display:flex;justify-content:space-between;margin-bottom:8px;font-size:11px}.hud-label{opacity:0.7}.hud-value{font-weight:700;font-family:monospace}.hud-bar-wrap{background:rgba(255,255,255,0.1);border-radius:10px;height:6px;margin:10px 0;overflow:hidden}.hud-bar-fill{height:100%;width:0%;background:linear-gradient(90deg,#2dd4bf,#3b82f6);border-radius:10px}.hud-footer{display:flex;justify-content:space-between;font-size:9px;opacity:0.6;margin-top:8px}.hud-profit.positive{color:#4ade80}.hud-profit.negative{color:#f87171}`;
+        style.innerHTML = `
+            #ORION_UNIFIED_UI {
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                width: 310px;
+                z-index: 999999;
+                background: rgba(8, 12, 20, 0.65);
+                backdrop-filter: blur(20px);
+                -webkit-backdrop-filter: blur(20px);
+                border-radius: 28px;
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                box-shadow: 0 25px 45px rgba(0,0,0,0.4), 0 0 0 0.5px rgba(255,255,255,0.05) inset;
+                font-family: 'Inter', system-ui, -apple-system, sans-serif;
+                color: #f1f5f9;
+                cursor: move;
+                transition: box-shadow 0.2s;
+            }
+            #ORION_UNIFIED_UI.dragging { opacity: 0.9; cursor: grabbing; }
+            .ui-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 14px 18px;
+                background: rgba(255, 255, 255, 0.03);
+                border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 28px 28px 0 0;
+                cursor: grab;
+            }
+            .ui-header:active { cursor: grabbing; }
+            .ui-title { display: flex; align-items: center; gap: 10px; }
+            .ui-dot { width: 10px; height: 10px; border-radius: 50%; background: #475569; box-shadow: 0 0 0 2px rgba(71,85,105,0.2); transition: all 0.2s; }
+            .ui-title-text { font-size: 14px; font-weight: 700; letter-spacing: 0.3px; background: linear-gradient(135deg, #38bdf8, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+            .ui-badge { font-size: 9px; font-weight: 700; padding: 4px 12px; border-radius: 30px; background: rgba(71,85,105,0.2); border: 1px solid rgba(71,85,105,0.3); transition: all 0.2s; }
+            .ui-content { padding: 16px 18px; }
+            .ui-row { display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 12px; }
+            .ui-label { opacity: 0.6; font-weight: 500; }
+            .ui-value { font-weight: 700; font-family: 'SF Mono', 'Fira Code', monospace; }
+            .ui-profit { font-weight: 700; }
+            .ui-bar-wrap { background: rgba(255,255,255,0.08); border-radius: 12px; height: 6px; margin: 14px 0; overflow: hidden; }
+            .ui-bar-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #2dd4bf, #3b82f6); border-radius: 12px; transition: width 0.2s; }
+            .ui-footer { display: flex; justify-content: space-between; font-size: 10px; opacity: 0.5; margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.06); }
+            .ui-params { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.06); }
+            .ui-input { width: 100%; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1); color: #f1f5f9; padding: 9px 12px; border-radius: 14px; font-size: 11px; margin-bottom: 10px; box-sizing: border-box; font-family: monospace; cursor: text; backdrop-filter: blur(4px); }
+            .ui-input:focus { outline: none; border-color: #38bdf8; background: rgba(0,0,0,0.6); }
+            .ui-select { width: 100%; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1); color: #f1f5f9; padding: 9px 12px; border-radius: 14px; font-size: 11px; margin-bottom: 10px; cursor: pointer; backdrop-filter: blur(4px); }
+            .ui-buttons { display: flex; gap: 10px; margin-top: 14px; }
+            .ui-btn-start { flex: 1; padding: 10px; background: linear-gradient(135deg, #38bdf8, #818cf8); border: none; border-radius: 40px; font-weight: 700; font-size: 12px; color: #0a0e17; cursor: pointer; transition: all 0.15s; }
+            .ui-btn-start:hover { transform: scale(1.02); filter: brightness(1.05); }
+            .ui-btn-start:disabled { opacity: 0.5; transform: none; cursor: not-allowed; }
+            .ui-btn-stop { flex: 1; padding: 10px; background: rgba(239,68,68,0.2); border: 1px solid rgba(239,68,68,0.4); border-radius: 40px; font-weight: 700; font-size: 12px; color: #fca5a5; cursor: pointer; transition: all 0.15s; }
+            .ui-btn-stop:hover { background: rgba(239,68,68,0.3); }
+            .ui-btn-stop:disabled { opacity: 0.5; cursor: not-allowed; }
+        `;
         document.head.appendChild(style);
         
-        const hud = document.createElement("div");
-        hud.id = "ORION_GLASS_HUD";
-        hud.innerHTML = `
-            <div class="hud-header">
-                <div class="hud-title"><div class="hud-dot" id="HUD_DOT"></div><div class="hud-title-text">⚡ ORION WAGER V3</div></div>
-                <div class="hud-badge" id="HUD_BADGE">IDLE</div>
+        const ui = document.createElement("div");
+        ui.id = "ORION_UNIFIED_UI";
+        ui.innerHTML = `
+            <div class="ui-header" id="UI_DRAG_HANDLE">
+                <div class="ui-title"><div class="ui-dot" id="UI_DOT"></div><div class="ui-title-text">⚡ ORION WAGER V3</div></div>
+                <div class="ui-badge" id="UI_BADGE">IDLE</div>
             </div>
-            <div class="hud-row"><span class="hud-label">ACCOUNT</span><span class="hud-value" id="HUD_USER">---</span></div>
-            <div class="hud-row"><span class="hud-label">BALANCE</span><span class="hud-value" id="HUD_BALANCE">0.000000</span></div>
-            <div class="hud-row"><span class="hud-label">PROFIT</span><span class="hud-value hud-profit" id="HUD_PROFIT">0.000000</span></div>
-            <div class="hud-row"><span class="hud-label">WAGER</span><span class="hud-value" id="HUD_WAGER">0.00</span></div>
-            <div class="hud-row"><span class="hud-label">PHASE</span><span class="hud-value" id="HUD_PHASE">DICE 97%</span></div>
-            <div class="hud-row"><span class="hud-label">LOSS STREAK</span><span class="hud-value" id="HUD_STREAK">-</span></div>
-            <div class="hud-bar-wrap"><div class="hud-bar-fill" id="HUD_BAR"></div></div>
-            <div class="hud-footer"><span>WAGER TARGET</span><span id="HUD_TARGET">0</span></div>
+            <div class="ui-content">
+                <div class="ui-row"><span class="ui-label">ACCOUNT</span><span class="ui-value" id="UI_USER">---</span></div>
+                <div class="ui-row"><span class="ui-label">BALANCE</span><span class="ui-value" id="UI_BALANCE">0.000000</span></div>
+                <div class="ui-row"><span class="ui-label">PROFIT</span><span class="ui-value ui-profit" id="UI_PROFIT">0.000000</span></div>
+                <div class="ui-row"><span class="ui-label">WAGER</span><span class="ui-value" id="UI_WAGER">0.00</span></div>
+                <div class="ui-row"><span class="ui-label">PHASE</span><span class="ui-value" id="UI_PHASE">DICE 97%</span></div>
+                <div class="ui-row"><span class="ui-label">LOSS STREAK</span><span class="ui-value" id="UI_STREAK">-</span></div>
+                <div class="ui-bar-wrap"><div class="ui-bar-fill" id="UI_BAR"></div></div>
+                <div class="ui-footer"><span>🎯 WAGER TARGET</span><span id="UI_TARGET">0</span></div>
+                
+                <div class="ui-params">
+                    <input type="number" id="PARAM_WGRDIV" class="ui-input" placeholder="WGRDIV" value="50000">
+                    <input type="number" id="PARAM_MINBET" class="ui-input" placeholder="MINBET" value="0.0015" step="0.0001">
+                    <input type="number" id="PARAM_TARGET_WAGER" class="ui-input" placeholder="TARGET WAGER (x balance)" value="10" step="1">
+                    <select id="UI_CURRENCY" class="ui-select"></select>
+                </div>
+                
+                <div class="ui-buttons">
+                    <button class="ui-btn-start" id="BTN_START">▶ START</button>
+                    <button class="ui-btn-stop" id="BTN_STOP" disabled>⏹ STOP</button>
+                </div>
+            </div>
         `;
-        document.body.appendChild(hud);
+        document.body.appendChild(ui);
         
-        const control = document.createElement("div");
-        control.id = "ORION_CONTROL";
-        control.style.cssText = "position:fixed;right:14px;bottom:250px;z-index:999998;width:290px;background:rgba(18,18,22,0.85);backdrop-filter:blur(12px);border-radius:20px;padding:12px;border:1px solid rgba(255,255,255,0.1);font-family:system-ui;font-size:11px;pointer-events:auto";
-        control.innerHTML = `
-            <div style="margin-bottom:10px;font-size:10px;font-weight:600;color:#38bdf8">⚙️ PARAMETERS</div>
-            <div style="margin-bottom:8px"><input type="number" id="PARAM_WGRDIV" placeholder="WGRDIV" value="50000" style="width:100%;background:#030712;border:1px solid #1e293b;color:#fff;padding:6px 8px;border-radius:10px;font-size:10px"></div>
-            <div style="margin-bottom:8px"><input type="number" id="PARAM_MINBET" placeholder="MINBET" value="0.0015" step="0.0001" style="width:100%;background:#030712;border:1px solid #1e293b;color:#fff;padding:6px 8px;border-radius:10px;font-size:10px"></div>
-            <div style="margin-bottom:8px"><input type="number" id="PARAM_TARGET_WAGER" placeholder="TARGET WAGER (x)" value="10" style="width:100%;background:#030712;border:1px solid #1e293b;color:#fff;padding:6px 8px;border-radius:10px;font-size:10px"></div>
-            <div style="margin-bottom:12px"><select id="HUD_CURRENCY" style="width:100%;background:#030712;border:1px solid #1e293b;color:#fff;padding:6px 8px;border-radius:10px;font-size:10px"></select></div>
-            <div style="display:flex;gap:8px"><button id="BTN_START" style="flex:1;padding:8px;background:linear-gradient(135deg,#38bdf8,#818cf8);border:none;border-radius:30px;font-weight:700;font-size:11px;color:#000;cursor:pointer">START</button><button id="BTN_STOP" style="flex:1;padding:8px;background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.3);border-radius:30px;font-weight:700;font-size:11px;color:#fca5a5;cursor:pointer">STOP</button></div>
-        `;
-        document.body.appendChild(control);
+        const dragHandle = document.getElementById("UI_DRAG_HANDLE");
+        const dragContainer = document.getElementById("ORION_UNIFIED_UI");
+        
+        dragHandle.addEventListener("mousedown", (e) => {
+            if (e.target.closest(".ui-input") || e.target.closest(".ui-select") || e.target.closest("button")) return;
+            isDragging = true;
+            const rect = dragContainer.getBoundingClientRect();
+            dragOffsetX = e.clientX - rect.left;
+            dragOffsetY = e.clientY - rect.top;
+            dragContainer.style.cursor = "grabbing";
+            dragContainer.classList.add("dragging");
+            e.preventDefault();
+        });
+        
+        document.addEventListener("mousemove", (e) => {
+            if (!isDragging) return;
+            let newLeft = e.clientX - dragOffsetX;
+            let newTop = e.clientY - dragOffsetY;
+            newLeft = Math.max(5, Math.min(window.innerWidth - dragContainer.offsetWidth - 5, newLeft));
+            newTop = Math.max(5, Math.min(window.innerHeight - dragContainer.offsetHeight - 5, newTop));
+            dragContainer.style.left = newLeft + "px";
+            dragContainer.style.top = newTop + "px";
+            dragContainer.style.right = "auto";
+            dragContainer.style.bottom = "auto";
+        });
+        
+        document.addEventListener("mouseup", () => {
+            if (isDragging) {
+                isDragging = false;
+                dragContainer.style.cursor = "";
+                dragContainer.classList.remove("dragging");
+            }
+        });
         
         document.getElementById("BTN_START").onclick = async () => {
             if (!bot.isRunning) {
@@ -382,7 +523,7 @@
                 if (!isNaN(m) && m > 0) bot.minbet = m;
                 const t = parseFloat(document.getElementById("PARAM_TARGET_WAGER")?.value);
                 if (!isNaN(t) && t > 0) bot.targetWager = t;
-                const cs = document.getElementById("HUD_CURRENCY");
+                const cs = document.getElementById("UI_CURRENCY");
                 if (cs && cs.value) bot.selectedCurrency = cs.value;
                 
                 bot.startBalance = bot.stats.startBal;
@@ -393,6 +534,7 @@
                 bot.factor = bot.stats.startBal / 100;
                 bot.stime = Date.now() / 1000;
                 bot.wager = 0;
+                bot.wagerTargetReached = false;
                 bot.stats.bets = 0;
                 bot.stats.profit = 0;
                 bot.stats.wagered = 0;
@@ -402,8 +544,8 @@
                 bot.isRunning = true;
                 bot.startTime = new Date();
                 resetToPhase1();
-                updateHUDStatus(true);
-                const targetEl = document.getElementById("HUD_TARGET");
+                updateUIStatus(true);
+                const targetEl = document.getElementById("UI_TARGET");
                 if (targetEl) targetEl.innerText = bot.wagtarget.toFixed(0);
                 sendTelegram();
                 if (reportInterval) clearInterval(reportInterval);
@@ -411,22 +553,18 @@
                 runLoop();
             }
         };
+        
         document.getElementById("BTN_STOP").onclick = () => { if (bot.isRunning) stopBot(); };
     }
 
     setInterval(() => {
         if (bot.isRunning) {
-            updateHUD();
-            const targetEl = document.getElementById("HUD_TARGET");
+            updateUI();
+            const targetEl = document.getElementById("UI_TARGET");
             if (targetEl && bot.wagtarget) targetEl.innerText = bot.wagtarget.toFixed(0);
-            const profitEl = document.getElementById("HUD_PROFIT");
-            if (profitEl) {
-                const profit = getCurrentBalance() - bot.startBalance;
-                profitEl.className = "hud-value hud-profit " + (profit >= 0 ? "positive" : "negative");
-            }
         }
     }, 300);
 
-    createGlassHUD();
+    createUnifiedUI();
     API.syncOnce();
 })();
