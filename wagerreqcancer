@@ -21,24 +21,25 @@
         minbet: 0.0015,
         targetWager: 10,
         
-        // Phase 1 Settings (EDITABLE)
+        // Phase 1 Settings
         phase1Chance: 98,
         phase1BasebetDivider: 50000,
         
-        // Phase 2 Settings (EDITABLE - Limbo dengan Martingale)
+        // Phase 2 Settings
         phase2BasebetMultiplier: 0.0010,
         phase2PayoutMin: 1.30,
         phase2PayoutMax: 1.50,
         phase2MartingaleMultiplier: 2.0,
         phase2MaxBetPct: 0.1,
         phase2LossTriggerPct: 15.0,
+        phase2RecoveryPct: 50.0,     // Jika sudah recovery 50% dari loss → kembali ke Phase 1
         
         // Internal vars
         startBalance: 0,
         balhigh: 0,
         target: 0,
         phase: 1,
-        phase2LossPct: 0,
+        phase2MaxLoss: 0,              // Mencatat loss maksimum di Phase 2
         phase2StartBalance: 0,
         phase2LossStreak: 0,
         playgame: "dice",
@@ -56,7 +57,8 @@
         lastWin: false,
         
         lastUiMs: 0,
-        isSettingsOpen: false
+        isSettingsOpen: false,
+        isMinimized: false
     };
 
     let reportInterval = null;
@@ -85,21 +87,19 @@
         return ((bot.startBalance - currentBalance) / bot.startBalance) * 100;
     }
 
-    function getHighestBalanceLossPct() {
-        const currentBalance = getCurrentBalance();
-        if (bot.balhigh === 0) return 0;
-        return ((bot.balhigh - currentBalance) / bot.balhigh) * 100;
-    }
-
     function resetToPhase1() {
+        const oldPhase = bot.phase;
         bot.phase = 1;
         bot.phase2LossPct = 0;
         bot.phase2LossStreak = 0;
+        bot.phase2MaxLoss = 0;
         bot.chance = bot.phase1Chance;
         bot.playgame = "dice";
         bot.nextbet = getCurrentBalance() / bot.phase1BasebetDivider;
         bot.nextbet = Math.max(bot.minbet, bot.nextbet);
-        updateConsoleLog("🔄 Reset to Phase 1 - Dice " + bot.phase1Chance + "% | Basebet: " + bot.nextbet.toFixed(8));
+        if (oldPhase !== 1) {
+            updateConsoleLog("🔄 RESET: Phase 2 → Phase 1 (Dice " + bot.phase1Chance + "%)");
+        }
     }
 
     function goToPhase2() {
@@ -107,10 +107,11 @@
         bot.phase2LossPct = 0;
         bot.phase2LossStreak = 0;
         bot.phase2StartBalance = getCurrentBalance();
+        bot.phase2MaxLoss = 0;
         bot.playgame = "limbo";
         bot.nextbet = getCurrentBalance() * bot.phase2BasebetMultiplier;
         bot.nextbet = Math.max(bot.minbet, bot.nextbet);
-        updateConsoleLog("⚠️ LOSS in Phase 1 → PHASE 2 (Limbo Martingale) | Basebet: " + bot.nextbet.toFixed(8));
+        updateConsoleLog("⚠️ TRIGGER: Phase 1 LOSS → Phase 2 (Limbo Martingale)");
     }
 
     function stopBot() {
@@ -121,7 +122,7 @@
                 reportInterval = null;
             }
             updateConsoleLog("🛑 SYSTEM HALTED");
-            sendTelegramReport("🛑 *SYSTEM HALTED*");
+            sendTelegramReport("🛑 SYSTEM HALTED");
             updateHUDStatus(false);
         }
     }
@@ -130,13 +131,16 @@
         const logEl = document.getElementById("orion-console-log");
         if (logEl) {
             const time = new Date().toLocaleTimeString();
-            logEl.innerHTML = `[${time}] ${msg}<br>` + logEl.innerHTML;
-            if (logEl.innerHTML.length > 3000) logEl.innerHTML = logEl.innerHTML.substring(0, 2000);
+            // Hanya tampilkan error dan phase changes
+            if (msg.includes("❌") || msg.includes("✅") || msg.includes("🔄") || msg.includes("⚠️") || msg.includes("🛑") || msg.includes("📉") || msg.includes("🏆")) {
+                logEl.innerHTML = `[${time}] ${msg}<br>` + logEl.innerHTML;
+                if (logEl.innerHTML.length > 2000) logEl.innerHTML = logEl.innerHTML.substring(0, 1500);
+            }
         }
         bot.lastError = msg;
     }
 
-    // ========== TELEGRAM REPORT ==========
+    // ========== TELEGRAM REPORT RINGKAS (CODE BLOCK) ==========
     async function sendTelegramReport(customHeader = null) {
         if (!bot.isRunning && !customHeader) return;
         
@@ -151,72 +155,35 @@
         const timeStr = `${hours}h ${minutes}m ${seconds}s`;
         
         const speed = elapsed > 0 ? (bot.stats.bets / elapsed).toFixed(2) : "0";
-        const profitColor = bot.stats.profit >= 0 ? '✅' : '❌';
+        const profitColor = bot.stats.profit >= 0 ? '+' : '';
         const currentBalance = getCurrentBalance().toFixed(8);
         const totalLossPct = getTotalLossPercentage().toFixed(2);
         const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100).toFixed(1) : "0";
         
-        let phaseStatus = "";
-        if (bot.phase === 1) {
-            phaseStatus = `🎲 PHASE 1 - DICE ${bot.phase1Chance}%`;
-        } else {
-            const lossPct = bot.phase2LossPct.toFixed(2);
-            phaseStatus = `⚡ PHASE 2 - LIMBO (Loss: ${lossPct}% / ${bot.phase2LossTriggerPct}%) | ML: ${bot.phase2MartingaleMultiplier}x`;
-        }
+        let phaseStatus = bot.phase === 1 ? `PHASE 1 (DICE ${bot.phase1Chance}%)` : `PHASE 2 (LIMBO Loss: ${bot.phase2LossPct.toFixed(2)}%)`;
         
-        const header = customHeader || "📊 *PERIODIC REPORT*";
+        const header = customHeader || "📊 PERIODIC REPORT (5 MIN)";
         
         const report = `
 ${header}
-┌─────────────────────────────┐
-│  🤖 ORION CUSTOM WAGER      │
-└─────────────────────────────┘
-
-👤 *USER:* \`${bot.stakeUser}\`
-🪙 *CURRENCY:* \`${bot.selectedCurrency.toUpperCase()}\`
+━━━━━━━━━━━━━━━━━━━━━━
+🤖 ORION CUSTOM WAGER
+👤 ${bot.stakeUser} | 🪙 ${bot.selectedCurrency.toUpperCase()}
 ${phaseStatus}
-
-┌─────────────────────────────┐
-│  📈 STATISTICS              │
-└─────────────────────────────┘
-
-💰 *BALANCE:* \`${currentBalance}\`
-📊 *PROFIT:* ${profitColor} \`${bot.stats.profit.toFixed(8)}\`
-📉 *LOSS %:* \`${totalLossPct}%\`
-💸 *WAGERED:* \`${bot.stats.wagered.toFixed(8)}\`
-💵 *WAGERED USD:* \`$${bot.stats.wageredUSD.toFixed(2)}\`
-
-┌─────────────────────────────┐
-│  🎰 BETTING STATS           │
-└─────────────────────────────┘
-
-🎲 *BETS:* \`${bot.stats.bets}\`
-🏆 *WINS:* \`${bot.stats.wins}\`
-💀 *LOSS:* \`${bot.stats.loss}\`
-📈 *WIN RATE:* \`${winRate}%\`
-⚡ *SPEED:* \`${speed} bets/s\`
-
-┌─────────────────────────────┐
-│  ⏱ RUNTIME                 │
-└─────────────────────────────┘
-
-⏰ *UPTIME:* \`${timeStr}\`
-🎯 *TARGET WAGER:* \`${bot.targetWager}x\`
-📊 *WAGER PROGRESS:* \`${((bot.stats.wagered / (bot.startBalance * bot.targetWager)) * 100).toFixed(1)}%\`
-
-┌─────────────────────────────┐
-│  ⚙️ CURRENT SETTINGS        │
-└─────────────────────────────┘
-
-📌 *MINBET:* \`${bot.minbet}\`
-📌 *P1 CHANCE:* \`${bot.phase1Chance}%\`
-📌 *P1 DIVIDER:* \`${bot.phase1BasebetDivider}\`
-📌 *P2 BASE MULT:* \`${bot.phase2BasebetMultiplier}\`
-📌 *P2 PAYOUT:* \`${bot.phase2PayoutMin}-${bot.phase2PayoutMax}x\`
-📌 *P2 MARTINGALE:* \`${bot.phase2MartingaleMultiplier}x\`
-📌 *P2 LOSS TRIGGER:* \`${bot.phase2LossTriggerPct}%\`
-
-🆔 *Orion Custom Wager v3*
+━━━━━━━━━━━━━━━━━━━━━━
+💰 Balance: ${currentBalance}
+📈 Profit: ${profitColor}${bot.stats.profit.toFixed(8)}
+📉 Loss%: ${totalLossPct}%
+💸 Wagered: ${bot.stats.wagered.toFixed(8)} ($${bot.stats.wageredUSD.toFixed(2)})
+━━━━━━━━━━━━━━━━━━━━━━
+🎲 Bets: ${bot.stats.bets} | 🏆 Wins: ${bot.stats.wins} | 💀 Loss: ${bot.stats.loss}
+📈 Win Rate: ${winRate}% | ⚡ Speed: ${speed} bets/s
+⏱ Uptime: ${timeStr}
+━━━━━━━━━━━━━━━━━━━━━━
+⚙️ P1: ${bot.phase1Chance}% / Div ${bot.phase1BasebetDivider}
+⚙️ P2: ML ${bot.phase2MartingaleMultiplier}x / Lose ${bot.phase2LossTriggerPct}%
+━━━━━━━━━━━━━━━━━━━━━━
+🆔 Orion Custom Wager v3
         `;
         
         try {
@@ -225,7 +192,7 @@ ${phaseStatus}
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ 
                     chat_id: CONFIG.tgChatId, 
-                    text: report, 
+                    text: "```\n" + report + "\n```", 
                     parse_mode: "Markdown",
                     disable_web_page_preview: true
                 })
@@ -233,17 +200,15 @@ ${phaseStatus}
             const result = await response.json();
             if (!result.ok) {
                 console.error("Telegram API Error:", result);
-                updateConsoleLog("⚠️ Telegram Error: " + (result.description || "Unknown"));
             } else {
                 updateConsoleLog("📨 Telegram report sent");
             }
         } catch (e) {
             console.error("Telegram send failed:", e);
-            updateConsoleLog("⚠️ Telegram send failed: " + e.message);
         }
     }
 
-    // ========== DRAGGABLE GLASS HUD ==========
+    // ========== DRAGGABLE & MINIMIZABLE GLASS HUD ==========
     function createGlassHUD() {
         if (document.getElementById("ORION_GLASS_HUD")) return;
 
@@ -302,13 +267,31 @@ ${phaseStatus}
             .orion-section-title.phase1 { color: #4ADE80; }
             .orion-section-title.phase2 { color: #FBBF24; }
             
-            /* Draggable handle */
             .orion-drag-handle {
                 cursor: move;
                 user-select: none;
             }
             .orion-drag-handle:active {
                 cursor: grabbing;
+            }
+            .orion-minimize-btn {
+                cursor: pointer;
+                background: rgba(56,189,248,0.2);
+                border: 1px solid rgba(56,189,248,0.3);
+                border-radius: 8px;
+                padding: 4px 8px;
+                font-size: 10px;
+                color: #38BDF8;
+                margin-right: 6px;
+            }
+            .orion-minimize-btn:hover {
+                background: rgba(56,189,248,0.4);
+            }
+            .orion-content-wrapper {
+                transition: opacity 0.2s ease;
+            }
+            .orion-content-wrapper.minimized {
+                display: none;
             }
         `;
         document.head.appendChild(style);
@@ -334,142 +317,157 @@ ${phaseStatus}
         `;
 
         hud.innerHTML = `
-            <div style="padding: 14px; flex-shrink: 0;">
-                <!-- DRAGGABLE HEADER -->
-                <div class="orion-drag-handle" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <div style="padding: 12px 14px; flex-shrink: 0;">
+                <div class="orion-drag-handle" style="display: flex; justify-content: space-between; align-items: center;">
                     <div style="display: flex; align-items: center; gap: 8px;">
                         <div id="orion-status-dot" style="width: 8px; height: 8px; border-radius: 50%; background: #EF4444;"></div>
-                        <span style="font-weight: 800; font-size: 14px; background: linear-gradient(135deg, #38BDF8, #A78BFA); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">⚡ ORION CUSTOM WAGER</span>
+                        <span style="font-weight: 800; font-size: 13px; background: linear-gradient(135deg, #38BDF8, #A78BFA); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">⚡ ORION CW</span>
                     </div>
-                    <button id="orion-settings-toggle" style="background: rgba(56,189,248,0.2); border: 1px solid rgba(56,189,248,0.3); border-radius: 10px; padding: 5px 10px; font-size: 11px; cursor: pointer; color: #38BDF8;">⚙️ Edit</button>
-                </div>
-                
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px;">
-                    <div style="background: rgba(0,0,0,0.4); border-radius: 12px; padding: 8px 10px;">
-                        <div style="font-size: 9px; color: #94A3B8;">Balance</div>
-                        <div id="orion-balance" style="font-weight: 700; font-size: 13px;">0.0000</div>
-                    </div>
-                    <div style="background: rgba(0,0,0,0.4); border-radius: 12px; padding: 8px 10px;">
-                        <div style="font-size: 9px; color: #94A3B8;">Profit</div>
-                        <div id="orion-profit" style="font-weight: 700; font-size: 13px;">0.0000</div>
-                    </div>
-                    <div style="background: rgba(0,0,0,0.4); border-radius: 12px; padding: 8px 10px;">
-                        <div style="font-size: 9px; color: #94A3B8;">Wagered</div>
-                        <div id="orion-wagered" style="font-weight: 700; font-size: 11px;">0.0000</div>
-                    </div>
-                    <div style="background: rgba(0,0,0,0.4); border-radius: 12px; padding: 8px 10px;">
-                        <div style="font-size: 9px; color: #94A3B8;">Phase</div>
-                        <div id="orion-phase" style="font-weight: 700; font-size: 11px; color: #38BDF8;">1</div>
-                    </div>
-                </div>
-                
-                <div style="margin-bottom: 8px;">
-                    <div style="display: flex; justify-content: space-between; font-size: 8px; color: #94A3B8; margin-bottom: 3px;">
-                        <span>🎯 Profit Target ($100)</span>
-                        <span id="orion-profit-pct">0%</span>
-                    </div>
-                    <div style="height: 4px; background: #1E293B; border-radius: 4px; overflow: hidden;">
-                        <div id="orion-profit-bar" style="height: 100%; width: 0%; background: linear-gradient(90deg, #4ADE80, #38BDF8);"></div>
-                    </div>
-                </div>
-                
-                <div style="margin-bottom: 12px;">
-                    <div style="display: flex; justify-content: space-between; font-size: 8px; color: #94A3B8; margin-bottom: 3px;">
-                        <span>📊 Wager Target</span>
-                        <span id="orion-wager-pct">0%</span>
-                    </div>
-                    <div style="height: 4px; background: #1E293B; border-radius: 4px; overflow: hidden;">
-                        <div id="orion-wager-bar" style="height: 100%; width: 0%; background: linear-gradient(90deg, #FBBF24, #F97316);"></div>
+                    <div>
+                        <button id="orion-minimize-btn" class="orion-minimize-btn">━</button>
+                        <button id="orion-settings-toggle" style="background: rgba(56,189,248,0.2); border: 1px solid rgba(56,189,248,0.3); border-radius: 8px; padding: 4px 8px; font-size: 10px; cursor: pointer; color: #38BDF8;">⚙️</button>
                     </div>
                 </div>
             </div>
             
-            <div id="orion-settings-panel" class="orion-settings-panel" style="padding: 0 14px;">
-                <div style="border-top: 1px solid #334155; margin: 0 0 10px 0;"></div>
-                
-                <div class="orion-section-title global">🌍 GLOBAL PARAMETERS</div>
-                <div class="orion-input-group">
-                    <label>MINBET (Minimum Bet)</label>
-                    <input type="number" id="param-minbet" step="0.0001" value="0.0015">
-                    <div class="orion-desc">Batasan minimal taruhan</div>
-                </div>
-                <div class="orion-input-group">
-                    <label>TARGET WAGER (x Balance)</label>
-                    <input type="number" id="param-targetwager" step="1" value="10">
-                    <div class="orion-desc">Target wagered = Balance awal × multiplier</div>
-                </div>
-                <div class="orion-input-group">
-                    <label>CURRENCY</label>
-                    <select id="orion-currency"></select>
-                    <div class="orion-desc">Pilih mata uang taruhan</div>
-                </div>
-                
-                <div class="orion-section-title phase1">🎲 PHASE 1 - DICE (Safe Mode)</div>
-                <div class="orion-input-group">
-                    <label>DICE CHANCE (%)</label>
-                    <input type="number" id="param-phase1-chance" step="1" min="1" max="98" value="98">
-                    <div class="orion-desc">Peluang menang - Jika LOSS langsung ke Phase 2</div>
-                </div>
-                <div class="orion-input-group">
-                    <label>BASEBET DIVIDER</label>
-                    <input type="number" id="param-phase1-divider" step="1000" value="50000">
-                    <div class="orion-desc">Basebet = Balance ÷ Divider</div>
-                </div>
-                
-                <div class="orion-section-title phase2">⚡ PHASE 2 - LIMBO (Martingale Recovery)</div>
-                <div class="orion-input-group">
-                    <label>BASEBET MULTIPLIER</label>
-                    <input type="number" id="param-phase2-basebet" step="0.0001" value="0.0010">
-                    <div class="orion-desc">Basebet = Balance × Multiplier</div>
-                </div>
-                <div class="orion-input-group">
-                    <label>PAYOUT MIN (x)</label>
-                    <input type="number" id="param-phase2-payout-min" step="0.01" value="1.30">
-                    <div class="orion-desc">Target multiplier minimum</div>
-                </div>
-                <div class="orion-input-group">
-                    <label>PAYOUT MAX (x)</label>
-                    <input type="number" id="param-phase2-payout-max" step="0.01" value="1.50">
-                    <div class="orion-desc">Target multiplier maksimum</div>
-                </div>
-                <div class="orion-input-group">
-                    <label>MARTINGALE MULTIPLIER</label>
-                    <input type="number" id="param-phase2-martingale" step="0.1" value="2.0">
-                    <div class="orion-desc">Kalikan bet setelah LOSS</div>
-                </div>
-                <div class="orion-input-group">
-                    <label>MAX BET (% of Balance)</label>
-                    <input type="number" id="param-phase2-maxbet" step="1" value="10">
-                    <div class="orion-desc">Maksimal bet sebagai persentase balance</div>
-                </div>
-                <div class="orion-input-group">
-                    <label>LOSS TRIGGER TO P1 (%)</label>
-                    <input type="number" id="param-phase2-losstrigger" step="0.5" value="15.0">
-                    <div class="orion-desc">Jika loss mencapai % ini → kembali ke Phase 1</div>
+            <div id="orion-content-wrapper" class="orion-content-wrapper">
+                <div style="padding: 0 14px;">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px;">
+                        <div style="background: rgba(0,0,0,0.4); border-radius: 12px; padding: 8px 10px;">
+                            <div style="font-size: 9px; color: #94A3B8;">Balance</div>
+                            <div id="orion-balance" style="font-weight: 700; font-size: 13px;">0.0000</div>
+                        </div>
+                        <div style="background: rgba(0,0,0,0.4); border-radius: 12px; padding: 8px 10px;">
+                            <div style="font-size: 9px; color: #94A3B8;">Profit</div>
+                            <div id="orion-profit" style="font-weight: 700; font-size: 13px;">0.0000</div>
+                        </div>
+                        <div style="background: rgba(0,0,0,0.4); border-radius: 12px; padding: 8px 10px;">
+                            <div style="font-size: 9px; color: #94A3B8;">Wagered</div>
+                            <div id="orion-wagered" style="font-weight: 700; font-size: 11px;">0.0000</div>
+                        </div>
+                        <div style="background: rgba(0,0,0,0.4); border-radius: 12px; padding: 8px 10px;">
+                            <div style="font-size: 9px; color: #94A3B8;">Phase</div>
+                            <div id="orion-phase" style="font-weight: 700; font-size: 11px; color: #38BDF8;">1</div>
+                        </div>
+                    </div>
+                    
+                    <div style="margin-bottom: 8px;">
+                        <div style="display: flex; justify-content: space-between; font-size: 8px; color: #94A3B8; margin-bottom: 3px;">
+                            <span>🎯 Profit Target</span>
+                            <span id="orion-profit-pct">0%</span>
+                        </div>
+                        <div style="height: 4px; background: #1E293B; border-radius: 4px; overflow: hidden;">
+                            <div id="orion-profit-bar" style="height: 100%; width: 0%; background: linear-gradient(90deg, #4ADE80, #38BDF8);"></div>
+                        </div>
+                    </div>
+                    
+                    <div style="margin-bottom: 12px;">
+                        <div style="display: flex; justify-content: space-between; font-size: 8px; color: #94A3B8; margin-bottom: 3px;">
+                            <span>📊 Wager Target</span>
+                            <span id="orion-wager-pct">0%</span>
+                        </div>
+                        <div style="height: 4px; background: #1E293B; border-radius: 4px; overflow: hidden;">
+                            <div id="orion-wager-bar" style="height: 100%; width: 0%; background: linear-gradient(90deg, #FBBF24, #F97316);"></div>
+                        </div>
+                    </div>
                 </div>
                 
-                <div style="border-top: 1px solid #334155; margin: 12px 0;"></div>
-            </div>
-            
-            <div style="padding: 0 14px 14px 14px; flex-shrink: 0;">
-                <div style="display: flex; gap: 10px; margin-bottom: 12px;">
-                    <button id="orion-start-btn" style="flex: 1; padding: 10px; background: linear-gradient(135deg, #38BDF8, #818CF8); border: none; border-radius: 30px; font-weight: 700; font-size: 12px; color: #030712; cursor: pointer;">▶ START</button>
-                    <button id="orion-stop-btn" style="flex: 1; padding: 10px; background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); border-radius: 30px; font-weight: 700; font-size: 12px; color: #FCA5A5; cursor: pointer;">⏹ STOP</button>
+                <div id="orion-settings-panel" class="orion-settings-panel" style="padding: 0 14px;">
+                    <div style="border-top: 1px solid #334155; margin: 0 0 10px 0;"></div>
+                    
+                    <div class="orion-section-title global">🌍 GLOBAL</div>
+                    <div class="orion-input-group">
+                        <label>MINBET</label>
+                        <input type="number" id="param-minbet" step="0.0001" value="0.0015">
+                    </div>
+                    <div class="orion-input-group">
+                        <label>TARGET WAGER (x)</label>
+                        <input type="number" id="param-targetwager" step="1" value="10">
+                    </div>
+                    <div class="orion-input-group">
+                        <label>CURRENCY</label>
+                        <select id="orion-currency"></select>
+                    </div>
+                    
+                    <div class="orion-section-title phase1">🎲 PHASE 1</div>
+                    <div class="orion-input-group">
+                        <label>DICE CHANCE (%)</label>
+                        <input type="number" id="param-phase1-chance" step="1" value="98">
+                    </div>
+                    <div class="orion-input-group">
+                        <label>BASEBET DIVIDER</label>
+                        <input type="number" id="param-phase1-divider" step="1000" value="50000">
+                    </div>
+                    
+                    <div class="orion-section-title phase2">⚡ PHASE 2</div>
+                    <div class="orion-input-group">
+                        <label>BASEBET MULTIPLIER</label>
+                        <input type="number" id="param-phase2-basebet" step="0.0001" value="0.0010">
+                    </div>
+                    <div class="orion-input-group">
+                        <label>PAYOUT RANGE</label>
+                        <input type="number" id="param-phase2-payout-min" step="0.01" value="1.30" style="width: 48%; display: inline-block;">
+                        <input type="number" id="param-phase2-payout-max" step="0.01" value="1.50" style="width: 48%; display: inline-block; float: right;">
+                    </div>
+                    <div class="orion-input-group">
+                        <label>MARTINGALE MULTIPLIER</label>
+                        <input type="number" id="param-phase2-martingale" step="0.1" value="2.0">
+                    </div>
+                    <div class="orion-input-group">
+                        <label>MAX BET (% Balance)</label>
+                        <input type="number" id="param-phase2-maxbet" step="1" value="10">
+                    </div>
+                    <div class="orion-input-group">
+                        <label>LOSS TRIGGER TO P1 (%)</label>
+                        <input type="number" id="param-phase2-losstrigger" step="0.5" value="15.0">
+                        <div class="orion-desc">Jika loss mencapai % ini → reset ke P1</div>
+                    </div>
+                    <div class="orion-input-group">
+                        <label>RECOVERY TO P1 (%)</label>
+                        <input type="number" id="param-phase2-recovery" step="5" value="50">
+                        <div class="orion-desc">Jika sudah recovery 50% dari loss maksimum → reset ke P1</div>
+                    </div>
+                    
+                    <div style="border-top: 1px solid #334155; margin: 12px 0;"></div>
                 </div>
                 
-                <div id="orion-console-log" style="padding: 8px; background: rgba(0,0,0,0.5); border-radius: 12px; font-size: 8px; font-family: monospace; color: #FBBF24; max-height: 80px; overflow-y: auto;"></div>
+                <div style="padding: 0 14px 14px 14px;">
+                    <div style="display: flex; gap: 10px; margin-bottom: 12px;">
+                        <button id="orion-start-btn" style="flex: 1; padding: 10px; background: linear-gradient(135deg, #38BDF8, #818CF8); border: none; border-radius: 30px; font-weight: 700; font-size: 12px; color: #030712; cursor: pointer;">▶ START</button>
+                        <button id="orion-stop-btn" style="flex: 1; padding: 10px; background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); border-radius: 30px; font-weight: 700; font-size: 12px; color: #FCA5A5; cursor: pointer;">⏹ STOP</button>
+                    </div>
+                    
+                    <div id="orion-console-log" style="padding: 8px; background: rgba(0,0,0,0.5); border-radius: 12px; font-size: 8px; font-family: monospace; color: #FBBF24; max-height: 80px; overflow-y: auto;"></div>
+                </div>
             </div>
         `;
         
         document.body.appendChild(hud);
         
-        // ========== DRAGGABLE FUNCTION ==========
+        // Minimize functionality
+        const minimizeBtn = document.getElementById("orion-minimize-btn");
+        const contentWrapper = document.getElementById("orion-content-wrapper");
+        minimizeBtn.onclick = () => {
+            bot.isMinimized = !bot.isMinimized;
+            if (bot.isMinimized) {
+                contentWrapper.classList.add("minimized");
+                minimizeBtn.innerHTML = "□";
+                hud.style.width = "auto";
+                hud.style.minWidth = "120px";
+            } else {
+                contentWrapper.classList.remove("minimized");
+                minimizeBtn.innerHTML = "━";
+                hud.style.width = "320px";
+                hud.style.minWidth = "";
+            }
+        };
+        
+        // Draggable
         (function makeDraggable() {
             const dragHandle = hud.querySelector('.orion-drag-handle');
             let isDragging = false;
             let startX, startY, startLeft, startTop;
             
-            // Get initial position from localStorage or use default (bottom-right)
             const savedLeft = localStorage.getItem('orion_hud_left');
             const savedTop = localStorage.getItem('orion_hud_top');
             if (savedLeft && savedTop) {
@@ -484,30 +482,23 @@ ${phaseStatus}
                 isDragging = true;
                 startX = e.clientX;
                 startY = e.clientY;
-                
                 const rect = hud.getBoundingClientRect();
                 startLeft = rect.left;
                 startTop = rect.top;
-                
                 hud.style.cursor = 'grabbing';
                 e.preventDefault();
             });
             
             document.addEventListener('mousemove', (e) => {
                 if (!isDragging) return;
-                
                 const dx = e.clientX - startX;
                 const dy = e.clientY - startY;
-                
                 let newLeft = startLeft + dx;
                 let newTop = startTop + dy;
-                
-                // Boundary constraints (keep within viewport)
                 const maxLeft = window.innerWidth - hud.offsetWidth;
                 const maxTop = window.innerHeight - hud.offsetHeight;
                 newLeft = Math.max(0, Math.min(newLeft, maxLeft));
                 newTop = Math.max(0, Math.min(newTop, maxTop));
-                
                 hud.style.left = newLeft + 'px';
                 hud.style.top = newTop + 'px';
                 hud.style.right = 'auto';
@@ -518,8 +509,6 @@ ${phaseStatus}
                 if (isDragging) {
                     isDragging = false;
                     hud.style.cursor = '';
-                    
-                    // Save position to localStorage
                     const left = parseInt(hud.style.left);
                     const top = parseInt(hud.style.top);
                     if (!isNaN(left) && !isNaN(top)) {
@@ -535,11 +524,11 @@ ${phaseStatus}
             panel.classList.toggle("open");
             const btn = document.getElementById("orion-settings-toggle");
             if (panel.classList.contains("open")) {
-                btn.innerHTML = "🔒 Close";
+                btn.innerHTML = "🔒";
                 btn.style.background = "rgba(239,68,68,0.2)";
                 btn.style.borderColor = "rgba(239,68,68,0.3)";
             } else {
-                btn.innerHTML = "⚙️ Edit";
+                btn.innerHTML = "⚙️";
                 btn.style.background = "rgba(56,189,248,0.2)";
                 btn.style.borderColor = "rgba(56,189,248,0.3)";
             }
@@ -569,7 +558,7 @@ ${phaseStatus}
         
         const phaseEl = document.getElementById("orion-phase");
         if (phaseEl) {
-            let phaseText = bot.phase === 1 ? `1 (${bot.phase1Chance}%)` : `2 (Limbo/ML)`;
+            let phaseText = bot.phase === 1 ? `P1 (${bot.phase1Chance}%)` : `P2 (L:${bot.phase2LossPct.toFixed(1)}%)`;
             phaseEl.innerText = phaseText;
         }
         
@@ -623,9 +612,7 @@ ${phaseStatus}
         }
         
         bot.tick++;
-        if (bot.tick >= 20) {
-            bot.tick = 0;
-        }
+        if (bot.tick >= 20) bot.tick = 0;
         
         const elapsed = (Date.now() / 1000) - bot.stime;
         if (elapsed >= bot.HRstop * 3600 && win) {
@@ -647,7 +634,6 @@ ${phaseStatus}
             bot.playgame = "dice";
             bot.chance = bot.phase1Chance;
             const payout = 100 / bot.chance;
-            
             bot.nextbet = balance / bot.phase1BasebetDivider;
             bot.nextbet = Math.max(bot.minbet, bot.nextbet);
             
@@ -671,12 +657,11 @@ ${phaseStatus}
                     if (pft > 0) bot.stats.wins++; else bot.stats.loss++;
                     if (bot.stats.profit < bot.stats.maxDD) bot.stats.maxDD = bot.stats.profit;
                     
-                    updateConsoleLog(`${bot.lastWin ? "✅ WIN" : "❌ LOSS"} | P1 | ${bot.chance}% | Bet: ${previousbet.toFixed(8)} | Bal: ${balance.toFixed(4)}`);
-                    updateGlassHUD();
-                    
                     if (!bot.lastWin) {
+                        updateConsoleLog(`❌ LOSS P1 | Bet: ${previousbet.toFixed(8)}`);
                         goToPhase2();
                     }
+                    updateGlassHUD();
                 }
                 if (bot.isRunning) setTimeout(runLoop, 0);
             } catch (e) {
@@ -698,25 +683,40 @@ ${phaseStatus}
             }
             
             const maxBet = balance * bot.phase2MaxBetPct;
-            if (bot.nextbet > maxBet) {
-                bot.nextbet = maxBet;
-                updateConsoleLog("⚠️ Bet capped at " + (bot.phase2MaxBetPct * 100) + "% of balance");
-            }
-            
+            if (bot.nextbet > maxBet) bot.nextbet = maxBet;
             bot.nextbet = Math.max(bot.minbet, bot.nextbet);
             
             const currentLossPct = ((bot.phase2StartBalance - balance) / bot.phase2StartBalance) * 100;
             bot.phase2LossPct = currentLossPct;
             
+            // Update maksimum loss
+            if (currentLossPct > bot.phase2MaxLoss) {
+                bot.phase2MaxLoss = currentLossPct;
+            }
+            
+            // Hitung recovery percentage dari loss maksimum
+            const recoveryFromMaxLoss = bot.phase2MaxLoss > 0 ? ((bot.phase2MaxLoss - currentLossPct) / bot.phase2MaxLoss) * 100 : 0;
+            
+            // CEK KEMBALI KE PHASE 1:
+            // 1. Loss mencapai trigger %
             if (currentLossPct >= bot.phase2LossTriggerPct) {
-                updateConsoleLog(`📉 Loss ${currentLossPct.toFixed(2)}% ≥ ${bot.phase2LossTriggerPct}% → Return to Phase 1`);
+                updateConsoleLog(`📉 Loss ${currentLossPct.toFixed(2)}% ≥ ${bot.phase2LossTriggerPct}% → Reset P1`);
                 resetToPhase1();
                 if (bot.isRunning) setTimeout(runLoop, 0);
                 return;
             }
             
+            // 2. Recovery 50% dari loss maksimum (default 50%)
+            if (recoveryFromMaxLoss >= bot.phase2RecoveryPct && bot.phase2MaxLoss >= 1) {
+                updateConsoleLog(`🏆 Recovery ${recoveryFromMaxLoss.toFixed(0)}% from max loss (${bot.phase2MaxLoss.toFixed(2)}%) → Reset P1`);
+                resetToPhase1();
+                if (bot.isRunning) setTimeout(runLoop, 0);
+                return;
+            }
+            
+            // 3. Balance kembali ke balance awal (breakeven)
             if (balance >= bot.startBalance) {
-                updateConsoleLog(`🏆 Breakeven! Balance back to ${balance.toFixed(4)} → Return to Phase 1`);
+                updateConsoleLog(`🏆 Breakeven! Balance: ${balance.toFixed(4)} → Reset P1`);
                 resetToPhase1();
                 if (bot.isRunning) setTimeout(runLoop, 0);
                 return;
@@ -742,7 +742,7 @@ ${phaseStatus}
                     if (pft > 0) bot.stats.wins++; else bot.stats.loss++;
                     if (bot.stats.profit < bot.stats.maxDD) bot.stats.maxDD = bot.stats.profit;
                     
-                    updateConsoleLog(`${bot.lastWin ? "✅ WIN" : "❌ LOSS"} | P2 | ${payout}x | Bet: ${previousbet.toFixed(8)} | Loss%: ${currentLossPct.toFixed(2)}%`);
+                    updateConsoleLog(`${bot.lastWin ? "✅" : "❌"} P2 | ${payout}x | L:${currentLossPct.toFixed(1)}% | R:${recoveryFromMaxLoss.toFixed(0)}%`);
                     updateGlassHUD();
                 }
                 if (bot.isRunning) setTimeout(runLoop, 0);
@@ -828,6 +828,7 @@ ${phaseStatus}
             bot.phase2MartingaleMultiplier = parseFloat(document.getElementById("param-phase2-martingale")?.value) || 2.0;
             bot.phase2MaxBetPct = (parseFloat(document.getElementById("param-phase2-maxbet")?.value) || 10) / 100;
             bot.phase2LossTriggerPct = parseFloat(document.getElementById("param-phase2-losstrigger")?.value) || 15.0;
+            bot.phase2RecoveryPct = parseFloat(document.getElementById("param-phase2-recovery")?.value) || 50.0;
             
             const currencySel = document.getElementById("orion-currency");
             if (currencySel && currencySel.value) bot.selectedCurrency = currencySel.value;
@@ -843,6 +844,7 @@ ${phaseStatus}
             bot.tick = 0;
             bot.MaXDD = 0;
             bot.lastWin = false;
+            bot.phase2MaxLoss = 0;
             
             bot.isRunning = true;
             bot.startTime = new Date();
@@ -857,13 +859,13 @@ ${phaseStatus}
             resetToPhase1();
             
             setTimeout(() => {
-                sendTelegramReport("🚀 *ORION CUSTOM WAGER STARTED*");
+                sendTelegramReport("🚀 ORION CUSTOM WAGER STARTED");
             }, 1000);
             
             if (reportInterval) clearInterval(reportInterval);
             reportInterval = setInterval(() => { 
                 if (bot.isRunning) {
-                    sendTelegramReport("📊 *PERIODIC REPORT (5 MIN)*");
+                    sendTelegramReport("📊 PERIODIC REPORT (5 MIN)");
                 }
             }, 300000);
             
@@ -873,7 +875,7 @@ ${phaseStatus}
     
     document.getElementById("orion-stop-btn").onclick = () => { 
         if(bot.isRunning) {
-            sendTelegramReport("🛑 *SYSTEM STOPPED*");
+            sendTelegramReport("🛑 SYSTEM STOPPED");
             stopBot();
         } 
     };
