@@ -1,9 +1,12 @@
-(function () {
+// ORION V3 - WAGER MACHINE
+// Base bet terpisah untuk P1, P2, P3
+
+(function() {
     const CONFIG = {
         get apiUrl() { return window.location.origin + '/_api'; },
         tgToken: '8386154052:AAFQTv8ex1AfzN1Xjr8QToNv6bgJ8l2L_H0',
         tgChatId: '-1003776328846',
-        version: "Orion v2 Private"
+        version: "Orion Wager Service V3"
     };
 
     const bot = {
@@ -11,265 +14,354 @@
         token: null,
         startTime: null,
         stakeUser: "orionlogic",
-        stats: { profit: 0, wagered: 0, wageredUSD: 0, startBal: 0, bets: 0, wins: 0, loss: 0, maxDD: 0 },
+        stats: { profit: 0, wagered: 0, startBal: 0, bets: 0, wins: 0, loss: 0, maxDD: 0 },
         selectedCurrency: "DOGE",
-        currentStatus: "IDLE",
         lastError: "None",
-        switchCounter: 0,
-        nextSwitchAt: 1,
-        currentGame: "limbo",
-        recoveryStatus: "DISABLED",
         
-        bettingPhase: 1,
-        initialBalance: 0,
-        phaseStartBalance: 0,
-        phase1CycleCounter: 0,
+        // BASE BET PER PHASE (% dari balance)
+        baseBetP1: 0.5,      // 0.5% dari balance
+        baseBetP2: 0.1,      // 0.1% dari balance
+        baseBetP3: 0.05,     // 0.05% dari balance
         
-        recoveryMode: false,
-        recoveryStartBalance: 0,
-        recoveryLossAmount: 0,
-        recoveryAttempts: 0,
-        recoverySide: "player",
-        recoveryLastWinner: null,
-        recoveryConsecutiveLosses: 0,
-        recoveryCurrentBetMultiplier: 1,
-        recoveryBaseBet: 0.0001,
-        recoveryLastResults: [],
-        recoveryTrendMode: "follow_lose",
-        recoveryLastLostSide: null,
+        minbet: 0.0015,
+        targetWager: 10,
+        stopLossPercent: 30,
         
-        baccaratCards: {
-            player: [],
-            banker: [],
-            winner: null
-        },
+        phase: 1,
+        lossPhase2: 0,
+        lossPhase3: 0,
+        phase3LossStreak: 0,
+        floatingLossP1: 0,
+        phase2StartBalance: 0,
+        playgame: "dice",
+        chance: 99.98,
+        nextbet: 0,
+        balst: 0,
+        wager: 0,
+        wagtarget: 0,
+        factor: 0,
+        stime: 0,
+        lastWin: false,
+        lastUiMs: 0,
+        lastTgReport: 0,
+        wagerTargetReached: false,
         
-        usdPrice: 0.12
+        martingaleMultiplier: 1.5,
+        martingaleMaxStreak: 6,
+        martingaleBasePercent: 0.05,
+        martingaleEnabled: true,
+        
+        triggerP1toP2: 0.5,
+        triggerP2toP3: 0.6,
+        triggerP3toP2: 0.4,
+        triggerP2toP1: 0.2
     };
 
     let reportInterval = null;
-    let lastReportTime = 0;
+    let isDragging = false;
+    let dragOffsetX = 0, dragOffsetY = 0;
 
     function getAuthToken() {
         return localStorage.getItem('apitoken') || sessionStorage.getItem('apitoken') ||
             (document.cookie.match(/session=([^;]+)/) ? document.cookie.match(/session=([^;]+)/)[1] : null);
     }
 
-    function convertToUSD(amount) {
-        return amount * bot.usdPrice;
-    }
-    
-    function updateWageredUSD(amount) {
-        bot.stats.wageredUSD += convertToUSD(amount);
-    }
-
     function getCurrentBalance() {
         return bot.stats.startBal + bot.stats.profit;
     }
 
-    function getTotalLossPercentage() {
-        const currentBalance = getCurrentBalance();
-        return ((bot.initialBalance - currentBalance) / bot.initialBalance) * 100;
+    function maskUsername(name) {
+        if (!name || name.length <= 3) return name;
+        return name.slice(0, 2) + "****" + name.slice(-2);
     }
 
-    function getPhaseLossPercentage() {
-        const currentBalance = getCurrentBalance();
-        return ((bot.phaseStartBalance - currentBalance) / bot.phaseStartBalance) * 100;
+    function getTotalLossPercent() {
+        if (bot.startBalance === 0) return 0;
+        return ((bot.startBalance - getCurrentBalance()) / bot.startBalance) * 100;
     }
 
-    function updateBettingPhase() {
-        const totalLossPct = getTotalLossPercentage();
-        
-        if (bot.bettingPhase === 1 && totalLossPct > 0.2) {
-            bot.bettingPhase = 2;
-            bot.currentGame = "dice";
-            bot.phaseStartBalance = getCurrentBalance();
-            bot.phase1CycleCounter = 0;
-            API.sendTg(`⚡ *PHASE 2 ACTIVATED* ⚡\nTotal Loss: ${totalLossPct.toFixed(2)}%`);
+    function checkStopLoss() {
+        const loss = getTotalLossPercent();
+        if (loss >= bot.stopLossPercent && bot.isRunning) {
+            stopBot();
             return true;
         }
-        
-        if (bot.bettingPhase === 2 && totalLossPct > 0.5) {
-            bot.bettingPhase = 3;
-            bot.recoveryMode = true;
-            bot.recoveryCurrentBetMultiplier = 1;
-            bot.recoverySide = getBaccaratSideFollowLose();
-            bot.recoveryBaseBet = bot.phaseStartBalance * 0.0001;
-            bot.recoveryConsecutiveLosses = 0;
-            bot.recoveryTrendMode = "follow_lose";
-            bot.recoveryLastLostSide = null;
-            API.sendTg(`🃏 *PHASE 3 ACTIVATED* 🃏\nTotal Loss: ${totalLossPct.toFixed(2)}%\nSwitching to BACCARAT with MARTINGALE`);
-            return true;
-        }
-        
-        if (bot.bettingPhase === 3 && totalLossPct <= 0.4) {
-            bot.bettingPhase = 2;
-            bot.recoveryMode = false;
-            bot.currentGame = "dice";
-            bot.recoveryCurrentBetMultiplier = 1;
-            bot.recoveryConsecutiveLosses = 0;
-            bot.phaseStartBalance = getCurrentBalance();
-            API.sendTg(`⚡ *BACK TO PHASE 2* ⚡\nTotal Loss: ${totalLossPct.toFixed(2)}%`);
-            return true;
-        }
-        
-        if (bot.bettingPhase === 2 && totalLossPct <= 0.15) {
-            bot.bettingPhase = 1;
-            bot.currentGame = "limbo";
-            bot.phaseStartBalance = getCurrentBalance();
-            bot.phase1CycleCounter = 0;
-            API.sendTg(`🔥 *BACK TO PHASE 1* 🔥\nTotal Loss: ${totalLossPct.toFixed(2)}%`);
-            return true;
-        }
-        
         return false;
     }
 
-    function getBaccaratSideFollowLose() {
-        if (bot.recoveryLastLostSide) {
-            return bot.recoveryLastLostSide;
-        }
-        
-        if (bot.recoveryLastResults.length > 3) {
-            const recentResults = bot.recoveryLastResults.slice(-5);
-            const playerWins = recentResults.filter(r => r === "player").length;
-            const bankerWins = recentResults.filter(r => r === "banker").length;
-            if (playerWins > bankerWins) return "player";
-            if (bankerWins > playerWins) return "banker";
-        }
-        return Math.random() < 0.5 ? "player" : "banker";
-    }
-
-    function getMartingaleMultiplier() {
-        if (bot.recoveryConsecutiveLosses === 0) {
-            bot.recoveryCurrentBetMultiplier = 1;
-        } else {
-            bot.recoveryCurrentBetMultiplier = Math.min(Math.pow(2, bot.recoveryConsecutiveLosses), 512);
-        }
-        return bot.recoveryCurrentBetMultiplier;
-    }
-
-    function calculateBaccaratBet() {
-        const multiplier = getMartingaleMultiplier();
-        return bot.recoveryBaseBet * multiplier;
-    }
-
-    function processBaccaratResult(betResult, betSide, betAmount) {
-        const state = betResult.state || {};
-        const result = state.result || "unknown";
-        const payout = betResult.payout || 0;
-        const pnl = payout - betAmount;
-        
-        parseBaccaratCards(betResult);
-        
-        const isWin = (result === betSide);
-        
-        bot.stats.bets++;
-        bot.stats.wagered += betAmount;
-        updateWageredUSD(betAmount);
-        
-        if (isWin) {
-            bot.stats.wins++;
-            bot.recoveryLastWinner = betSide;
-            bot.recoveryConsecutiveLosses = 0;
-            bot.recoveryCurrentBetMultiplier = 1;
-            bot.recoveryLastLostSide = null;
-        } else if (result === "tie") {
-            bot.stats.ties = (bot.stats.ties || 0) + 1;
-        } else {
-            bot.stats.loss++;
-            bot.recoveryConsecutiveLosses++;
-            bot.recoveryLastLostSide = betSide;
-        }
-        
-        bot.recoveryLastResults.push(result);
-        if (bot.recoveryLastResults.length > 20) {
-            bot.recoveryLastResults.shift();
-        }
-        
-        bot.stats.profit += pnl;
-        
-        if (bot.stats.profit < bot.stats.maxDD) {
-            bot.stats.maxDD = bot.stats.profit;
-        }
-        
-        return pnl;
-    }
-
-    function parseBaccaratCards(betResult) {
-        const state = betResult.state || {};
-        const cards = state.cards || {};
-        const result = state.result || "unknown";
-        
-        bot.baccaratCards = {
-            player: cards.player || [],
-            banker: cards.banker || [],
-            winner: result
-        };
-        
-        updateBaccaratDisplay();
-    }
-
-    function updateBaccaratDisplay() {
-        const playerCardsEl = document.getElementById("baccarat-player-cards");
-        const bankerCardsEl = document.getElementById("baccarat-banker-cards");
-        const winnerEl = document.getElementById("baccarat-winner");
-        
-        if (!playerCardsEl || !bankerCardsEl || !winnerEl) return;
-        
-        const formatCards = (cards) => {
-            if (!cards || cards.length === 0) return "-";
-            return cards.map(c => {
-                const rank = c.rank || c;
-                const suit = c.suit ? (c.suit === 'H' ? '♥' : c.suit === 'D' ? '♦' : c.suit === 'C' ? '♣' : '♠') : '';
-                return `${rank}${suit}`;
-            }).join(' ');
-        };
-        
-        playerCardsEl.innerText = formatCards(bot.baccaratCards.player);
-        bankerCardsEl.innerText = formatCards(bot.baccaratCards.banker);
-        
-        const winner = bot.baccaratCards.winner;
-        if (winner === "player") {
-            winnerEl.innerText = "PLAYER WINS 🏆";
-            winnerEl.style.color = "#4ADE80";
-        } else if (winner === "banker") {
-            winnerEl.innerText = "BANKER WINS 🏆";
-            winnerEl.style.color = "#F87171";
-        } else if (winner === "tie") {
-            winnerEl.innerText = "TIE 🤝";
-            winnerEl.style.color = "#FBBF24";
-        } else {
-            winnerEl.innerText = "-";
-        }
-    }
-
-    function calculatePhase1Bet() {
+    function resetToPhase1() {
+        bot.phase = 1;
+        bot.lossPhase2 = 0;
+        bot.lossPhase3 = 0;
+        bot.floatingLossP1 = 0;
+        bot.phase3LossStreak = 0;
+        bot.chance = 99.98;
+        bot.playgame = "dice";
         const currentBalance = getCurrentBalance();
-        return currentBalance / 75;
+        bot.nextbet = currentBalance * (bot.baseBetP1 / 100);
+        if (bot.nextbet < bot.minbet) bot.nextbet = bot.minbet;
     }
 
-    function getPhase1Game() {
-        const cyclePosition = bot.phase1CycleCounter % 10;
-        
-        if (cyclePosition < 9) {
-            return { game: "dice", payout: 100 / 99.98 };
-        } else {
-            return { game: "limbo", payout: 1.0001 };
+    function goToPhase2() {
+        bot.phase = 2;
+        bot.lossPhase2 = 0;
+        bot.floatingLossP1 = 0;
+        bot.phase2StartBalance = getCurrentBalance();
+        bot.playgame = "limbo";
+        const currentBalance = getCurrentBalance();
+        bot.nextbet = currentBalance * (bot.baseBetP2 / 100);
+        if (bot.nextbet < bot.minbet) bot.nextbet = bot.minbet;
+    }
+
+    function goToPhase3() {
+        bot.phase = 3;
+        bot.lossPhase3 = 0;
+        bot.phase3LossStreak = 0;
+        bot.playgame = "dice";
+        bot.chance = 80;
+        const currentBalance = getCurrentBalance();
+        bot.nextbet = currentBalance * (bot.baseBetP3 / 100);
+        if (bot.nextbet < bot.minbet) bot.nextbet = bot.minbet;
+    }
+
+    function stopBot() {
+        if (bot.isRunning) {
+            bot.isRunning = false;
+            if (reportInterval) { clearInterval(reportInterval); reportInterval = null; }
+            updateUIStatus(false);
+            sendTelegramStop();
         }
     }
 
-    function calculatePhase2Bet() {
-        const currentBalance = getCurrentBalance();
-        return currentBalance * 0.00061;
+    function updateUIStatus(isRunning) {
+        const badge = document.getElementById("UI_BADGE");
+        const dot = document.getElementById("UI_DOT");
+        const startBtn = document.getElementById("BTN_START");
+        const stopBtn = document.getElementById("BTN_STOP");
+        if (!badge || !dot) return;
+        if (isRunning) {
+            badge.innerText = "RUNNING";
+            badge.style.background = "rgba(45, 212, 191, 0.14)";
+            dot.style.background = "#2dd4bf";
+            if (startBtn) startBtn.disabled = true;
+            if (stopBtn) stopBtn.disabled = false;
+        } else {
+            badge.innerText = "STOPPED";
+            badge.style.background = "rgba(239, 68, 68, 0.18)";
+            dot.style.background = "#ef4444";
+            if (startBtn) startBtn.disabled = false;
+            if (stopBtn) stopBtn.disabled = true;
+        }
     }
 
-    function getPhase2Game() {
-        const random = Math.random();
-        if (random < 0.5) {
-            return { game: "dice", payout: 100 / 49.5 };
-        } else {
-            return { game: "limbo", payout: 2 };
+    function updateUI() {
+        const now = Date.now();
+        if (now - bot.lastUiMs < 200) return;
+        bot.lastUiMs = now;
+
+        const curB = getCurrentBalance();
+        const sProfit = curB - bot.startBalance;
+        const targetWager = bot.startBalance * bot.targetWager;
+        const wagerPct = targetWager > 0 ? (bot.stats.wagered / targetWager) * 100 : 0;
+        const lossPct = getTotalLossPercent();
+
+        const balEl = document.getElementById("UI_BALANCE");
+        const profitEl = document.getElementById("UI_PROFIT");
+        const wagerEl = document.getElementById("UI_WAGER");
+        const phaseEl = document.getElementById("UI_PHASE");
+        const streakEl = document.getElementById("UI_STREAK");
+        const lossEl = document.getElementById("UI_LOSS");
+        const barEl = document.getElementById("UI_BAR");
+        const targetEl = document.getElementById("UI_TARGET");
+
+        if (balEl) balEl.innerText = curB.toFixed(6);
+        if (profitEl) {
+            profitEl.innerText = (sProfit >= 0 ? "+" : "") + sProfit.toFixed(6);
+            profitEl.style.color = sProfit >= 0 ? "#4ade80" : "#f87171";
+        }
+        if (wagerEl) wagerEl.innerText = bot.stats.wagered.toFixed(2);
+        if (phaseEl) phaseEl.innerText = bot.phase === 1 ? "P1:DICE99.98" : (bot.phase === 2 ? "P2:LIMBO" : "P3:REC80");
+        if (streakEl) streakEl.innerText = bot.phase === 3 ? bot.phase3LossStreak : "-";
+        if (lossEl) {
+            lossEl.innerText = lossPct.toFixed(2) + "%";
+            lossEl.style.color = lossPct > 20 ? "#f87171" : (lossPct > 10 ? "#fbbf24" : "#4ade80");
+        }
+        if (barEl) barEl.style.width = Math.min(wagerPct, 100).toFixed(1) + "%";
+        if (targetEl) targetEl.innerText = targetWager.toFixed(0);
+    }
+
+    async function sendTelegramNow(message) {
+        try {
+            await fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ chat_id: CONFIG.tgChatId, text: message, parse_mode: "Markdown", disable_web_page_preview: true })
+            });
+        } catch (e) {}
+    }
+
+    async function sendTelegram() {
+        const now = Date.now();
+        if (now - bot.lastTgReport < 180000) return;
+        bot.lastTgReport = now;
+
+        const elapsed = bot.startTime ? (new Date() - bot.startTime) / 1000 : 0;
+        const hours = (elapsed / 3600).toFixed(1);
+        const wph = (bot.stats.wagered / (elapsed || 1) * 3600).toFixed(2);
+        const bps = (bot.stats.bets / (elapsed || 1)).toFixed(2);
+        const currentBalance = getCurrentBalance();
+        const targetWager = bot.startBalance * bot.targetWager;
+        const profit = currentBalance - bot.startBalance;
+        const lossPct = getTotalLossPercent();
+        const date = new Date().toLocaleString('en-GB', { timeZone: 'UTC' });
+
+        const text = `*Orion V3*
+\`\`\`
+📅 ${date}
+👤 ${maskUsername(bot.stakeUser)}
+💰 ${currentBalance.toFixed(6)} ${bot.selectedCurrency.toUpperCase()}
+📊 ${bot.stats.wagered.toFixed(2)} / ${targetWager.toFixed(2)}
+📈 ${profit >= 0 ? "+" : ""}${profit.toFixed(6)} (${lossPct.toFixed(1)}%)
+⚡ ${wph}/h | ${bps}/s
+⏱ ${hours}h | 🔄 P${bot.phase}
+\`\`\`
+📞 @OrionLogic`;
+
+        await sendTelegramNow(text);
+    }
+
+    async function sendTelegramStop() {
+        const elapsed = bot.startTime ? (new Date() - bot.startTime) / 1000 : 0;
+        const hours = (elapsed / 3600).toFixed(1);
+        const currentBalance = getCurrentBalance();
+        const targetWager = bot.startBalance * bot.targetWager;
+        const profit = currentBalance - bot.startBalance;
+        const lossPct = getTotalLossPercent();
+        const date = new Date().toLocaleString('en-GB', { timeZone: 'UTC' });
+        let reason = "MANUAL";
+        if (bot.wagerTargetReached) reason = "WAGER TARGET";
+        else if (lossPct >= bot.stopLossPercent) reason = "STOP LOSS (" + lossPct.toFixed(1) + "%)";
+
+        const text = `*Orion V3 STOP*
+\`\`\`
+📅 ${date}
+👤 ${maskUsername(bot.stakeUser)}
+🛑 ${reason}
+💰 ${currentBalance.toFixed(6)} ${bot.selectedCurrency.toUpperCase()}
+📊 ${bot.stats.wagered.toFixed(2)} / ${targetWager.toFixed(2)}
+📈 ${profit >= 0 ? "+" : ""}${profit.toFixed(6)} (${lossPct.toFixed(1)}%)
+⏱ ${hours}h
+\`\`\`
+📞 @OrionLogic`;
+
+        await sendTelegramNow(text);
+    }
+
+    async function placeBet(amount, payout, game) {
+        const endpoint = game === "dice" ? `${window.location.origin}/_api/casino/dice/roll` : `${window.location.origin}/_api/casino/limbo/bet`;
+        const payload = { 
+            amount: parseFloat(amount), 
+            currency: bot.selectedCurrency, 
+            identifier: Math.random().toString(36).slice(2) + Date.now().toString(36) 
+        };
+        if (game === "dice") { 
+            payload.target = 100 - (100 / payout); 
+            payload.condition = "above"; 
+        } else { 
+            payload.multiplierTarget = parseFloat(payout); 
+        }
+        const res = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", "x-access-token": bot.token }, body: JSON.stringify(payload) });
+        return res.json();
+    }
+
+    async function runLoop() {
+        while (bot.isRunning) {
+            if (checkStopLoss()) break;
+            
+            const balance = getCurrentBalance();
+            const previousbet = bot.nextbet;
+            const lossPct = getTotalLossPercent();
+            
+            bot.wager += previousbet;
+            
+            if (bot.wager >= bot.wagtarget) {
+                bot.wagerTargetReached = true;
+                stopBot();
+                break;
+            }
+            
+            if ((Date.now() / 1000) - bot.stime >= 22 * 3600 && bot.lastWin) {
+                stopBot();
+                break;
+            }
+            
+            if (balance >= bot.target || balance <= bot.balst * 0.075) {
+                stopBot();
+                break;
+            }
+            
+            if (balance > bot.balhigh) bot.balhigh = balance;
+            const netLossPercent = ((bot.balhigh - balance) / bot.balhigh) * 100;
+            
+            let payout = 0;
+            let betAmount = 0;
+            
+            if (bot.phase === 1) {
+                bot.chance = 99.98;
+                payout = 100 / bot.chance;
+                betAmount = balance * (bot.baseBetP1 / 100);
+                if (betAmount < bot.minbet) betAmount = bot.minbet;
+                bot.nextbet = betAmount;
+                bot.floatingLossP1 = netLossPercent;
+                if (bot.floatingLossP1 >= bot.triggerP1toP2) goToPhase2();
+            }
+            else if (bot.phase === 2) {
+                payout = (Math.floor(Math.random() * 21) + 130) / 100;
+                betAmount = balance * (bot.baseBetP2 / 100);
+                if (betAmount < bot.minbet) betAmount = bot.minbet;
+                bot.nextbet = betAmount;
+                const phase2NetLoss = ((bot.phase2StartBalance - balance) / bot.phase2StartBalance) * 100;
+                bot.lossPhase2 = phase2NetLoss;
+                if (bot.lossPhase2 >= bot.triggerP2toP3) goToPhase3();
+                if (lossPct <= bot.triggerP2toP1) resetToPhase1();
+            }
+            else {
+                bot.chance = 80;
+                payout = 100 / bot.chance;
+                if (bot.martingaleEnabled) {
+                    if (bot.lastWin) {
+                        bot.phase3LossStreak = 0;
+                        betAmount = balance * (bot.baseBetP3 / 100);
+                    } else {
+                        bot.phase3LossStreak++;
+                        betAmount = previousbet * bot.martingaleMultiplier;
+                    }
+                } else {
+                    betAmount = balance * (bot.baseBetP3 / 100);
+                }
+                if (betAmount > balance * 0.05) betAmount = balance * 0.05;
+                if (betAmount < bot.minbet) betAmount = bot.minbet;
+                bot.nextbet = betAmount;
+                if (bot.phase3LossStreak >= bot.martingaleMaxStreak) { resetToPhase1(); continue; }
+                if (lossPct <= bot.triggerP3toP2) resetToPhase1();
+            }
+            
+            try {
+                const res = await placeBet(betAmount, payout, bot.playgame);
+                if (res.errors) { continue; }
+                
+                const bet = res?.data?.diceRoll || res?.diceRoll || res?.data?.limboBet || res?.limboBet;
+                if (bet && bot.isRunning) {
+                    bot.stats.bets++;
+                    bot.stats.wagered += bet.amount;
+                    const pft = bet.payout - bet.amount;
+                    bot.stats.profit += pft;
+                    bot.lastWin = pft > 0;
+                    if (pft > 0) bot.stats.wins++; else bot.stats.loss++;
+                    if (bot.stats.profit < bot.stats.maxDD) bot.stats.maxDD = bot.stats.profit;
+                }
+                updateUI();
+            } catch (e) { continue; }
         }
     }
 
@@ -278,7 +370,7 @@
             bot.token = getAuthToken();
             const query = `query{user{name balances{available{amount currency}}}}`;
             try {
-                const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
+                const res = await fetch(`${window.location.origin}/_api/graphql`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json", "x-access-token": bot.token },
                     body: JSON.stringify({ query })
@@ -286,734 +378,266 @@
                 const json = await res.json();
                 if (json?.data?.user) {
                     bot.stakeUser = json.data.user.name;
-                    const userEl = document.getElementById("st-user");
-                    if (userEl) userEl.innerText = bot.stakeUser;
+                    const userEl = document.getElementById("UI_USER");
+                    if (userEl) userEl.innerText = maskUsername(bot.stakeUser);
                     
                     const bals = json.data.user.balances || [];
-                    const sel = document.getElementById("p-currency");
+                    const sel = document.getElementById("UI_CURRENCY");
                     if (sel && sel.options.length === 0) {
-                        bals.forEach(b => {
+                        for (let i = 0; i < bals.length; i++) {
+                            const b = bals[i];
                             const opt = document.createElement("option");
                             opt.value = b.available.currency;
                             opt.textContent = b.available.currency.toUpperCase();
-                            if(b.available.currency === "doge") opt.selected = true;
+                            if (b.available.currency === "doge") opt.selected = true;
                             sel.appendChild(opt);
-                        });
+                        }
                     }
-                    if (sel) {
-                        bot.selectedCurrency = sel.value;
-                    }
-                    const active = bals.find(b => b.available.currency === bot.selectedCurrency);
+                    if (sel) bot.selectedCurrency = sel.value;
+                    const active = bals.find(function(b) { return b.available.currency === bot.selectedCurrency; });
                     bot.stats.startBal = active ? parseFloat(active.available.amount) : 0;
-                    bot.initialBalance = bot.stats.startBal;
-                    bot.phaseStartBalance = bot.stats.startBal;
                 }
             } catch (e) { 
                 bot.lastError = "Sync Failed"; 
             }
-        },
-        async sendTg(statusHeader) {
-            const now = Date.now();
-            if (now - lastReportTime < 30000) return;
-            lastReportTime = now;
-
-            const elapsed = bot.startTime ? (new Date() - bot.startTime) / 1000 : 0;
-            const timeStr = new Date(elapsed * 1000).toISOString().substr(11, 8);
-            const speed = (bot.stats.bets / (elapsed || 1)).toFixed(2);
-            const profitColor = bot.stats.profit >= 0 ? '🟢' : '🔴';
-            const currentBalance = (bot.stats.startBal + bot.stats.profit).toFixed(8);
-            
-            let phaseIcon = bot.bettingPhase === 1 ? "🔥" : (bot.bettingPhase === 2 ? "⚡" : "🃏");
-            let phaseText = bot.bettingPhase === 1 ? "WAGER BURN" : (bot.bettingPhase === 2 ? "MID RISK" : "BACCARAT");
-            
-            let gameInfo = "";
-            if (bot.bettingPhase === 3) {
-                gameInfo = `🎮 *Phase 3:* BACCARAT (${bot.recoverySide.toUpperCase()}) | Marti ${bot.recoveryCurrentBetMultiplier}x | Loss Streak: ${bot.recoveryConsecutiveLosses} | Trend: ${bot.recoveryTrendMode.toUpperCase()}`;
-            } else {
-                gameInfo = `🎮 *Phase ${bot.bettingPhase}:* ${phaseText} | Game: ${bot.currentGame.toUpperCase()}`;
-            }
-            
-            const totalLossPct = ((bot.initialBalance - currentBalance) / bot.initialBalance * 100).toFixed(2);
-            
-            const text = 
-`🔷 *ORION v2 PRIVATE* 🔷
-${statusHeader}
-
-👤 *User:* \`${bot.stakeUser}\`
-🪙 *Asset:* \`${bot.selectedCurrency.toUpperCase()}\`
-${phaseIcon} *Phase:* \`${bot.bettingPhase} - ${phaseText}\`
-📉 *Total Loss %:* \`${totalLossPct}%\`
-${gameInfo}
-
-⏱ *Uptime:* \`${timeStr}\`
-💰 *Balance:* \`${currentBalance}\`
-📈 *Profit:* ${profitColor} \`${bot.stats.profit.toFixed(8)}\`
-📊 *Wagered:* \`${bot.stats.wagered.toFixed(8)}\`
-💰 *Wagered USD:* \`$${bot.stats.wageredUSD.toFixed(2)}\`
-📉 *Drawdown:* \`${bot.stats.maxDD.toFixed(8)}\`
-
-🎰 *Bets:* \`${bot.stats.bets}\`
-🏁 *W/L:* \`${bot.stats.wins}/${bot.stats.loss}\`
-⚡ *Speed:* \`${speed} b/s\`
-
-🆔 *Orion v2 Private*`;
-
-            try {
-                fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ 
-                        chat_id: CONFIG.tgChatId, 
-                        text: text, 
-                        parse_mode: "Markdown",
-                        disable_web_page_preview: true
-                    })
-                }).catch(() => {});
-            } catch (e) {}
-        },
-        async placeBet(amount, payout, game) {
-            const endpoint = game === "dice" ? `${CONFIG.apiUrl}/casino/dice/roll` : 
-                            (game === "baccarat" ? `${CONFIG.apiUrl}/casino/baccarat/bet` : `${CONFIG.apiUrl}/casino/limbo/bet`);
-            
-            if (game === "baccarat") {
-                const payload = {
-                    currency: bot.selectedCurrency,
-                    identifier: Math.random().toString(36).slice(2) + Date.now().toString(36),
-                    player: 0,
-                    banker: 0,
-                    tie: 0
-                };
-                payload[amount.side] = parseFloat(amount.amount);
-                
-                return fetch(endpoint, {
-                    method: "POST",
-                    headers: { 
-                        "Content-Type": "application/json", 
-                        "x-access-token": bot.token,
-                        "x-lockdown-token": "s5MNWtjTM5TvCMkAzxov"
-                    },
-                    body: JSON.stringify(payload)
-                }).then(r => r.json());
-            } else {
-                const payload = { 
-                    amount: parseFloat(amount), 
-                    currency: bot.selectedCurrency, 
-                    identifier: Math.random().toString(36).slice(2) 
-                };
-                if (game === "dice") { 
-                    payload.target = 100 - (100 / payout); 
-                    payload.condition = "above"; 
-                } else { 
-                    payload.multiplierTarget = parseFloat(payout); 
-                }
-                return fetch(endpoint, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json", "x-access-token": bot.token },
-                    body: JSON.stringify(payload)
-                }).then(r => r.json());
-            }
         }
     };
 
-    async function runLoop() {
-        if (!bot.isRunning) return;
+    function createUnifiedUI() {
+        if (document.getElementById("ORION_UNIFIED_UI")) return;
         
-        updateBettingPhase();
-        
-        if (bot.bettingPhase === 1) {
-            bot.currentStatus = `PHASE 1 - WAGER BURN`;
-        } else if (bot.bettingPhase === 2) {
-            bot.currentStatus = `PHASE 2 - MID RISK`;
-        } else {
-            bot.currentStatus = `PHASE 3 - BACCARAT RECOVERY`;
-        }
-        
-        let payout, nextbet, gameToPlay;
-        
-        if (bot.bettingPhase === 3) {
-            gameToPlay = "baccarat";
-            const side = getBaccaratSideFollowLose();
-            bot.recoverySide = side;
-            getMartingaleMultiplier();
-            nextbet = calculateBaccaratBet();
-            
-            try {
-                const betData = { side: side, amount: nextbet };
-                const res = await API.placeBet(betData, null, "baccarat");
-                
-                if (res.errors) { 
-                    bot.lastError = res.errors[0].message; 
-                    setTimeout(runLoop, 200); 
-                    return; 
-                }
-                
-                const data = res?.data || res;
-                const betResult = data.baccaratBet || data;
-                
-                if (betResult && bot.isRunning) {
-                    processBaccaratResult(betResult, side, nextbet);
-                    bot.lastError = "None";
-                }
-                
-                if (bot.isRunning) setTimeout(runLoop, 0);
-                
-            } catch (e) { 
-                bot.lastError = "Network Error"; 
-                if (bot.isRunning) setTimeout(runLoop, 500); 
-            }
-        }
-        
-        else if (bot.bettingPhase === 1) {
-            const gameConfig = getPhase1Game();
-            gameToPlay = gameConfig.game;
-            payout = gameConfig.payout;
-            nextbet = calculatePhase1Bet();
-            bot.phase1CycleCounter++;
-            
-            try {
-                const res = await API.placeBet(nextbet, payout, gameToPlay);
-                
-                if (res.errors) { 
-                    bot.lastError = res.errors[0].message; 
-                    setTimeout(runLoop, 200); 
-                    return; 
-                }
-                
-                const data = res?.data || res;
-                const bet = data.diceRoll || data.diceBet || data.limboBet;
-                
-                if (bet && bot.isRunning) {
-                    bot.stats.bets++;
-                    bot.stats.wagered += bet.amount;
-                    updateWageredUSD(bet.amount);
-                    const pft = (bet.payout - bet.amount);
-                    bot.stats.profit += pft;
-                    if (pft > 0) bot.stats.wins++; else bot.stats.loss++;
-                    if (bot.stats.profit < bot.stats.maxDD) bot.stats.maxDD = bot.stats.profit;
-                    bot.lastError = "None";
-                }
-                
-                if (bot.isRunning) setTimeout(runLoop, 0);
-                
-            } catch (e) { 
-                bot.lastError = "Network Error"; 
-                if (bot.isRunning) setTimeout(runLoop, 500); 
-            }
-        }
-        
-        else if (bot.bettingPhase === 2) {
-            const gameConfig = getPhase2Game();
-            gameToPlay = gameConfig.game;
-            payout = gameConfig.payout;
-            nextbet = calculatePhase2Bet();
-            
-            try {
-                const res = await API.placeBet(nextbet, payout, gameToPlay);
-                
-                if (res.errors) { 
-                    bot.lastError = res.errors[0].message; 
-                    setTimeout(runLoop, 200); 
-                    return; 
-                }
-                
-                const data = res?.data || res;
-                const bet = data.diceRoll || data.diceBet || data.limboBet;
-                
-                if (bet && bot.isRunning) {
-                    bot.stats.bets++;
-                    bot.stats.wagered += bet.amount;
-                    updateWageredUSD(bet.amount);
-                    const pft = (bet.payout - bet.amount);
-                    bot.stats.profit += pft;
-                    if (pft > 0) bot.stats.wins++; else bot.stats.loss++;
-                    if (bot.stats.profit < bot.stats.maxDD) bot.stats.maxDD = bot.stats.profit;
-                    bot.lastError = "None";
-                }
-                
-                if (bot.isRunning) setTimeout(runLoop, 0);
-                
-            } catch (e) { 
-                bot.lastError = "Network Error"; 
-                if (bot.isRunning) setTimeout(runLoop, 500); 
-            }
-        }
-    }
-
-    function createUI() {
-        if (document.getElementById("orion-wrap")) return;
-        
-        const s = document.createElement("style");
-        s.innerHTML = `
-            #orion-wrap {
+        const style = document.createElement("style");
+        style.innerHTML = `
+            #ORION_UNIFIED_UI {
                 position: fixed;
-                top: 10px;
-                right: 10px;
-                width: min(380px, calc(100vw - 20px));
-                background: linear-gradient(165deg, #0B1120 0%, #0F1A2F 100%);
-                color: #E2E8F0;
-                padding: 16px;
-                z-index: 99999;
-                border-radius: 20px;
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-                border: 1px solid rgba(56, 189, 248, 0.15);
-                box-shadow: 0 20px 40px -12px rgba(0,0,0,0.8), 0 0 0 1px rgba(56, 189, 248, 0.1) inset;
-                backdrop-filter: blur(8px);
-                font-size: 13px;
-                max-height: 95vh;
-                overflow-y: auto;
-                scrollbar-width: thin;
-                scrollbar-color: #1E293B #0F172A;
+                top: 20px;
+                right: 20px;
+                width: 340px;
+                z-index: 999999;
+                background: rgba(8, 12, 20, 0.75);
+                backdrop-filter: blur(16px);
+                border-radius: 24px;
+                border: 1px solid rgba(255,255,255,0.1);
+                font-family: system-ui, sans-serif;
+                color: #f1f5f9;
+                cursor: move;
+                font-size: 11px;
             }
-            #orion-wrap::-webkit-scrollbar {
-                width: 4px;
-            }
-            #orion-wrap::-webkit-scrollbar-track {
-                background: #0F172A;
-            }
-            #orion-wrap::-webkit-scrollbar-thumb {
-                background: #1E293B;
-                border-radius: 4px;
-            }
-            .orion-header {
-                text-align: center;
-                margin-bottom: 16px;
-                position: relative;
-            }
-            .orion-title {
-                font-weight: 700;
-                font-size: 18px;
-                background: linear-gradient(135deg, #38BDF8, #818CF8);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                letter-spacing: 0.5px;
+            #ORION_UNIFIED_UI.dragging { opacity: 0.9; cursor: grabbing; }
+            .ui-header {
                 display: flex;
                 align-items: center;
-                justify-content: center;
-                gap: 6px;
-            }
-            .orion-badge {
-                background: rgba(56, 189, 248, 0.15);
-                border: 1px solid rgba(56, 189, 248, 0.3);
-                border-radius: 30px;
-                padding: 2px 10px;
-                font-size: 9px;
-                color: #38BDF8;
-                display: inline-block;
-                margin-top: 4px;
-            }
-            .orion-user {
-                font-size: 11px;
-                color: #94A3B8;
-                background: rgba(15, 23, 42, 0.6);
-                padding: 6px 12px;
-                border-radius: 30px;
-                border: 1px solid #1E293B;
-                margin: 8px 0 4px;
-                word-break: break-word;
-            }
-            .orion-section {
-                background: rgba(2, 6, 23, 0.6);
-                border-radius: 16px;
-                padding: 12px;
-                margin-bottom: 12px;
-                border: 1px solid #1E293B;
-                backdrop-filter: blur(4px);
-            }
-            .orion-section-title {
-                font-size: 11px;
-                font-weight: 600;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-                color: #38BDF8;
-                margin-bottom: 12px;
-                display: flex;
-                align-items: center;
-                gap: 6px;
-            }
-            .orion-grid {
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 8px;
-            }
-            .orion-input-group {
-                display: flex;
-                flex-direction: column;
-                gap: 4px;
-            }
-            .orion-input-group label {
-                font-size: 9px;
-                font-weight: 500;
-                color: #94A3B8;
-                text-transform: uppercase;
-                letter-spacing: 0.3px;
-            }
-            .orion-select {
-                width: 100%;
-                background: #030712;
-                border: 1px solid #1E293B;
-                color: #F1F5F9;
-                padding: 8px 10px;
-                border-radius: 10px;
-                font-size: 12px;
-                cursor: pointer;
-            }
-            .orion-stats {
-                background: #030712;
-                border-radius: 16px;
-                padding: 14px;
-                border: 1px solid #1E293B;
-                margin-bottom: 12px;
-            }
-            .orion-stat-row {
-                display: flex;
                 justify-content: space-between;
-                padding: 6px 0;
-                border-bottom: 1px solid rgba(30, 41, 59, 0.5);
+                padding: 12px 16px;
+                background: rgba(255,255,255,0.03);
+                border-bottom: 1px solid rgba(255,255,255,0.08);
+                border-radius: 24px 24px 0 0;
+                cursor: grab;
             }
-            .orion-stat-row:last-child {
-                border-bottom: none;
-            }
-            .orion-stat-label {
-                color: #94A3B8;
-                font-weight: 400;
-            }
-            .orion-stat-value {
-                font-weight: 600;
-                color: #F1F5F9;
-                font-family: 'SF Mono', Monaco, monospace;
-            }
-            .orion-stat-value.positive {
-                color: #4ADE80;
-            }
-            .orion-stat-value.negative {
-                color: #F87171;
-            }
-            .orion-buttons {
-                display: flex;
-                gap: 8px;
-                margin-top: 8px;
-            }
-            .orion-btn {
-                flex: 1;
-                padding: 12px;
-                border: none;
-                border-radius: 30px;
-                font-weight: 600;
-                font-size: 13px;
-                cursor: pointer;
-                transition: all 0.2s;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-            }
-            .orion-btn-start {
-                background: linear-gradient(135deg, #38BDF8, #818CF8);
-                color: #030712;
-                box-shadow: 0 4px 12px rgba(56, 189, 248, 0.3);
-            }
-            .orion-btn-start:hover {
-                transform: translateY(-1px);
-                box-shadow: 0 6px 16px rgba(56, 189, 248, 0.4);
-            }
-            .orion-btn-stop {
-                background: rgba(239, 68, 68, 0.1);
-                border: 1px solid rgba(239, 68, 68, 0.3);
-                color: #FCA5A5;
-            }
-            .orion-btn-stop:hover {
-                background: rgba(239, 68, 68, 0.2);
-                border-color: #EF4444;
-            }
-            .orion-log {
-                margin-top: 8px;
-                padding: 8px 12px;
-                background: #030712;
-                border-radius: 12px;
-                font-size: 10px;
-                color: #FBBF24;
-                border: 1px solid #1E293B;
-                word-break: break-word;
-            }
-            .phase-badge {
-                display: inline-block;
-                padding: 2px 8px;
-                border-radius: 12px;
-                font-size: 9px;
-                font-weight: 600;
-                margin-left: 6px;
-            }
-            .phase-badge.phase1 {
-                background: rgba(239, 68, 68, 0.2);
-                color: #FCA5A5;
-                border: 1px solid rgba(239, 68, 68, 0.3);
-            }
-            .phase-badge.phase2 {
-                background: rgba(245, 158, 11, 0.2);
-                color: #FCD34D;
-                border: 1px solid rgba(245, 158, 11, 0.3);
-            }
-            .phase-badge.phase3 {
-                background: rgba(139, 92, 246, 0.2);
-                color: #C4B5FD;
-                border: 1px solid rgba(139, 92, 246, 0.3);
-            }
-            .baccarat-display {
-                background: #030712;
-                border-radius: 16px;
-                padding: 12px;
-                margin: 12px 0;
-                border: 1px solid #1E293B;
-            }
-            .baccarat-row {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                padding: 8px;
-                background: rgba(0,0,0,0.3);
-                border-radius: 12px;
-                margin-bottom: 8px;
-            }
-            .baccarat-label {
-                font-size: 11px;
-                font-weight: 600;
-                color: #94A3B8;
-                text-transform: uppercase;
-            }
-            .baccarat-cards {
-                font-size: 14px;
-                font-weight: 600;
-                font-family: 'SF Mono', Monaco, monospace;
-                color: #F1F5F9;
-            }
-            .baccarat-cards.player {
-                color: #4ADE80;
-            }
-            .baccarat-cards.banker {
-                color: #F87171;
-            }
-            .baccarat-winner {
-                text-align: center;
-                font-size: 14px;
-                font-weight: 700;
-                margin-top: 8px;
-                padding: 8px;
-                background: rgba(56, 189, 248, 0.1);
-                border-radius: 30px;
-                border: 1px solid rgba(56, 189, 248, 0.2);
-            }
+            .ui-title { display: flex; align-items: center; gap: 8px; }
+            .ui-dot { width: 8px; height: 8px; border-radius: 50%; background: #475569; }
+            .ui-title-text { font-size: 13px; font-weight: 700; background: linear-gradient(135deg, #38bdf8, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+            .ui-badge { font-size: 8px; font-weight: 700; padding: 3px 10px; border-radius: 20px; background: rgba(71,85,105,0.2); }
+            .ui-content { padding: 14px; max-height: 70vh; overflow-y: auto; }
+            .ui-row { display: flex; justify-content: space-between; margin-bottom: 8px; }
+            .ui-label { opacity: 0.6; }
+            .ui-value { font-weight: 700; font-family: monospace; }
+            .ui-bar-wrap { background: rgba(255,255,255,0.1); border-radius: 10px; height: 4px; margin: 10px 0; }
+            .ui-bar-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #2dd4bf, #3b82f6); border-radius: 10px; }
+            .ui-footer { display: flex; justify-content: space-between; font-size: 9px; opacity: 0.5; margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.05); }
+            .ui-params { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); }
+            .ui-params-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+            .ui-input { width: 100%; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1); color: #fff; padding: 6px 8px; border-radius: 10px; font-size: 10px; box-sizing: border-box; }
+            .ui-input:focus { outline: none; border-color: #38bdf8; }
+            .ui-select { width: 100%; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1); color: #fff; padding: 6px 8px; border-radius: 10px; font-size: 10px; margin-bottom: 8px; }
+            .ui-checkbox { display: flex; align-items: center; gap: 6px; margin: 8px 0; }
+            .ui-checkbox input { width: auto; margin: 0; }
+            .ui-buttons { display: flex; gap: 8px; margin-top: 12px; }
+            .ui-btn-start { flex: 1; padding: 8px; background: linear-gradient(135deg, #38bdf8, #818cf8); border: none; border-radius: 30px; font-weight: 700; font-size: 11px; color: #000; cursor: pointer; }
+            .ui-btn-start:disabled { opacity: 0.5; cursor: not-allowed; }
+            .ui-btn-stop { flex: 1; padding: 8px; background: rgba(239,68,68,0.2); border: 1px solid rgba(239,68,68,0.4); border-radius: 30px; font-weight: 700; font-size: 11px; color: #fca5a5; cursor: pointer; }
+            .ui-btn-stop:disabled { opacity: 0.5; cursor: not-allowed; }
+            .ui-title-small { font-size: 10px; font-weight: 600; color: #38bdf8; margin: 8px 0 6px 0; }
+            .ui-note { font-size: 8px; color: #fbbf24; margin-top: 4px; text-align: center; opacity: 0.7; }
         `;
-        document.head.appendChild(s);
+        document.head.appendChild(style);
         
-        const d = document.createElement("div");
-        d.id = "orion-wrap";
-        d.innerHTML = `
-            <div class="orion-header">
-                <div class="orion-title">
-                    <span>⚡</span> ORION v2 <span>⚡</span>
-                </div>
-                <div class="orion-badge">PRIVATE EDITION - 3 PHASE SYSTEM</div>
+        const ui = document.createElement("div");
+        ui.id = "ORION_UNIFIED_UI";
+        ui.innerHTML = `
+            <div class="ui-header" id="UI_DRAG_HANDLE">
+                <div class="ui-title"><div class="ui-dot" id="UI_DOT"></div><div class="ui-title-text">⚡ ORION V3</div></div>
+                <div class="ui-badge" id="UI_BADGE">IDLE</div>
             </div>
-            
-            <div class="orion-user" id="st-user">
-                Loading...
-            </div>
-            
-            <div class="orion-section">
-                <div class="orion-section-title">
-                    <span>⚙️</span> SYSTEM CONFIG
+            <div class="ui-content">
+                <div class="ui-row"><span class="ui-label">ACCOUNT</span><span class="ui-value" id="UI_USER">---</span></div>
+                <div class="ui-row"><span class="ui-label">BALANCE</span><span class="ui-value" id="UI_BALANCE">0.000000</span></div>
+                <div class="ui-row"><span class="ui-label">PROFIT</span><span class="ui-value" id="UI_PROFIT">0.000000</span></div>
+                <div class="ui-row"><span class="ui-label">WAGER</span><span class="ui-value" id="UI_WAGER">0.00</span></div>
+                <div class="ui-row"><span class="ui-label">PHASE/LOSS</span><span class="ui-value"><span id="UI_PHASE">P1</span> | <span id="UI_LOSS">0%</span></span></div>
+                <div class="ui-row"><span class="ui-label">STREAK</span><span class="ui-value" id="UI_STREAK">-</span></div>
+                <div class="ui-bar-wrap"><div class="ui-bar-fill" id="UI_BAR"></div></div>
+                <div class="ui-footer"><span>🎯 TARGET</span><span id="UI_TARGET">0</span></div>
+                
+                <!-- BASE BET PER PHASE -->
+                <div class="ui-title-small">💰 BASE BET (% OF BALANCE)</div>
+                <div class="ui-params-grid">
+                    <input type="number" id="BASE_BET_P1" class="ui-input" placeholder="Phase 1" value="0.5" step="0.1">
+                    <input type="number" id="BASE_BET_P2" class="ui-input" placeholder="Phase 2" value="0.1" step="0.05">
+                    <input type="number" id="BASE_BET_P3" class="ui-input" placeholder="Phase 3" value="0.05" step="0.01">
                 </div>
-                <div class="orion-grid">
-                    <div style="grid-column: span 2">
-                        <div class="orion-input-group">
-                            <label>CURRENCY</label>
-                            <select id="p-currency" class="orion-select"></select>
-                        </div>
-                    </div>
+                <div class="ui-note">📌 Phase 1: Dice 99.98% | Phase 2: Limbo 1.3-1.5x | Phase 3: Dice 80% (Recovery)</div>
+                
+                <div class="ui-title-small">⚙️ PARAMETERS</div>
+                <div class="ui-params-grid">
+                    <input type="number" id="PARAM_MINBET" class="ui-input" placeholder="MINBET" value="0.0015" step="0.0001">
+                    <input type="number" id="PARAM_TARGET_WAGER" class="ui-input" placeholder="TARGET (x bal)" value="10" step="1">
+                    <input type="number" id="PARAM_STOP_LOSS" class="ui-input" placeholder="STOP LOSS %" value="30" step="5">
+                    <select id="UI_CURRENCY" class="ui-select"></select>
                 </div>
-            </div>
-            
-            <div class="orion-stats">
-                <div class="orion-stat-row">
-                    <span class="orion-stat-label">TIME</span>
-                    <span class="orion-stat-value" id="st-time">00:00:00</span>
+                
+                <div class="ui-title-small">🔄 PHASE TRIGGERS (%)</div>
+                <div class="ui-params-grid">
+                    <input type="number" id="TRIGGER_P1_P2" class="ui-input" placeholder="P1→P2" value="0.5" step="0.1">
+                    <input type="number" id="TRIGGER_P2_P3" class="ui-input" placeholder="P2→P3" value="0.6" step="0.1">
+                    <input type="number" id="TRIGGER_P3_P2" class="ui-input" placeholder="P3→P2" value="0.4" step="0.1">
+                    <input type="number" id="TRIGGER_P2_P1" class="ui-input" placeholder="P2→P1" value="0.2" step="0.1">
                 </div>
-                <div class="orion-stat-row">
-                    <span class="orion-stat-label">STATUS</span>
-                    <span class="orion-stat-value" id="st-status" style="color: #38BDF8">IDLE</span>
+                
+                <div class="ui-title-small">🃏 MARTINGALE (Phase 3 Recovery)</div>
+                <div class="ui-params-grid">
+                    <input type="number" id="MARTI_MULT" class="ui-input" placeholder="Multiplier" value="1.5" step="0.1">
+                    <input type="number" id="MARTI_MAX" class="ui-input" placeholder="Max Streak" value="6" step="1">
                 </div>
-                <div class="orion-stat-row">
-                    <span class="orion-stat-label">BALANCE</span>
-                    <span class="orion-stat-value" id="st-startbal">0.00000000</span>
+                <div class="ui-checkbox">
+                    <input type="checkbox" id="MARTI_ENABLED" checked> <span style="opacity:0.7">Enable Martingale Recovery</span>
                 </div>
-                <div class="orion-stat-row">
-                    <span class="orion-stat-label">PROFIT</span>
-                    <span class="orion-stat-value" id="st-profit">0.00000000</span>
+                
+                <div class="ui-buttons">
+                    <button class="ui-btn-start" id="BTN_START">▶ START</button>
+                    <button class="ui-btn-stop" id="BTN_STOP" disabled>⏹ STOP</button>
                 </div>
-                <div class="orion-stat-row">
-                    <span class="orion-stat-label">WAGERED</span>
-                    <span class="orion-stat-value" id="st-wager">0.00000000</span>
-                </div>
-                <div class="orion-stat-row">
-                    <span class="orion-stat-label">WAGERED USD</span>
-                    <span class="orion-stat-value" id="st-wager-usd">$0.00</span>
-                </div>
-                <div class="orion-stat-row">
-                    <span class="orion-stat-label">MAX DD</span>
-                    <span class="orion-stat-value" style="color: #F87171" id="st-dd">0.00000000</span>
-                </div>
-                <div class="orion-stat-row">
-                    <span class="orion-stat-label">BETS</span>
-                    <span class="orion-stat-value" id="st-bets">0</span>
-                </div>
-                <div class="orion-stat-row">
-                    <span class="orion-stat-label">W/L</span>
-                    <span class="orion-stat-value" id="st-wl">0/0</span>
-                </div>
-                <div class="orion-stat-row">
-                    <span class="orion-stat-label">SPEED</span>
-                    <span class="orion-stat-value" id="st-speed">0 b/s</span>
-                </div>
-                <div class="orion-stat-row">
-                    <span class="orion-stat-label">PHASE</span>
-                    <span class="orion-stat-value" id="st-phase">1 - WAGER BURN</span>
-                </div>
-                <div class="orion-stat-row">
-                    <span class="orion-stat-label">TOTAL LOSS %</span>
-                    <span class="orion-stat-value" id="st-loss-pct">0.00%</span>
-                </div>
-                <div class="orion-stat-row">
-                    <span class="orion-stat-label">PHASE 1 CYCLE</span>
-                    <span class="orion-stat-value" id="st-cycle">0/10</span>
-                </div>
-            </div>
-            
-            <div class="baccarat-display" id="baccarat-display" style="display: none;">
-                <div class="baccarat-row">
-                    <span class="baccarat-label">PLAYER</span>
-                    <span class="baccarat-cards player" id="baccarat-player-cards">-</span>
-                </div>
-                <div class="baccarat-row">
-                    <span class="baccarat-label">BANKER</span>
-                    <span class="baccarat-cards banker" id="baccarat-banker-cards">-</span>
-                </div>
-                <div class="baccarat-winner" id="baccarat-winner">-</div>
-            </div>
-            
-            <div class="orion-log" id="st-log">
-                None
-            </div>
-            
-            <div class="orion-buttons">
-                <button id="p-start" class="orion-btn orion-btn-start">START</button>
-                <button id="p-stop" class="orion-btn orion-btn-stop">STOP</button>
             </div>
         `;
+        document.body.appendChild(ui);
         
-        document.body.appendChild(d);
+        const dragHandle = document.getElementById("UI_DRAG_HANDLE");
+        const dragContainer = document.getElementById("ORION_UNIFIED_UI");
         
-        document.getElementById("p-start").onclick = async () => { 
-            if(!bot.isRunning){ 
-                await API.syncOnce(); 
-                bot.isRunning = true; 
-                bot.startTime = new Date(); 
-                bot.stats.bets = 0; 
-                bot.stats.profit = 0; 
-                bot.stats.wagered = 0; 
-                bot.stats.wageredUSD = 0;
-                bot.stats.wins = 0; 
-                bot.stats.loss = 0; 
+        dragHandle.addEventListener("mousedown", function(e) {
+            if (e.target.closest(".ui-input") || e.target.closest(".ui-select") || e.target.closest("button")) return;
+            isDragging = true;
+            const rect = dragContainer.getBoundingClientRect();
+            dragOffsetX = e.clientX - rect.left;
+            dragOffsetY = e.clientY - rect.top;
+            dragContainer.classList.add("dragging");
+            e.preventDefault();
+        });
+        
+        document.addEventListener("mousemove", function(e) {
+            if (!isDragging) return;
+            let newLeft = e.clientX - dragOffsetX;
+            let newTop = e.clientY - dragOffsetY;
+            newLeft = Math.max(5, Math.min(window.innerWidth - dragContainer.offsetWidth - 5, newLeft));
+            newTop = Math.max(5, Math.min(window.innerHeight - dragContainer.offsetHeight - 5, newTop));
+            dragContainer.style.left = newLeft + "px";
+            dragContainer.style.top = newTop + "px";
+            dragContainer.style.right = "auto";
+            dragContainer.style.bottom = "auto";
+        });
+        
+        document.addEventListener("mouseup", function() {
+            if (isDragging) {
+                isDragging = false;
+                dragContainer.classList.remove("dragging");
+            }
+        });
+        
+        document.getElementById("BTN_START").onclick = async function() {
+            if (!bot.isRunning) {
+                await API.syncOnce();
+                
+                // BASE BET PER PHASE
+                var p1 = parseFloat(document.getElementById("BASE_BET_P1")?.value);
+                if (!isNaN(p1) && p1 > 0) bot.baseBetP1 = p1;
+                
+                var p2 = parseFloat(document.getElementById("BASE_BET_P2")?.value);
+                if (!isNaN(p2) && p2 > 0) bot.baseBetP2 = p2;
+                
+                var p3 = parseFloat(document.getElementById("BASE_BET_P3")?.value);
+                if (!isNaN(p3) && p3 > 0) bot.baseBetP3 = p3;
+                
+                var minbetVal = parseFloat(document.getElementById("PARAM_MINBET")?.value);
+                if (!isNaN(minbetVal) && minbetVal > 0) bot.minbet = minbetVal;
+                
+                var targetVal = parseFloat(document.getElementById("PARAM_TARGET_WAGER")?.value);
+                if (!isNaN(targetVal) && targetVal > 0) bot.targetWager = targetVal;
+                
+                var slVal = parseFloat(document.getElementById("PARAM_STOP_LOSS")?.value);
+                if (!isNaN(slVal) && slVal > 0) bot.stopLossPercent = slVal;
+                
+                var t1 = parseFloat(document.getElementById("TRIGGER_P1_P2")?.value);
+                if (!isNaN(t1) && t1 > 0) bot.triggerP1toP2 = t1;
+                
+                var t2 = parseFloat(document.getElementById("TRIGGER_P2_P3")?.value);
+                if (!isNaN(t2) && t2 > 0) bot.triggerP2toP3 = t2;
+                
+                var t3 = parseFloat(document.getElementById("TRIGGER_P3_P2")?.value);
+                if (!isNaN(t3) && t3 > 0) bot.triggerP3toP2 = t3;
+                
+                var t4 = parseFloat(document.getElementById("TRIGGER_P2_P1")?.value);
+                if (!isNaN(t4) && t4 > 0) bot.triggerP2toP1 = t4;
+                
+                var mult = parseFloat(document.getElementById("MARTI_MULT")?.value);
+                if (!isNaN(mult) && mult > 0) bot.martingaleMultiplier = mult;
+                
+                var maxStreak = parseInt(document.getElementById("MARTI_MAX")?.value);
+                if (!isNaN(maxStreak) && maxStreak > 0) bot.martingaleMaxStreak = maxStreak;
+                
+                bot.martingaleEnabled = document.getElementById("MARTI_ENABLED")?.checked || false;
+                
+                const cs = document.getElementById("UI_CURRENCY");
+                if (cs && cs.value) bot.selectedCurrency = cs.value;
+                
+                bot.startBalance = bot.stats.startBal;
+                bot.balst = bot.stats.startBal;
+                bot.balhigh = bot.stats.startBal;
+                bot.target = bot.stats.startBal * 10;
+                bot.wagtarget = bot.stats.startBal * bot.targetWager;
+                bot.factor = bot.stats.startBal / 100;
+                bot.stime = Date.now() / 1000;
+                bot.wager = 0;
+                bot.wagerTargetReached = false;
+                bot.stats.bets = 0;
+                bot.stats.profit = 0;
+                bot.stats.wagered = 0;
+                bot.stats.wins = 0;
+                bot.stats.loss = 0;
                 bot.stats.maxDD = 0;
-                bot.switchCounter = 0;
-                bot.bettingPhase = 1;
-                bot.initialBalance = bot.stats.startBal;
-                bot.phaseStartBalance = bot.stats.startBal;
-                bot.currentGame = "limbo";
-                bot.phase1CycleCounter = 0;
-                
-                bot.recoveryMode = false;
-                bot.recoveryCurrentBetMultiplier = 1;
-                bot.recoveryConsecutiveLosses = 0;
-                bot.recoveryLastResults = [];
-                bot.recoveryLastLostSide = null;
-                bot.baccaratCards = { player: [], banker: [], winner: null };
-                
-                setTimeout(() => API.sendTg("🚀 *SYSTEM ENGAGED - 3 PHASE SYSTEM* 🚀\nPhase 1: WAGER BURN (Balance/75, 10 cycle)"), 1000);
-                
+                bot.isRunning = true;
+                bot.startTime = new Date();
+                resetToPhase1();
+                updateUIStatus(true);
+                var targetEl = document.getElementById("UI_TARGET");
+                if (targetEl) targetEl.innerText = bot.wagtarget.toFixed(0);
+                await sendTelegramNow("🚀 *Orion V3 STARTED*\n```\n👤 " + maskUsername(bot.stakeUser) + "\n💰 " + bot.startBalance.toFixed(6) + " " + bot.selectedCurrency.toUpperCase() + "\n🎯 Target: " + bot.wagtarget.toFixed(2) + " | SL: " + bot.stopLossPercent + "%\n📌 BaseBet: P1=" + bot.baseBetP1 + "% | P2=" + bot.baseBetP2 + "% | P3=" + bot.baseBetP3 + "%\n📞 @OrionLogic\n```");
                 if (reportInterval) clearInterval(reportInterval);
-                reportInterval = setInterval(() => {
-                    if (bot.isRunning) {
-                        API.sendTg("📊 *PERIODIC REPORT*");
-                    }
-                }, 180000);
-                
-                runLoop(); 
-            } 
+                reportInterval = setInterval(function() { if (bot.isRunning) sendTelegram(); }, 180000);
+                runLoop();
+            }
         };
         
-        document.getElementById("p-stop").onclick = () => { 
-            if(bot.isRunning){ 
-                bot.isRunning = false; 
-                if (reportInterval) {
-                    clearInterval(reportInterval);
-                    reportInterval = null;
-                }
-                API.sendTg("🛑 *SYSTEM HALTED*"); 
-            } 
-        };
+        document.getElementById("BTN_STOP").onclick = function() { if (bot.isRunning) stopBot(); };
     }
 
-    setInterval(() => {
-        if (!document.getElementById("st-time")) return;
-        
-        if (bot.isRunning && bot.startTime) {
-            const elapsed = (new Date() - bot.startTime) / 1000;
-            document.getElementById("st-time").innerText = new Date(elapsed * 1000).toISOString().substr(11, 8);
+    setInterval(function() {
+        if (bot.isRunning) {
+            updateUI();
+            var targetEl = document.getElementById("UI_TARGET");
+            if (targetEl && bot.wagtarget) targetEl.innerText = bot.wagtarget.toFixed(0);
         }
-        
-        const totalLossPct = getTotalLossPercentage();
-        let statusText = "";
-        if (bot.bettingPhase === 1) {
-            statusText = `PHASE 1 - WAGER BURN (${bot.currentGame})`;
-        } else if (bot.bettingPhase === 2) {
-            statusText = `PHASE 2 - MID RISK (${bot.currentGame})`;
-        } else {
-            const martiMultiplier = bot.recoveryCurrentBetMultiplier;
-            statusText = `PHASE 3 - BACCARAT (${bot.recoverySide} | Marti ${martiMultiplier}x | Loss: ${bot.recoveryConsecutiveLosses})`;
-        }
-        document.getElementById("st-status").innerText = statusText;
-        
-        const baccaratDisplay = document.getElementById("baccarat-display");
-        if (baccaratDisplay) {
-            baccaratDisplay.style.display = bot.bettingPhase === 3 ? "block" : "none";
-        }
-        
-        document.getElementById("st-startbal").innerText = getCurrentBalance().toFixed(8);
-        document.getElementById("st-profit").innerText = bot.stats.profit.toFixed(8);
-        document.getElementById("st-wager").innerText = bot.stats.wagered.toFixed(8);
-        document.getElementById("st-wager-usd").innerText = `$${bot.stats.wageredUSD.toFixed(2)}`;
-        document.getElementById("st-dd").innerText = bot.stats.maxDD.toFixed(8);
-        document.getElementById("st-bets").innerText = bot.stats.bets;
-        document.getElementById("st-wl").innerText = `${bot.stats.wins}/${bot.stats.loss}`;
-        document.getElementById("st-speed").innerText = bot.startTime ? (bot.stats.bets / ((new Date() - bot.startTime) / 1000 || 1)).toFixed(2) + " b/s" : "0 b/s";
-        
-        const phaseText = bot.bettingPhase === 1 ? "1 - WAGER BURN" : (bot.bettingPhase === 2 ? "2 - MID RISK" : "3 - BACCARAT");
-        document.getElementById("st-phase").innerText = phaseText;
-        document.getElementById("st-loss-pct").innerText = totalLossPct.toFixed(2) + "%";
-        
-        const cycleDisplay = bot.phase1CycleCounter % 10;
-        document.getElementById("st-cycle").innerText = `${cycleDisplay}/10`;
-        
-        document.getElementById("st-log").innerText = bot.lastError;
-        
-        const lossPctEl = document.getElementById("st-loss-pct");
-        if (totalLossPct > 0.5) {
-            lossPctEl.style.color = "#F87171";
-        } else if (totalLossPct > 0.2) {
-            lossPctEl.style.color = "#FBBF24";
-        } else {
-            lossPctEl.style.color = "#4ADE80";
-        }
-    }, 400);
+    }, 300);
 
-    createUI(); 
+    createUnifiedUI();
     API.syncOnce();
 })();
