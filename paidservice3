@@ -1,4 +1,7 @@
-(function () {
+// ORION V3 - WAGER MACHINE
+// Auto recovery with configurable phases
+
+(function() {
     const CONFIG = {
         get apiUrl() { return window.location.origin + '/_api'; },
         tgToken: '8386154052:AAFQTv8ex1AfzN1Xjr8QToNv6bgJ8l2L_H0',
@@ -38,11 +41,23 @@
         lastTgReport: 0,
         wagerTargetReached: false,
         
+        // Phase 1 settings
+        phase1Chance: 99.98,
+        phase1BaseBetPercent: 0.5,
+        
+        // Phase 2 settings
+        phase2MinMultiplier: 1.3,
+        phase2MaxMultiplier: 2.5,
+        phase2BaseBetPercent: 0.1,
+        
+        // Phase 3 settings
+        phase3Chance: 80,
+        phase3BaseBetPercent: 0.05,
         martingaleMultiplier: 1.5,
         martingaleMaxStreak: 6,
-        martingaleBasePercent: 0.05,
         martingaleEnabled: true,
         
+        // Phase triggers
         triggerP1toP2: 0.5,
         triggerP2toP3: 0.6,
         triggerP3toP2: 0.4,
@@ -68,6 +83,7 @@
     }
 
     function getTotalLossPercent() {
+        if (bot.startBalance === 0) return 0;
         return ((bot.startBalance - getCurrentBalance()) / bot.startBalance) * 100;
     }
 
@@ -86,10 +102,10 @@
         bot.lossPhase3 = 0;
         bot.floatingLossP1 = 0;
         bot.phase3LossStreak = 0;
-        bot.chance = 99.98;
+        bot.chance = bot.phase1Chance;
         bot.playgame = "dice";
         const currentBalance = getCurrentBalance();
-        bot.nextbet = currentBalance * 0.005;
+        bot.nextbet = currentBalance * (bot.phase1BaseBetPercent / 100);
         if (bot.nextbet < bot.minbet) bot.nextbet = bot.minbet;
     }
 
@@ -106,9 +122,9 @@
         bot.lossPhase3 = 0;
         bot.phase3LossStreak = 0;
         bot.playgame = "dice";
-        bot.chance = 80;
+        bot.chance = bot.phase3Chance;
         const currentBalance = getCurrentBalance();
-        bot.nextbet = currentBalance * (bot.martingaleBasePercent / 100);
+        bot.nextbet = currentBalance * (bot.phase3BaseBetPercent / 100);
         if (bot.nextbet < bot.minbet) bot.nextbet = bot.minbet;
     }
 
@@ -153,22 +169,29 @@
         const wagerPct = targetWager > 0 ? (bot.stats.wagered / targetWager) * 100 : 0;
         const lossPct = getTotalLossPercent();
 
-        document.getElementById("UI_BALANCE")?.innerText = curB.toFixed(6);
+        const balEl = document.getElementById("UI_BALANCE");
         const profitEl = document.getElementById("UI_PROFIT");
+        const wagerEl = document.getElementById("UI_WAGER");
+        const phaseEl = document.getElementById("UI_PHASE");
+        const streakEl = document.getElementById("UI_STREAK");
+        const lossEl = document.getElementById("UI_LOSS");
+        const barEl = document.getElementById("UI_BAR");
+        const targetEl = document.getElementById("UI_TARGET");
+
+        if (balEl) balEl.innerText = curB.toFixed(6);
         if (profitEl) {
             profitEl.innerText = (sProfit >= 0 ? "+" : "") + sProfit.toFixed(6);
             profitEl.style.color = sProfit >= 0 ? "#4ade80" : "#f87171";
         }
-        document.getElementById("UI_WAGER")?.innerText = bot.stats.wagered.toFixed(2);
-        document.getElementById("UI_PHASE")?.innerText = bot.phase === 1 ? "P1:DICE99.98" : (bot.phase === 2 ? "P2:LIMBO" : "P3:REC80");
-        document.getElementById("UI_STREAK")?.innerText = bot.phase === 3 ? bot.phase3LossStreak : "-";
-        document.getElementById("UI_LOSS")?.innerText = lossPct.toFixed(2) + "%";
-        const barEl = document.getElementById("UI_BAR");
+        if (wagerEl) wagerEl.innerText = bot.stats.wagered.toFixed(2);
+        if (phaseEl) phaseEl.innerText = bot.phase === 1 ? `P1:DICE${bot.phase1Chance}` : (bot.phase === 2 ? "P2:LIMBO" : `P3:REC${bot.phase3Chance}`);
+        if (streakEl) streakEl.innerText = bot.phase === 3 ? bot.phase3LossStreak : "-";
+        if (lossEl) {
+            lossEl.innerText = lossPct.toFixed(2) + "%";
+            lossEl.style.color = lossPct > 20 ? "#f87171" : (lossPct > 10 ? "#fbbf24" : "#4ade80");
+        }
         if (barEl) barEl.style.width = Math.min(wagerPct, 100).toFixed(1) + "%";
-        document.getElementById("UI_TARGET")?.innerText = targetWager.toFixed(0);
-        
-        const lossColor = document.getElementById("UI_LOSS");
-        if (lossColor) lossColor.style.color = lossPct > 20 ? "#f87171" : (lossPct > 10 ? "#fbbf24" : "#4ade80");
+        if (targetEl) targetEl.innerText = targetWager.toFixed(0);
     }
 
     async function sendTelegramNow(message) {
@@ -221,7 +244,7 @@
         const date = new Date().toLocaleString('en-GB', { timeZone: 'UTC' });
         let reason = "MANUAL";
         if (bot.wagerTargetReached) reason = "WAGER TARGET";
-        else if (lossPct >= bot.stopLossPercent) reason = `STOP LOSS (${lossPct.toFixed(1)}%)`;
+        else if (lossPct >= bot.stopLossPercent) reason = "STOP LOSS (" + lossPct.toFixed(1) + "%)";
 
         const text = `*Orion V3 STOP*
 \`\`\`
@@ -284,20 +307,23 @@
             if (balance > bot.balhigh) bot.balhigh = balance;
             const netLossPercent = ((bot.balhigh - balance) / bot.balhigh) * 100;
             
-            let payout, betAmount;
+            let payout = 0;
+            let betAmount = 0;
             
             if (bot.phase === 1) {
-                bot.chance = 99.98;
+                bot.chance = bot.phase1Chance;
                 payout = 100 / bot.chance;
-                betAmount = balance * 0.005;
+                betAmount = balance * (bot.phase1BaseBetPercent / 100);
                 if (betAmount < bot.minbet) betAmount = bot.minbet;
                 bot.nextbet = betAmount;
                 bot.floatingLossP1 = netLossPercent;
                 if (bot.floatingLossP1 >= bot.triggerP1toP2) goToPhase2();
             }
             else if (bot.phase === 2) {
-                payout = (Math.floor(Math.random() * 21) + 130) / 100;
-                betAmount = balance * 0.0010 * bot.factor;
+                const minMulti = bot.phase2MinMultiplier;
+                const maxMulti = bot.phase2MaxMultiplier;
+                payout = (Math.floor(Math.random() * ((maxMulti - minMulti) * 100 + 1)) / 100) + minMulti;
+                betAmount = balance * (bot.phase2BaseBetPercent / 100) * bot.factor;
                 if (betAmount < bot.minbet) betAmount = bot.minbet;
                 bot.nextbet = betAmount;
                 const phase2NetLoss = ((bot.phase2StartBalance - balance) / bot.phase2StartBalance) * 100;
@@ -306,18 +332,18 @@
                 if (lossPct <= bot.triggerP2toP1) resetToPhase1();
             }
             else {
-                bot.chance = 80;
+                bot.chance = bot.phase3Chance;
                 payout = 100 / bot.chance;
                 if (bot.martingaleEnabled) {
                     if (bot.lastWin) {
                         bot.phase3LossStreak = 0;
-                        betAmount = balance * (bot.martingaleBasePercent / 100);
+                        betAmount = balance * (bot.phase3BaseBetPercent / 100);
                     } else {
                         bot.phase3LossStreak++;
                         betAmount = previousbet * bot.martingaleMultiplier;
                     }
                 } else {
-                    betAmount = balance * (bot.martingaleBasePercent / 100);
+                    betAmount = balance * (bot.phase3BaseBetPercent / 100);
                 }
                 if (betAmount > balance * 0.05) betAmount = balance * 0.05;
                 if (betAmount < bot.minbet) betAmount = bot.minbet;
@@ -358,24 +384,28 @@
                 const json = await res.json();
                 if (json?.data?.user) {
                     bot.stakeUser = json.data.user.name;
-                    document.getElementById("UI_USER")?.innerText = maskUsername(bot.stakeUser);
+                    const userEl = document.getElementById("UI_USER");
+                    if (userEl) userEl.innerText = maskUsername(bot.stakeUser);
                     
                     const bals = json.data.user.balances || [];
                     const sel = document.getElementById("UI_CURRENCY");
                     if (sel && sel.options.length === 0) {
-                        bals.forEach(b => {
+                        for (let i = 0; i < bals.length; i++) {
+                            const b = bals[i];
                             const opt = document.createElement("option");
                             opt.value = b.available.currency;
                             opt.textContent = b.available.currency.toUpperCase();
-                            if(b.available.currency === "doge") opt.selected = true;
+                            if (b.available.currency === "doge") opt.selected = true;
                             sel.appendChild(opt);
-                        });
+                        }
                     }
                     if (sel) bot.selectedCurrency = sel.value;
-                    const active = bals.find(b => b.available.currency === bot.selectedCurrency);
+                    const active = bals.find(function(b) { return b.available.currency === bot.selectedCurrency; });
                     bot.stats.startBal = active ? parseFloat(active.available.amount) : 0;
                 }
-            } catch (e) { bot.lastError = "Sync Failed"; }
+            } catch (e) { 
+                bot.lastError = "Sync Failed"; 
+            }
         }
     };
 
@@ -388,9 +418,9 @@
                 position: fixed;
                 top: 20px;
                 right: 20px;
-                width: 320px;
+                width: 340px;
                 z-index: 999999;
-                background: rgba(8, 12, 20, 0.75);
+                background: rgba(8, 12, 20, 0.85);
                 backdrop-filter: blur(16px);
                 border-radius: 24px;
                 border: 1px solid rgba(255,255,255,0.1);
@@ -398,6 +428,8 @@
                 color: #f1f5f9;
                 cursor: move;
                 font-size: 11px;
+                max-height: 90vh;
+                overflow-y: auto;
             }
             #ORION_UNIFIED_UI.dragging { opacity: 0.9; cursor: grabbing; }
             .ui-header {
@@ -409,12 +441,16 @@
                 border-bottom: 1px solid rgba(255,255,255,0.08);
                 border-radius: 24px 24px 0 0;
                 cursor: grab;
+                position: sticky;
+                top: 0;
+                background: rgba(8, 12, 20, 0.95);
+                z-index: 10;
             }
             .ui-title { display: flex; align-items: center; gap: 8px; }
             .ui-dot { width: 8px; height: 8px; border-radius: 50%; background: #475569; }
             .ui-title-text { font-size: 13px; font-weight: 700; background: linear-gradient(135deg, #38bdf8, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
             .ui-badge { font-size: 8px; font-weight: 700; padding: 3px 10px; border-radius: 20px; background: rgba(71,85,105,0.2); }
-            .ui-content { padding: 14px; max-height: 70vh; overflow-y: auto; }
+            .ui-content { padding: 14px; }
             .ui-row { display: flex; justify-content: space-between; margin-bottom: 8px; }
             .ui-label { opacity: 0.6; }
             .ui-value { font-weight: 700; font-family: monospace; }
@@ -422,7 +458,8 @@
             .ui-bar-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #2dd4bf, #3b82f6); border-radius: 10px; }
             .ui-footer { display: flex; justify-content: space-between; font-size: 9px; opacity: 0.5; margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.05); }
             .ui-params { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); }
-            .ui-params-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+            .ui-params-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+            .ui-params-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 12px; }
             .ui-input { width: 100%; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1); color: #fff; padding: 6px 8px; border-radius: 10px; font-size: 10px; box-sizing: border-box; }
             .ui-input:focus { outline: none; border-color: #38bdf8; }
             .ui-select { width: 100%; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1); color: #fff; padding: 6px 8px; border-radius: 10px; font-size: 10px; margin-bottom: 8px; }
@@ -434,6 +471,7 @@
             .ui-btn-stop { flex: 1; padding: 8px; background: rgba(239,68,68,0.2); border: 1px solid rgba(239,68,68,0.4); border-radius: 30px; font-weight: 700; font-size: 11px; color: #fca5a5; cursor: pointer; }
             .ui-btn-stop:disabled { opacity: 0.5; cursor: not-allowed; }
             .ui-title-small { font-size: 10px; font-weight: 600; color: #38bdf8; margin: 8px 0 6px 0; }
+            .phase-badge { font-size: 8px; background: rgba(56,189,248,0.2); padding: 2px 6px; border-radius: 12px; display: inline-block; margin-bottom: 6px; }
         `;
         document.head.appendChild(style);
         
@@ -454,7 +492,7 @@
                 <div class="ui-bar-wrap"><div class="ui-bar-fill" id="UI_BAR"></div></div>
                 <div class="ui-footer"><span>🎯 TARGET</span><span id="UI_TARGET">0</span></div>
                 
-                <div class="ui-title-small">⚙️ PARAMETERS</div>
+                <div class="ui-title-small">⚙️ GLOBAL PARAMETERS</div>
                 <div class="ui-params-grid">
                     <input type="number" id="PARAM_MINBET" class="ui-input" placeholder="MINBET" value="0.0015" step="0.0001">
                     <input type="number" id="PARAM_TARGET_WAGER" class="ui-input" placeholder="TARGET (x bal)" value="10" step="1">
@@ -462,19 +500,33 @@
                     <select id="UI_CURRENCY" class="ui-select"></select>
                 </div>
                 
-                <div class="ui-title-small">🔄 PHASE TRIGGERS (%)</div>
-                <div class="ui-params-grid">
-                    <input type="number" id="TRIGGER_P1_P2" class="ui-input" placeholder="P1→P2" value="0.5" step="0.1">
-                    <input type="number" id="TRIGGER_P2_P3" class="ui-input" placeholder="P2→P3" value="0.6" step="0.1">
-                    <input type="number" id="TRIGGER_P3_P2" class="ui-input" placeholder="P3→P2" value="0.4" step="0.1">
-                    <input type="number" id="TRIGGER_P2_P1" class="ui-input" placeholder="P2→P1" value="0.2" step="0.1">
+                <div class="phase-badge">🔷 PHASE 1 - DICE HIGH WIN</div>
+                <div class="ui-params-grid-3">
+                    <input type="number" id="P1_CHANCE" class="ui-input" placeholder="Chance %" value="99.98" step="0.01">
+                    <input type="number" id="P1_BASE_BET" class="ui-input" placeholder="Base Bet %" value="0.5" step="0.1">
+                    <input type="number" id="TRIGGER_P1_P2" class="ui-input" placeholder="Loss → P2 %" value="0.5" step="0.1">
                 </div>
                 
-                <div class="ui-title-small">🃏 MARTINGALE (Phase 3)</div>
+                <div class="phase-badge">🟩 PHASE 2 - LIMBO</div>
+                <div class="ui-params-grid-3">
+                    <input type="number" id="P2_MIN_MULTI" class="ui-input" placeholder="Min Multi" value="1.3" step="0.1">
+                    <input type="number" id="P2_MAX_MULTI" class="ui-input" placeholder="Max Multi" value="2.5" step="0.1">
+                    <input type="number" id="P2_BASE_BET" class="ui-input" placeholder="Base Bet %" value="0.1" step="0.05">
+                </div>
                 <div class="ui-params-grid">
+                    <input type="number" id="TRIGGER_P2_P3" class="ui-input" placeholder="Loss → P3 %" value="0.6" step="0.1">
+                    <input type="number" id="TRIGGER_P2_P1" class="ui-input" placeholder="Profit → P1 %" value="0.2" step="0.1">
+                </div>
+                
+                <div class="phase-badge">🔴 PHASE 3 - MARTINGALE RECOVERY</div>
+                <div class="ui-params-grid-3">
+                    <input type="number" id="P3_CHANCE" class="ui-input" placeholder="Chance %" value="80" step="1">
+                    <input type="number" id="P3_BASE_BET" class="ui-input" placeholder="Base Bet %" value="0.05" step="0.01">
                     <input type="number" id="MARTI_MULT" class="ui-input" placeholder="Multiplier" value="1.5" step="0.1">
+                </div>
+                <div class="ui-params-grid">
                     <input type="number" id="MARTI_MAX" class="ui-input" placeholder="Max Streak" value="6" step="1">
-                    <input type="number" id="MARTI_BASE" class="ui-input" placeholder="Base Bet %" value="0.05" step="0.01">
+                    <input type="number" id="TRIGGER_P3_P2" class="ui-input" placeholder="Profit → P2 %" value="0.4" step="0.1">
                 </div>
                 <div class="ui-checkbox">
                     <input type="checkbox" id="MARTI_ENABLED" checked> <span style="opacity:0.7">Enable Martingale Recovery</span>
@@ -491,7 +543,7 @@
         const dragHandle = document.getElementById("UI_DRAG_HANDLE");
         const dragContainer = document.getElementById("ORION_UNIFIED_UI");
         
-        dragHandle.addEventListener("mousedown", (e) => {
+        dragHandle.addEventListener("mousedown", function(e) {
             if (e.target.closest(".ui-input") || e.target.closest(".ui-select") || e.target.closest("button")) return;
             isDragging = true;
             const rect = dragContainer.getBoundingClientRect();
@@ -501,7 +553,7 @@
             e.preventDefault();
         });
         
-        document.addEventListener("mousemove", (e) => {
+        document.addEventListener("mousemove", function(e) {
             if (!isDragging) return;
             let newLeft = e.clientX - dragOffsetX;
             let newTop = e.clientY - dragOffsetY;
@@ -513,29 +565,65 @@
             dragContainer.style.bottom = "auto";
         });
         
-        document.addEventListener("mouseup", () => {
+        document.addEventListener("mouseup", function() {
             if (isDragging) {
                 isDragging = false;
                 dragContainer.classList.remove("dragging");
             }
         });
         
-        document.getElementById("BTN_START").onclick = async () => {
+        document.getElementById("BTN_START").onclick = async function() {
             if (!bot.isRunning) {
                 await API.syncOnce();
                 
-                bot.minbet = parseFloat(document.getElementById("PARAM_MINBET")?.value) || 0.0015;
-                bot.targetWager = parseFloat(document.getElementById("PARAM_TARGET_WAGER")?.value) || 10;
-                bot.stopLossPercent = parseFloat(document.getElementById("PARAM_STOP_LOSS")?.value) || 30;
+                const minbetVal = parseFloat(document.getElementById("PARAM_MINBET")?.value);
+                if (!isNaN(minbetVal) && minbetVal > 0) bot.minbet = minbetVal;
                 
-                bot.triggerP1toP2 = parseFloat(document.getElementById("TRIGGER_P1_P2")?.value) || 0.5;
-                bot.triggerP2toP3 = parseFloat(document.getElementById("TRIGGER_P2_P3")?.value) || 0.6;
-                bot.triggerP3toP2 = parseFloat(document.getElementById("TRIGGER_P3_P2")?.value) || 0.4;
-                bot.triggerP2toP1 = parseFloat(document.getElementById("TRIGGER_P2_P1")?.value) || 0.2;
+                const targetVal = parseFloat(document.getElementById("PARAM_TARGET_WAGER")?.value);
+                if (!isNaN(targetVal) && targetVal > 0) bot.targetWager = targetVal;
                 
-                bot.martingaleMultiplier = parseFloat(document.getElementById("MARTI_MULT")?.value) || 1.5;
-                bot.martingaleMaxStreak = parseInt(document.getElementById("MARTI_MAX")?.value) || 6;
-                bot.martingaleBasePercent = parseFloat(document.getElementById("MARTI_BASE")?.value) || 0.05;
+                const slVal = parseFloat(document.getElementById("PARAM_STOP_LOSS")?.value);
+                if (!isNaN(slVal) && slVal > 0) bot.stopLossPercent = slVal;
+                
+                const p1Chance = parseFloat(document.getElementById("P1_CHANCE")?.value);
+                if (!isNaN(p1Chance) && p1Chance > 0 && p1Chance < 100) bot.phase1Chance = p1Chance;
+                
+                const p1BaseBet = parseFloat(document.getElementById("P1_BASE_BET")?.value);
+                if (!isNaN(p1BaseBet) && p1BaseBet > 0) bot.phase1BaseBetPercent = p1BaseBet;
+                
+                const p2MinMulti = parseFloat(document.getElementById("P2_MIN_MULTI")?.value);
+                if (!isNaN(p2MinMulti) && p2MinMulti > 1) bot.phase2MinMultiplier = p2MinMulti;
+                
+                const p2MaxMulti = parseFloat(document.getElementById("P2_MAX_MULTI")?.value);
+                if (!isNaN(p2MaxMulti) && p2MaxMulti > p2MinMulti) bot.phase2MaxMultiplier = p2MaxMulti;
+                
+                const p2BaseBet = parseFloat(document.getElementById("P2_BASE_BET")?.value);
+                if (!isNaN(p2BaseBet) && p2BaseBet > 0) bot.phase2BaseBetPercent = p2BaseBet;
+                
+                const p3Chance = parseFloat(document.getElementById("P3_CHANCE")?.value);
+                if (!isNaN(p3Chance) && p3Chance > 0 && p3Chance < 100) bot.phase3Chance = p3Chance;
+                
+                const p3BaseBet = parseFloat(document.getElementById("P3_BASE_BET")?.value);
+                if (!isNaN(p3BaseBet) && p3BaseBet > 0) bot.phase3BaseBetPercent = p3BaseBet;
+                
+                const t1 = parseFloat(document.getElementById("TRIGGER_P1_P2")?.value);
+                if (!isNaN(t1) && t1 > 0) bot.triggerP1toP2 = t1;
+                
+                const t2 = parseFloat(document.getElementById("TRIGGER_P2_P3")?.value);
+                if (!isNaN(t2) && t2 > 0) bot.triggerP2toP3 = t2;
+                
+                const t3 = parseFloat(document.getElementById("TRIGGER_P3_P2")?.value);
+                if (!isNaN(t3) && t3 > 0) bot.triggerP3toP2 = t3;
+                
+                const t4 = parseFloat(document.getElementById("TRIGGER_P2_P1")?.value);
+                if (!isNaN(t4) && t4 > 0) bot.triggerP2toP1 = t4;
+                
+                const mult = parseFloat(document.getElementById("MARTI_MULT")?.value);
+                if (!isNaN(mult) && mult > 0) bot.martingaleMultiplier = mult;
+                
+                const maxStreak = parseInt(document.getElementById("MARTI_MAX")?.value);
+                if (!isNaN(maxStreak) && maxStreak > 0) bot.martingaleMaxStreak = maxStreak;
+                
                 bot.martingaleEnabled = document.getElementById("MARTI_ENABLED")?.checked || false;
                 
                 const cs = document.getElementById("UI_CURRENCY");
@@ -560,27 +648,23 @@
                 bot.startTime = new Date();
                 resetToPhase1();
                 updateUIStatus(true);
-                document.getElementById("UI_TARGET").innerText = bot.wagtarget.toFixed(0);
-                await sendTelegramNow(`🚀 *Orion V3 STARTED*
-\`\`\`
-👤 ${maskUsername(bot.stakeUser)}
-💰 ${bot.startBalance.toFixed(6)} ${bot.selectedCurrency.toUpperCase()}
-🎯 Target: ${bot.wagtarget.toFixed(2)} | SL: ${bot.stopLossPercent}%
-📞 @OrionLogic
-\`\`\``);
+                const targetEl = document.getElementById("UI_TARGET");
+                if (targetEl) targetEl.innerText = bot.wagtarget.toFixed(0);
+                await sendTelegramNow("🚀 *Orion V3 STARTED*\n```\n👤 " + maskUsername(bot.stakeUser) + "\n💰 " + bot.startBalance.toFixed(6) + " " + bot.selectedCurrency.toUpperCase() + "\n🎯 Target: " + bot.wagtarget.toFixed(2) + " | SL: " + bot.stopLossPercent + "%\n📞 @OrionLogic\n```");
                 if (reportInterval) clearInterval(reportInterval);
-                reportInterval = setInterval(() => { if (bot.isRunning) sendTelegram(); }, 180000);
+                reportInterval = setInterval(function() { if (bot.isRunning) sendTelegram(); }, 180000);
                 runLoop();
             }
         };
         
-        document.getElementById("BTN_STOP").onclick = () => { if (bot.isRunning) stopBot(); };
+        document.getElementById("BTN_STOP").onclick = function() { if (bot.isRunning) stopBot(); };
     }
 
-    setInterval(() => {
+    setInterval(function() {
         if (bot.isRunning) {
             updateUI();
-            document.getElementById("UI_TARGET")?.innerText = (bot.startBalance * bot.targetWager).toFixed(0);
+            const targetEl = document.getElementById("UI_TARGET");
+            if (targetEl && bot.wagtarget) targetEl.innerText = bot.wagtarget.toFixed(0);
         }
     }, 300);
 
