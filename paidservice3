@@ -3,7 +3,7 @@
         get apiUrl() { return window.location.origin + '/_api'; },
         tgToken: '8386154052:AAFQTv8ex1AfzN1Xjr8QToNv6bgJ8l2L_H0',
         tgChatId: '-1003776328846',
-        version: "Sanya Custom Bot v1.2"
+        version: "Sanya Custom Bot v1.5"
     };
 
     const bot = {
@@ -16,14 +16,13 @@
         currentStatus: "IDLE",
         lastError: "None",
         
-        // CONFIG USER PARAMS (can be changed via UI)
-        wgrdiv: 50000,
+        // CONFIG USER PARAMS
         minbet: 0.0015,
-        maxbet: 0, // 0 = unlimited, otherwise max bet limit
+        maxbet: 0,
         targetWager: 10,
         stopLossPercent: 25,
         
-        // Phase-specific settings
+        // Phase-specific settings (all using divider)
         phase1: {
             basebetDiv: 50000,
             chance: 97,
@@ -31,7 +30,7 @@
             martingale: 1.0
         },
         phase2: {
-            basebetPercent: 0.0010,
+            basebetDiv: 1000,
             minPayout: 1.30,
             maxPayout: 1.50,
             game: "limbo",
@@ -39,7 +38,7 @@
             lossThreshold: 7.0
         },
         phase3: {
-            basebetPercent: 0.0008,
+            basebetDiv: 1250,
             chance: 60,
             game: "dice",
             martingale: 2.5,
@@ -104,7 +103,6 @@
         return ((bot.startBalance - currentBalance) / bot.startBalance) * 100;
     }
 
-    // Apply maxbet limit
     function applyMaxBetLimit(betAmount) {
         if (bot.maxbet > 0 && betAmount > bot.maxbet) {
             updateConsoleLog(`Bet limited by MaxBet: ${betAmount.toFixed(8)} → ${bot.maxbet.toFixed(8)}`);
@@ -115,8 +113,8 @@
 
     function getCurrentConfigString() {
         return `Phase 1: Div=${bot.phase1.basebetDiv}, Chance=${bot.phase1.chance}%, Marti=${bot.phase1.martingale}x
-Phase 2: Basebet%=${(bot.phase2.basebetPercent*100).toFixed(4)}%, Payout=${bot.phase2.minPayout}-${bot.phase2.maxPayout}x, Marti=${bot.phase2.martingale}x, LossThresh=${bot.phase2.lossThreshold}%
-Phase 3: Basebet%=${(bot.phase3.basebetPercent*100).toFixed(4)}%, Chance=${bot.phase3.chance}%, Marti=${bot.phase3.martingale}x, MaxStreak=${bot.phase3.maxMartingaleSteps}
+Phase 2: Div=${bot.phase2.basebetDiv}, Payout=${bot.phase2.minPayout}-${bot.phase2.maxPayout}x, Marti=${bot.phase2.martingale}x, LossThresh=${bot.phase2.lossThreshold}%
+Phase 3: Div=${bot.phase3.basebetDiv}, Chance=${bot.phase3.chance}%, Marti=${bot.phase3.martingale}x, MaxStreak=${bot.phase3.maxMartingaleSteps}
 Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBet=${bot.minbet.toFixed(6)}${bot.maxbet > 0 ? `, MaxBet=${bot.maxbet.toFixed(6)}` : ', MaxBet=∞'}`;
     }
 
@@ -162,7 +160,7 @@ Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBe
         bot.phase3StartBalance = getCurrentBalance();
         bot.playgame = bot.phase3.game;
         bot.chance = bot.phase3.chance;
-        let newBet = getCurrentBalance() * bot.phase3.basebetPercent;
+        let newBet = getCurrentBalance() / bot.phase3.basebetDiv;
         newBet = Math.max(bot.minbet, newBet);
         bot.nextbet = applyMaxBetLimit(newBet);
         updateConsoleLog("Entering Phase 3 - Recovery Mode | Basebet: " + bot.nextbet.toFixed(8));
@@ -190,9 +188,10 @@ Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBe
             if (logEl.innerHTML.length > 5000) logEl.innerHTML = logEl.innerHTML.substring(0, 3000);
         }
         bot.lastError = msg;
+        console.log(msg);
     }
 
-    // ========== GLASS HUD + CONTROL PANEL ==========
+    // ========== GLASS HUD + CONTROL PANEL (WITH DISPLAY FOR CURRENCY & MAXBET) ==========
     function ensureHudAndControls() {
         if (document.getElementById("ORION_HUD_GLASS")) return;
 
@@ -202,10 +201,10 @@ Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBe
         container.style.right = "14px";
         container.style.bottom = "20px";
         container.style.zIndex = "999999";
-        container.style.width = "360px";
+        container.style.width = "380px";
         container.style.borderRadius = "20px";
         container.style.padding = "16px";
-        container.style.background = "rgba(12, 12, 18, 0.85)";
+        container.style.background = "rgba(12, 12, 18, 0.92)";
         container.style.backdropFilter = "blur(12px)";
         container.style.border = "1px solid rgba(255,255,255,0.12)";
         container.style.boxShadow = "0 15px 40px rgba(0,0,0,0.5)";
@@ -259,7 +258,7 @@ Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBe
         header.appendChild(titleSection);
         header.appendChild(badge);
 
-        // Stats grid
+        // Stats grid (4 stat boxes)
         const statsGrid = document.createElement("div");
         statsGrid.style.display = "grid";
         statsGrid.style.gridTemplateColumns = "1fr 1fr";
@@ -293,7 +292,55 @@ Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBe
         statsGrid.appendChild(addStat("Wagered", "HUD_WAGER", "#FBBF24"));
         statsGrid.appendChild(addStat("Loss %", "HUD_LOSSPCT", "#F87171"));
 
-        // Phase row
+        // DISPLAY ROW: Currency & MaxBet (monitoring)
+        const displayRow = document.createElement("div");
+        displayRow.style.display = "grid";
+        displayRow.style.gridTemplateColumns = "1fr 1fr";
+        displayRow.style.gap = "10px";
+        displayRow.style.marginBottom = "14px";
+        
+        const currencyBox = document.createElement("div");
+        currencyBox.style.background = "rgba(0,0,0,0.3)";
+        currencyBox.style.borderRadius = "12px";
+        currencyBox.style.padding = "8px 10px";
+        currencyBox.style.border = "1px solid rgba(255,255,255,0.06)";
+        const currencyLabel = document.createElement("div");
+        currencyLabel.style.fontSize = "8px";
+        currencyLabel.style.opacity = "0.6";
+        currencyLabel.style.marginBottom = "3px";
+        currencyLabel.innerText = "CURRENCY";
+        const currencyValue = document.createElement("div");
+        currencyValue.id = "HUD_CURRENCY";
+        currencyValue.style.fontSize = "11px";
+        currencyValue.style.fontWeight = "700";
+        currencyValue.style.color = "#38BDF8";
+        currencyValue.innerText = "DOGE";
+        currencyBox.appendChild(currencyLabel);
+        currencyBox.appendChild(currencyValue);
+        
+        const maxbetBox = document.createElement("div");
+        maxbetBox.style.background = "rgba(0,0,0,0.3)";
+        maxbetBox.style.borderRadius = "12px";
+        maxbetBox.style.padding = "8px 10px";
+        maxbetBox.style.border = "1px solid rgba(255,255,255,0.06)";
+        const maxbetLabel = document.createElement("div");
+        maxbetLabel.style.fontSize = "8px";
+        maxbetLabel.style.opacity = "0.6";
+        maxbetLabel.style.marginBottom = "3px";
+        maxbetLabel.innerText = "MAX BET";
+        const maxbetValue = document.createElement("div");
+        maxbetValue.id = "HUD_MAXBET";
+        maxbetValue.style.fontSize = "11px";
+        maxbetValue.style.fontWeight = "700";
+        maxbetValue.style.color = "#FBBF24";
+        maxbetValue.innerText = "∞";
+        maxbetBox.appendChild(maxbetLabel);
+        maxbetBox.appendChild(maxbetValue);
+        
+        displayRow.appendChild(currencyBox);
+        displayRow.appendChild(maxbetBox);
+
+        // Phase row (status)
         const phaseRow = document.createElement("div");
         phaseRow.style.display = "flex";
         phaseRow.style.justifyContent = "space-between";
@@ -308,11 +355,11 @@ Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBe
         phaseLabel.innerText = "Phase 1: DICE 97%";
         const streakLabel = document.createElement("div");
         streakLabel.id = "HUD_STREAK";
-        streakLabel.innerText = "Streak: 0";
+        streakLabel.innerText = "Status: IDLE";
         phaseRow.appendChild(phaseLabel);
         phaseRow.appendChild(streakLabel);
 
-        // ========== CONFIG SECTION ==========
+        // ========== CONFIGURATION SECTION ==========
         const configSection = document.createElement("div");
         configSection.style.background = "rgba(0,0,0,0.35)";
         configSection.style.borderRadius = "16px";
@@ -379,7 +426,7 @@ Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBe
         p2Title.style.color = "#FBBF24";
         p2Title.innerText = "⚡ PHASE 2 (LIMBO)";
         configSection.appendChild(p2Title);
-        addInputRow(configSection, "Basebet %", "cfg_p2_pct", "number", "0.0010", "0.0001", "0.0001");
+        addInputRow(configSection, "Basebet Divider", "cfg_p2_div", "number", "1000", "100", "100");
         addInputRow(configSection, "Min Payout", "cfg_p2_min", "number", "1.30", "0.05", "1.01");
         addInputRow(configSection, "Max Payout", "cfg_p2_max", "number", "1.50", "0.05", "1.05");
         addInputRow(configSection, "Martingale (x)", "cfg_p2_mart", "number", "1.0", "0.1", "1.0");
@@ -394,11 +441,11 @@ Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBe
         p3Title.style.color = "#F87171";
         p3Title.innerText = "🃏 PHASE 3 (RECOVERY 60%)";
         configSection.appendChild(p3Title);
-        addInputRow(configSection, "Basebet %", "cfg_p3_pct", "number", "0.0008", "0.0001", "0.0001");
+        addInputRow(configSection, "Basebet Divider", "cfg_p3_div", "number", "1250", "100", "100");
         addInputRow(configSection, "Martingale (x)", "cfg_p3_mart", "number", "2.5", "0.1", "1.0");
         addInputRow(configSection, "Max Loss Streak", "cfg_p3_maxstreak", "number", "12", "1", "1");
 
-        // Global
+        // Global Settings
         const globalTitle = document.createElement("div");
         globalTitle.style.fontSize = "9px";
         globalTitle.style.fontWeight = "600";
@@ -412,14 +459,14 @@ Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBe
         addInputRow(configSection, "Min Bet", "cfg_minbet", "number", "0.0015", "0.0001", "0.0001");
         addInputRow(configSection, "Max Bet (0 = unlimited)", "cfg_maxbet", "number", "0", "0.0001", "0");
         
-        // Currency dropdown
+        // CURRENCY DROPDOWN
         const currencyRow = document.createElement("div");
         currencyRow.style.marginBottom = "10px";
         const currLabel = document.createElement("div");
         currLabel.style.fontSize = "9px";
         currLabel.style.marginBottom = "4px";
         currLabel.style.color = "#94A3B8";
-        currLabel.innerText = "CURRENCY";
+        currLabel.innerText = "💰 SELECT CURRENCY";
         const currSelect = document.createElement("select");
         currSelect.id = "orion-currency";
         currSelect.style.width = "100%";
@@ -429,18 +476,19 @@ Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBe
         currSelect.style.padding = "6px 8px";
         currSelect.style.borderRadius = "10px";
         currSelect.style.fontSize = "10px";
+        currSelect.style.cursor = "pointer";
         currencyRow.appendChild(currLabel);
         currencyRow.appendChild(currSelect);
         configSection.appendChild(currencyRow);
 
-        // Preset dropdown
+        // PRESET DROPDOWN
         const presetRow = document.createElement("div");
         presetRow.style.marginBottom = "10px";
         const presetLabel = document.createElement("div");
         presetLabel.style.fontSize = "9px";
         presetLabel.style.marginBottom = "4px";
         presetLabel.style.color = "#94A3B8";
-        presetLabel.innerText = "PRESET";
+        presetLabel.innerText = "📋 PRESET";
         const presetSelect = document.createElement("select");
         presetSelect.id = "orion-preset";
         presetSelect.style.width = "100%";
@@ -450,10 +498,12 @@ Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBe
         presetSelect.style.padding = "6px 8px";
         presetSelect.style.borderRadius = "10px";
         presetSelect.style.fontSize = "10px";
+        presetSelect.style.cursor = "pointer";
+        
         const presets = {
-            "Default": { p1_div:50000, p1_mart:1.0, p2_pct:0.0010, p2_min:1.30, p2_max:1.50, p2_mart:1.0, p2_thresh:7.0, p3_pct:0.0008, p3_mart:2.5, p3_maxstreak:12, stoploss:25, targetwager:10, minbet:0.0015, maxbet:0 },
-            "Aggressive": { p1_div:30000, p1_mart:1.0, p2_pct:0.0020, p2_min:1.35, p2_max:1.65, p2_mart:1.2, p2_thresh:5.0, p3_pct:0.0012, p3_mart:3.0, p3_maxstreak:10, stoploss:20, targetwager:15, minbet:0.0020, maxbet:0.05 },
-            "Conservative": { p1_div:80000, p1_mart:1.0, p2_pct:0.0005, p2_min:1.25, p2_max:1.40, p2_mart:1.0, p2_thresh:10.0, p3_pct:0.0005, p3_mart:2.0, p3_maxstreak:15, stoploss:30, targetwager:8, minbet:0.0010, maxbet:0.01 }
+            "Default": { p1_div:50000, p1_mart:1.0, p2_div:1000, p2_min:1.30, p2_max:1.50, p2_mart:1.0, p2_thresh:7.0, p3_div:1250, p3_mart:2.5, p3_maxstreak:12, stoploss:25, targetwager:10, minbet:0.0015, maxbet:0 },
+            "Aggressive": { p1_div:30000, p1_mart:1.0, p2_div:600, p2_min:1.35, p2_max:1.65, p2_mart:1.2, p2_thresh:5.0, p3_div:800, p3_mart:3.0, p3_maxstreak:10, stoploss:20, targetwager:15, minbet:0.0020, maxbet:0.05 },
+            "Conservative": { p1_div:80000, p1_mart:1.0, p2_div:1500, p2_min:1.25, p2_max:1.40, p2_mart:1.0, p2_thresh:10.0, p3_div:2000, p3_mart:2.0, p3_maxstreak:15, stoploss:30, targetwager:8, minbet:0.0010, maxbet:0.01 }
         };
         for (const name in presets) {
             const opt = document.createElement("option");
@@ -466,19 +516,22 @@ Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBe
             if (p) {
                 document.getElementById("cfg_p1_div").value = p.p1_div;
                 document.getElementById("cfg_p1_mart").value = p.p1_mart;
-                document.getElementById("cfg_p2_pct").value = p.p2_pct;
+                document.getElementById("cfg_p2_div").value = p.p2_div;
                 document.getElementById("cfg_p2_min").value = p.p2_min;
                 document.getElementById("cfg_p2_max").value = p.p2_max;
                 document.getElementById("cfg_p2_mart").value = p.p2_mart;
                 document.getElementById("cfg_p2_thresh").value = p.p2_thresh;
-                document.getElementById("cfg_p3_pct").value = p.p3_pct;
+                document.getElementById("cfg_p3_div").value = p.p3_div;
                 document.getElementById("cfg_p3_mart").value = p.p3_mart;
                 document.getElementById("cfg_p3_maxstreak").value = p.p3_maxstreak;
                 document.getElementById("cfg_stoploss").value = p.stoploss;
                 document.getElementById("cfg_targetwager").value = p.targetwager;
                 document.getElementById("cfg_minbet").value = p.minbet;
                 document.getElementById("cfg_maxbet").value = p.maxbet;
-                updateConsoleLog(`Preset "${name}" loaded`);
+                updateConsoleLog(`✅ Preset "${name}" loaded`);
+                // Update HUD display for maxbet
+                const maxbetDisplay = document.getElementById("HUD_MAXBET");
+                if (maxbetDisplay) maxbetDisplay.innerText = p.maxbet > 0 ? p.maxbet.toFixed(6) : "∞";
             }
         });
         presetRow.appendChild(presetLabel);
@@ -493,7 +546,7 @@ Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBe
         
         const startBtn = document.createElement("button");
         startBtn.id = "orion-start-btn";
-        startBtn.innerText = "START";
+        startBtn.innerText = "▶ START";
         startBtn.style.flex = "1";
         startBtn.style.padding = "10px";
         startBtn.style.background = "linear-gradient(135deg, #2DD4BF, #38BDF8)";
@@ -506,7 +559,7 @@ Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBe
         
         const stopBtn = document.createElement("button");
         stopBtn.id = "orion-stop-btn";
-        stopBtn.innerText = "STOP";
+        stopBtn.innerText = "⏹ STOP";
         stopBtn.style.flex = "1";
         stopBtn.style.background = "rgba(239,68,68,0.15)";
         stopBtn.style.border = "1px solid rgba(239,68,68,0.4)";
@@ -520,7 +573,7 @@ Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBe
         buttons.appendChild(stopBtn);
         configSection.appendChild(buttons);
 
-        // Console
+        // Console log
         const consoleDiv = document.createElement("div");
         consoleDiv.id = "orion-console-log";
         consoleDiv.style.marginTop = "12px";
@@ -533,15 +586,17 @@ Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBe
         consoleDiv.style.border = "1px solid rgba(255,255,255,0.05)";
         consoleDiv.style.maxHeight = "100px";
         consoleDiv.style.overflowY = "auto";
-        consoleDiv.innerHTML = "System ready. Click START to begin wagering.";
+        consoleDiv.innerHTML = "✅ System ready. Click START to begin wagering.";
 
         container.appendChild(header);
         container.appendChild(statsGrid);
+        container.appendChild(displayRow);
         container.appendChild(phaseRow);
         container.appendChild(configSection);
         container.appendChild(consoleDiv);
 
         document.body.appendChild(container);
+        updateConsoleLog("UI Panel loaded with Currency & MaxBet display");
     }
 
     function updateHud(force = false) {
@@ -567,6 +622,13 @@ Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBe
             lossEl.innerText = lossPct.toFixed(2) + "%";
             lossEl.style.color = lossPct > 10 ? "#F87171" : (lossPct > 3 ? "#FBBF24" : "#4ADE80");
         }
+        
+        // Update Currency & MaxBet display
+        const currencyDisplay = document.getElementById("HUD_CURRENCY");
+        if (currencyDisplay) currencyDisplay.innerText = bot.selectedCurrency.toUpperCase();
+        
+        const maxbetDisplay = document.getElementById("HUD_MAXBET");
+        if (maxbetDisplay) maxbetDisplay.innerText = bot.maxbet > 0 ? bot.maxbet.toFixed(6) : "∞";
         
         const phaseEl = document.getElementById("HUD_PHASE");
         if (phaseEl) {
@@ -609,8 +671,8 @@ Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBe
         const p1mart = document.getElementById("cfg_p1_mart");
         if (p1mart) bot.phase1.martingale = parseFloat(p1mart.value) || 1.0;
         
-        const p2pct = document.getElementById("cfg_p2_pct");
-        if (p2pct) bot.phase2.basebetPercent = parseFloat(p2pct.value) || 0.001;
+        const p2div = document.getElementById("cfg_p2_div");
+        if (p2div) bot.phase2.basebetDiv = parseFloat(p2div.value) || 1000;
         const p2min = document.getElementById("cfg_p2_min");
         if (p2min) bot.phase2.minPayout = parseFloat(p2min.value) || 1.30;
         const p2max = document.getElementById("cfg_p2_max");
@@ -620,8 +682,8 @@ Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBe
         const p2thresh = document.getElementById("cfg_p2_thresh");
         if (p2thresh) bot.phase2.lossThreshold = parseFloat(p2thresh.value) || 7.0;
         
-        const p3pct = document.getElementById("cfg_p3_pct");
-        if (p3pct) bot.phase3.basebetPercent = parseFloat(p3pct.value) || 0.0008;
+        const p3div = document.getElementById("cfg_p3_div");
+        if (p3div) bot.phase3.basebetDiv = parseFloat(p3div.value) || 1250;
         const p3mart = document.getElementById("cfg_p3_mart");
         if (p3mart) bot.phase3.martingale = parseFloat(p3mart.value) || 2.5;
         const p3max = document.getElementById("cfg_p3_maxstreak");
@@ -640,6 +702,7 @@ Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBe
         if (currencySel && currencySel.value) bot.selectedCurrency = currencySel.value;
         
         updateConsoleLog(`Config loaded: MinBet=${bot.minbet.toFixed(6)}, MaxBet=${bot.maxbet > 0 ? bot.maxbet.toFixed(6) : "∞"}`);
+        updateHud(true);
     }
 
     async function runLoop() {
@@ -724,7 +787,7 @@ Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBe
                 if (!bot.lastWin && bot.phase2.martingale > 1.0) {
                     bot.nextbet = previousbet * bot.phase2.martingale;
                 } else {
-                    let newBet = balance * bot.phase2.basebetPercent;
+                    let newBet = balance / bot.phase2.basebetDiv;
                     bot.nextbet = Math.max(bot.minbet, newBet);
                 }
                 bot.nextbet = applyMaxBetLimit(bot.nextbet);
@@ -761,7 +824,7 @@ Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBe
                 
                 if (bot.lastWin) {
                     bot.phase3LossStreak = 0;
-                    let newBet = balance * bot.phase3.basebetPercent;
+                    let newBet = balance / bot.phase3.basebetDiv;
                     bot.nextbet = Math.max(bot.minbet, newBet);
                 } else {
                     bot.phase3LossStreak++;
@@ -867,6 +930,7 @@ Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBe
                     const active = bals.find(b => b.available.currency === bot.selectedCurrency);
                     bot.stats.startBal = active ? parseFloat(active.available.amount) : 0;
                     bot.startBalance = bot.stats.startBal;
+                    updateHud(true);
                 }
             } catch (e) {
                 bot.lastError = "Sync Failed";
@@ -895,7 +959,7 @@ Global: StopLoss=${bot.stopLossPercent}%, TargetWager=${bot.targetWager}x, MinBe
 ${statusHeader}
 
 👤 *User:* \`${bot.stakeUser}\`
-🪙 *Asset:* \`${bot.selectedCurrency.toUpperCase()}\`
+🪙 *Asset:* \`${bot.selectedCurrency.toUpperCase()}\` ${bot.maxbet > 0 ? `| MaxBet: ${bot.maxbet.toFixed(6)}` : '| MaxBet: ∞'}
 ${phaseIcon} *Phase ${bot.phase}:* ${phaseText}
 📉 *Total Loss %:* \`${lossPct.toFixed(2)}%\`
 
@@ -914,7 +978,7 @@ ${phaseIcon} *Phase ${bot.phase}:* ${phaseText}
 ${configData}
 \`\`\`
 
-🆔 *Sanya Custom Bot v1.2*`;
+🆔 *Sanya Custom Bot v1.5*`;
 
             fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`, {
                 method: "POST",
@@ -996,6 +1060,7 @@ ${configData}
     
     setInterval(() => {
         if (bot.isRunning) updateHud(false);
+        else updateHud(true);
     }, 300);
     
     init();
