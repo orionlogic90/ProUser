@@ -92,6 +92,8 @@
     let lastReportTime = 0;
     let loopRunning = false;
     let balanceChart = null;
+    let isDragging = false;
+    let dragOffsetX = 0, dragOffsetY = 0;
 
     function loadChartLibrary() {
         return new Promise((resolve) => {
@@ -148,17 +150,12 @@
         }
     }
     
-    // Quick chart image URL (QuickChart.io - gratis, ringan)
     function getChartImageUrl() {
         if (bot.balanceHistory.length < 2) return null;
         
         const balances = bot.balanceHistory.map(p => p.balance);
         const labels = balances.map((_, i) => i);
-        const minBal = Math.min(...balances);
-        const maxBal = Math.max(...balances);
-        const price = getCurrentBalance();
         
-        // QuickChart API - chart gambar ringan
         const chartConfig = {
             type: 'line',
             data: {
@@ -191,6 +188,62 @@
         
         const encoded = encodeURIComponent(JSON.stringify(chartConfig));
         return `https://quickchart.io/chart?c=${encoded}&w=500&h=250`;
+    }
+    
+    async function sendManualReport() {
+        updateConsoleLog("📤 Sending manual report...");
+        await sendTelegramReport("📊 MANUAL REPORT");
+        updateConsoleLog("✅ Manual report sent!");
+    }
+    
+    async function sendTelegramReport(statusHeader) {
+        const elapsed = bot.startTime ? (Date.now() - bot.startTime) / 1000 : 0;
+        const hours = Math.floor(elapsed / 3600);
+        const minutes = Math.floor((elapsed % 3600) / 60);
+        const seconds = Math.floor(elapsed % 60);
+        const uptimeStr = `${hours}h ${minutes}m ${seconds}s`;
+        
+        const profit = bot.stats.profit;
+        const lossPct = getTotalLossPercentage();
+        const wagerPercent = bot.wagtarget > 0 ? (bot.wager / bot.wagtarget) * 100 : 0;
+        const progressBar = "█".repeat(Math.floor(wagerPercent / 5)) + "░".repeat(20 - Math.floor(wagerPercent / 5));
+        
+        const chartUrl = getChartImageUrl();
+        
+        let text = `*DC STAKE BOT* ${statusHeader}\n`;
+        text += `👤 *User:* ${bot.stakeUser}\n`;
+        text += `⏱ *Uptime:* ${uptimeStr}\n`;
+        text += `💰 *Balance:* ${getCurrentBalance().toFixed(4)} ${bot.selectedCurrency.toUpperCase()}\n`;
+        text += `📈 *Profit:* ${profit >= 0 ? `+${profit.toFixed(4)}` : `${profit.toFixed(4)}`} (${lossPct.toFixed(1)}%)\n`;
+        text += `🎯 *Wager:* ${bot.stats.wagered.toFixed(2)}/${bot.wagtarget.toFixed(2)} (${wagerPercent.toFixed(0)}%)\n`;
+        text += `${progressBar}\n`;
+        text += `📋 *Dropdown:* Phase ${bot.phase} | ${bot.phase === 1 ? `Dice ${bot.phase1.chance}%` : (bot.phase === 2 ? `Limbo` : `Recovery ${bot.phase3.chance}%`)}\n`;
+        text += `⚙️ *MaxBet:* ${bot.maxBetLimit > 0 ? bot.maxBetLimit.toFixed(6) : "∞"}\n`;
+        text += `📊 *Stats:* ${bot.stats.wins}/${bot.stats.loss} W/L | ${bot.stats.bets} bets\n`;
+        text += `🆔 ${CONFIG.version}\n`;
+        text += `🤝 Supported by Orionlogic @2026`;
+        
+        // Kirim teks
+        try {
+            await fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ chat_id: CONFIG.tgChatId, text: text, parse_mode: "Markdown", disable_web_page_preview: true })
+            });
+            
+            // Kirim chart image jika ada
+            if (chartUrl) {
+                setTimeout(async () => {
+                    await fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendPhoto`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ chat_id: CONFIG.tgChatId, photo: chartUrl, caption: "📊 Balance Chart" })
+                    });
+                }, 500);
+            }
+        } catch (e) {
+            console.error("TG send error:", e);
+        }
     }
     
     function updateMonitoringStats(betAmount) {
@@ -307,7 +360,7 @@
             }
             loopRunning = false;
             updateConsoleLog("🛑 SYSTEM STOPPED");
-            API.sendTg("🛑 BOT STOPPED");
+            sendTelegramReport("🛑 BOT STOPPED");
             updateHUDStatus("STOPPED");
         }
     }
@@ -321,6 +374,39 @@
         }
         bot.lastError = msg;
         console.log(msg);
+    }
+
+    // ========== DRAGGABLE DASHBOARD ==========
+    function makeDraggable(element) {
+        element.style.cursor = 'move';
+        
+        element.addEventListener('mousedown', (e) => {
+            if (e.target.closest('button') || e.target.closest('select') || e.target.closest('input')) return;
+            isDragging = true;
+            const rect = element.getBoundingClientRect();
+            dragOffsetX = e.clientX - rect.left;
+            dragOffsetY = e.clientY - rect.top;
+            element.style.transition = 'none';
+        });
+        
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            let newLeft = e.clientX - dragOffsetX;
+            let newTop = e.clientY - dragOffsetY;
+            
+            newLeft = Math.max(10, Math.min(window.innerWidth - element.offsetWidth - 10, newLeft));
+            newTop = Math.max(10, Math.min(window.innerHeight - element.offsetHeight - 10, newTop));
+            
+            element.style.left = newLeft + 'px';
+            element.style.top = newTop + 'px';
+            element.style.bottom = 'auto';
+            element.style.transform = 'none';
+        });
+        
+        document.addEventListener('mouseup', () => {
+            isDragging = false;
+            element.style.transition = '';
+        });
     }
 
     // ========== DASHBOARD ==========
@@ -337,7 +423,7 @@
         container.style.transform = "translateX(-50%)";
         container.style.zIndex = "999999";
         container.style.width = "95%";
-        container.style.maxWidth = "1400px";
+        container.style.maxWidth = "1200px";
         container.style.borderRadius = "16px";
         container.style.padding = "16px 20px";
         container.style.background = "rgba(20, 24, 35, 0.95)";
@@ -348,12 +434,28 @@
         container.style.color = "#EAECEF";
         container.style.fontSize = "12px";
 
+        // Make draggable
+        makeDraggable(container);
+
+        // Drag handle hint
+        const dragHint = document.createElement("div");
+        dragHint.style.position = "absolute";
+        dragHint.style.top = "5px";
+        dragHint.style.left = "50%";
+        dragHint.style.transform = "translateX(-50%)";
+        dragHint.style.fontSize = "10px";
+        dragHint.style.color = "#5E6673";
+        dragHint.style.cursor = "move";
+        dragHint.innerText = "⋮⋮ DRAG TO MOVE ⋮⋮";
+        container.appendChild(dragHint);
+
         // Top bar
         const topBar = document.createElement("div");
         topBar.style.display = "flex";
         topBar.style.alignItems = "center";
         topBar.style.justifyContent = "space-between";
         topBar.style.marginBottom = "16px";
+        topBar.style.marginTop = "12px";
         topBar.style.paddingBottom = "12px";
         topBar.style.borderBottom = "1px solid rgba(72, 187, 120, 0.2)";
 
@@ -374,19 +476,19 @@
         logo.innerText = "DC";
 
         const title = document.createElement("div");
-        title.style.fontSize = "16px";
+        title.style.fontSize = "14px";
         title.style.fontWeight = "600";
         title.style.color = "#48BB78";
         title.innerHTML = "DC Stake Bot";
 
-        const version = document.createElement("div");
-        version.style.fontSize = "10px";
-        version.style.color = "#848E9C";
-        version.innerText = "v1.0";
+        const tagline = document.createElement("div");
+        tagline.style.fontSize = "9px";
+        tagline.style.color = "#848E9C";
+        tagline.innerHTML = "supported by orionlogic @2026";
 
         leftSection.appendChild(logo);
         leftSection.appendChild(title);
-        leftSection.appendChild(version);
+        leftSection.appendChild(tagline);
 
         const rightSection = document.createElement("div");
         rightSection.style.display = "flex";
@@ -420,10 +522,10 @@
         topBar.appendChild(leftSection);
         topBar.appendChild(rightSection);
 
-        // Stats Row
+        // Stats Row - Hanya 6 kotak (hilangkan Phase)
         const statsRow = document.createElement("div");
         statsRow.style.display = "flex";
-        statsRow.style.gap = "24px";
+        statsRow.style.gap = "20px";
         statsRow.style.marginBottom = "16px";
         statsRow.style.flexWrap = "wrap";
         statsRow.style.justifyContent = "center";
@@ -432,26 +534,26 @@
             const card = document.createElement("div");
             card.style.background = "rgba(30, 35, 48, 0.6)";
             card.style.borderRadius = "12px";
-            card.style.padding = "8px 16px";
-            card.style.minWidth = "100px";
+            card.style.padding = "6px 14px";
+            card.style.minWidth = "90px";
             card.style.border = "1px solid rgba(72, 187, 120, 0.1)";
             
             const lbl = document.createElement("div");
-            lbl.style.fontSize = "10px";
+            lbl.style.fontSize = "9px";
             lbl.style.color = "#848E9C";
-            lbl.style.marginBottom = "4px";
+            lbl.style.marginBottom = "3px";
             lbl.style.textTransform = "uppercase";
             lbl.innerText = label;
             
             const val = document.createElement("div");
             val.id = id;
-            val.style.fontSize = "16px";
+            val.style.fontSize = "14px";
             val.style.fontWeight = "600";
             val.style.color = color;
             val.innerText = "0";
             
             const sfx = document.createElement("div");
-            sfx.style.fontSize = "9px";
+            sfx.style.fontSize = "8px";
             sfx.style.color = "#5E6673";
             sfx.style.marginTop = "2px";
             sfx.innerText = suffix;
@@ -468,28 +570,27 @@
         statsRow.appendChild(addStatCard("Loss %", "HUD_LOSSPCT", "#F6465D"));
         statsRow.appendChild(addStatCard("Highest Bet", "HUD_HIGHESTBET", "#F0B90B", ""));
         statsRow.appendChild(addStatCard("Drawdown", "HUD_WORSTDD", "#F6465D", "%"));
-        statsRow.appendChild(addStatCard("Phase", "HUD_PHASE", "#48BB78"));
 
         // Progress Bar
         const progressContainer = document.createElement("div");
         progressContainer.style.background = "rgba(30, 35, 48, 0.6)";
         progressContainer.style.borderRadius = "12px";
-        progressContainer.style.padding = "8px 12px";
+        progressContainer.style.padding = "6px 12px";
         progressContainer.style.marginBottom = "16px";
         progressContainer.style.border = "1px solid rgba(72, 187, 120, 0.15)";
         
         const progressHeader = document.createElement("div");
         progressHeader.style.display = "flex";
         progressHeader.style.justifyContent = "space-between";
-        progressHeader.style.marginBottom = "6px";
-        progressHeader.style.fontSize = "10px";
+        progressHeader.style.marginBottom = "4px";
+        progressHeader.style.fontSize = "9px";
         progressHeader.style.color = "#848E9C";
         progressHeader.innerHTML = '<span>🎯 WAGER TARGET</span><span id="wager-progress-text">0%</span>';
         
         const progressBarBg = document.createElement("div");
         progressBarBg.style.background = "#2D333B";
         progressBarBg.style.borderRadius = "20px";
-        progressBarBg.style.height = "8px";
+        progressBarBg.style.height = "6px";
         progressBarBg.style.overflow = "hidden";
         
         const progressBarFill = document.createElement("div");
@@ -507,8 +608,8 @@
         const progressDetail = document.createElement("div");
         progressDetail.style.display = "flex";
         progressDetail.style.justifyContent = "space-between";
-        progressDetail.style.marginTop = "6px";
-        progressDetail.style.fontSize = "9px";
+        progressDetail.style.marginTop = "4px";
+        progressDetail.style.fontSize = "8px";
         progressDetail.style.color = "#5E6673";
         progressDetail.innerHTML = '<span id="wager-current">0</span><span id="wager-target">0</span>';
         progressContainer.appendChild(progressDetail);
@@ -517,14 +618,14 @@
         const chartContainer = document.createElement("div");
         chartContainer.style.background = "rgba(30, 35, 48, 0.4)";
         chartContainer.style.borderRadius = "12px";
-        chartContainer.style.padding = "8px 12px";
+        chartContainer.style.padding = "6px 10px";
         chartContainer.style.marginBottom = "16px";
         chartContainer.style.border = "1px solid rgba(72, 187, 120, 0.15)";
         
         const chartTitle = document.createElement("div");
-        chartTitle.style.fontSize = "10px";
+        chartTitle.style.fontSize = "9px";
         chartTitle.style.color = "#848E9C";
-        chartTitle.style.marginBottom = "8px";
+        chartTitle.style.marginBottom = "6px";
         chartTitle.style.display = "flex";
         chartTitle.style.justifyContent = "space-between";
         chartTitle.innerHTML = '<span>📈 BALANCE HISTORY</span><span style="color:#48BB78;">● LIVE</span>';
@@ -532,53 +633,11 @@
         const canvas = document.createElement("canvas");
         canvas.id = "balance-chart-canvas";
         canvas.style.width = "100%";
-        canvas.style.height = "80px";
-        canvas.style.maxHeight = "80px";
+        canvas.style.height = "70px";
+        canvas.style.maxHeight = "70px";
         
         chartContainer.appendChild(chartTitle);
         chartContainer.appendChild(canvas);
-
-        // Mid Row
-        const midRow = document.createElement("div");
-        midRow.style.display = "flex";
-        midRow.style.gap = "16px";
-        midRow.style.marginBottom = "16px";
-        midRow.style.padding = "8px 0";
-        midRow.style.borderTop = "1px solid rgba(72, 187, 120, 0.1)";
-        midRow.style.borderBottom = "1px solid rgba(72, 187, 120, 0.1)";
-        midRow.style.justifyContent = "center";
-        midRow.style.flexWrap = "wrap";
-
-        function addInfoChip(label, id, color) {
-            const chip = document.createElement("div");
-            chip.style.display = "flex";
-            chip.style.alignItems = "center";
-            chip.style.gap = "6px";
-            chip.style.background = "rgba(30, 35, 48, 0.4)";
-            chip.style.padding = "4px 12px";
-            chip.style.borderRadius = "20px";
-            
-            const lbl = document.createElement("span");
-            lbl.style.fontSize = "10px";
-            lbl.style.color = "#848E9C";
-            lbl.innerText = label + ":";
-            
-            const val = document.createElement("span");
-            val.id = id;
-            val.style.fontSize = "11px";
-            val.style.fontWeight = "500";
-            val.style.color = color;
-            val.innerText = "0";
-            
-            chip.appendChild(lbl);
-            chip.appendChild(val);
-            return chip;
-        }
-
-        midRow.appendChild(addInfoChip("Max Bet Limit", "HUD_MAXBETLIMIT", "#F0B90B"));
-        midRow.appendChild(addInfoChip("Status", "HUD_STREAK", "#48BB78"));
-        midRow.appendChild(addInfoChip("W/L", "HUD_WINLOSS", "#EAECEF"));
-        midRow.appendChild(addInfoChip("Bets", "HUD_BETS", "#EAECEF"));
 
         // Buttons Row
         const buttonRow = document.createElement("div");
@@ -590,76 +649,89 @@
         const startBtn = document.createElement("button");
         startBtn.id = "orion-start-btn";
         startBtn.innerText = "▶ Start Bot";
-        startBtn.style.padding = "8px 24px";
+        startBtn.style.padding = "6px 20px";
         startBtn.style.background = "linear-gradient(135deg, #48BB78, #2F855A)";
         startBtn.style.border = "none";
         startBtn.style.borderRadius = "6px";
         startBtn.style.fontWeight = "600";
-        startBtn.style.fontSize = "12px";
+        startBtn.style.fontSize = "11px";
         startBtn.style.color = "#FFFFFF";
         startBtn.style.cursor = "pointer";
 
         const stopBtn = document.createElement("button");
         stopBtn.id = "orion-stop-btn";
         stopBtn.innerText = "⏹ Stop Bot";
-        stopBtn.style.padding = "8px 24px";
+        stopBtn.style.padding = "6px 20px";
         stopBtn.style.background = "rgba(246, 70, 93, 0.15)";
         stopBtn.style.border = "1px solid rgba(246, 70, 93, 0.4)";
         stopBtn.style.borderRadius = "6px";
         stopBtn.style.fontWeight = "600";
-        stopBtn.style.fontSize = "12px";
+        stopBtn.style.fontSize = "11px";
         stopBtn.style.color = "#F6465D";
         stopBtn.style.cursor = "pointer";
+
+        const reportBtn = document.createElement("button");
+        reportBtn.id = "orion-report-btn";
+        reportBtn.innerText = "📨 Send Report";
+        reportBtn.style.padding = "6px 20px";
+        reportBtn.style.background = "rgba(240, 185, 11, 0.15)";
+        reportBtn.style.border = "1px solid rgba(240, 185, 11, 0.4)";
+        reportBtn.style.borderRadius = "6px";
+        reportBtn.style.fontWeight = "600";
+        reportBtn.style.fontSize = "11px";
+        reportBtn.style.color = "#F0B90B";
+        reportBtn.style.cursor = "pointer";
 
         const configToggle = document.createElement("button");
         configToggle.id = "config-toggle-btn";
         configToggle.innerText = "⚙️ Config";
-        configToggle.style.padding = "4px 12px";
-        configToggle.style.background = "rgba(240, 185, 11, 0.1)";
-        configToggle.style.border = "1px solid rgba(240, 185, 11, 0.3)";
+        configToggle.style.padding = "6px 16px";
+        configToggle.style.background = "rgba(132, 142, 156, 0.15)";
+        configToggle.style.border = "1px solid rgba(132, 142, 156, 0.3)";
         configToggle.style.borderRadius = "6px";
         configToggle.style.fontSize = "10px";
-        configToggle.style.color = "#F0B90B";
+        configToggle.style.color = "#848E9C";
         configToggle.style.cursor = "pointer";
 
         buttonRow.appendChild(startBtn);
         buttonRow.appendChild(stopBtn);
+        buttonRow.appendChild(reportBtn);
         buttonRow.appendChild(configToggle);
 
         // Console Log
         const consoleDiv = document.createElement("div");
         consoleDiv.id = "orion-console-log";
-        consoleDiv.style.padding = "8px 12px";
+        consoleDiv.style.padding = "6px 10px";
         consoleDiv.style.background = "rgba(0, 0, 0, 0.4)";
         consoleDiv.style.borderRadius = "8px";
-        consoleDiv.style.fontSize = "10px";
+        consoleDiv.style.fontSize = "9px";
         consoleDiv.style.fontFamily = "'SF Mono', monospace";
         consoleDiv.style.color = "#F0B90B";
         consoleDiv.style.border = "1px solid rgba(72, 187, 120, 0.1)";
-        consoleDiv.style.maxHeight = "60px";
+        consoleDiv.style.maxHeight = "50px";
         consoleDiv.style.overflowY = "auto";
-        consoleDiv.innerHTML = "✅ DC Stake Bot ready. Bot stops only after recovery.";
+        consoleDiv.innerHTML = "✅ DC Stake Bot ready. Drag to move. Bot stops only after recovery.";
 
         // Config Panel
         const configPanel = document.createElement("div");
         configPanel.id = "config-panel";
         configPanel.style.display = "none";
-        configPanel.style.marginTop = "16px";
-        configPanel.style.padding = "16px";
-        configPanel.style.background = "rgba(30, 35, 48, 0.8)";
-        configPanel.style.borderRadius = "12px";
+        configPanel.style.marginTop = "12px";
+        configPanel.style.padding = "12px";
+        configPanel.style.background = "rgba(30, 35, 48, 0.9)";
+        configPanel.style.borderRadius = "10px";
         configPanel.style.border = "1px solid rgba(72, 187, 120, 0.2)";
 
         const configGrid = document.createElement("div");
         configGrid.style.display = "grid";
-        configGrid.style.gridTemplateColumns = "repeat(auto-fit, minmax(200px, 1fr))";
-        configGrid.style.gap = "12px";
+        configGrid.style.gridTemplateColumns = "repeat(auto-fit, minmax(180px, 1fr))";
+        configGrid.style.gap = "8px";
 
         function addConfigRow(parent, label, id, type, defaultValue, step, min) {
             const row = document.createElement("div");
             const lblSpan = document.createElement("div");
-            lblSpan.style.fontSize = "10px";
-            lblSpan.style.marginBottom = "4px";
+            lblSpan.style.fontSize = "9px";
+            lblSpan.style.marginBottom = "3px";
             lblSpan.style.color = "#848E9C";
             lblSpan.innerText = label;
             const input = document.createElement("input");
@@ -672,9 +744,9 @@
             input.style.background = "#1E232F";
             input.style.border = "1px solid #2D333B";
             input.style.color = "#EAECEF";
-            input.style.padding = "6px 8px";
-            input.style.borderRadius = "6px";
-            input.style.fontSize = "11px";
+            input.style.padding = "4px 6px";
+            input.style.borderRadius = "4px";
+            input.style.fontSize = "10px";
             input.style.fontFamily = "monospace";
             row.appendChild(lblSpan);
             row.appendChild(input);
@@ -684,13 +756,13 @@
 
         // Phase 1
         const p1Div = document.createElement("div");
-        p1Div.style.padding = "8px";
+        p1Div.style.padding = "6px";
         p1Div.style.background = "rgba(72, 187, 120, 0.05)";
-        p1Div.style.borderRadius = "8px";
+        p1Div.style.borderRadius = "6px";
         const p1Title = document.createElement("div");
-        p1Title.style.fontSize = "11px";
+        p1Title.style.fontSize = "10px";
         p1Title.style.fontWeight = "600";
-        p1Title.style.marginBottom = "8px";
+        p1Title.style.marginBottom = "6px";
         p1Title.style.color = "#48BB78";
         p1Title.innerText = "Phase 1 - Dice 97%";
         p1Div.appendChild(p1Title);
@@ -700,13 +772,13 @@
 
         // Phase 2
         const p2Div = document.createElement("div");
-        p2Div.style.padding = "8px";
+        p2Div.style.padding = "6px";
         p2Div.style.background = "rgba(240, 185, 11, 0.05)";
-        p2Div.style.borderRadius = "8px";
+        p2Div.style.borderRadius = "6px";
         const p2Title = document.createElement("div");
-        p2Title.style.fontSize = "11px";
+        p2Title.style.fontSize = "10px";
         p2Title.style.fontWeight = "600";
-        p2Title.style.marginBottom = "8px";
+        p2Title.style.marginBottom = "6px";
         p2Title.style.color = "#F0B90B";
         p2Title.innerText = "Phase 2 - Limbo";
         p2Div.appendChild(p2Title);
@@ -719,13 +791,13 @@
 
         // Phase 3
         const p3Div = document.createElement("div");
-        p3Div.style.padding = "8px";
+        p3Div.style.padding = "6px";
         p3Div.style.background = "rgba(246, 70, 93, 0.05)";
-        p3Div.style.borderRadius = "8px";
+        p3Div.style.borderRadius = "6px";
         const p3Title = document.createElement("div");
-        p3Title.style.fontSize = "11px";
+        p3Title.style.fontSize = "10px";
         p3Title.style.fontWeight = "600";
-        p3Title.style.marginBottom = "8px";
+        p3Title.style.marginBottom = "6px";
         p3Title.style.color = "#F6465D";
         p3Title.innerText = "Phase 3 - Recovery 60%";
         p3Div.appendChild(p3Title);
@@ -736,13 +808,13 @@
 
         // Global
         const globalDiv = document.createElement("div");
-        globalDiv.style.padding = "8px";
+        globalDiv.style.padding = "6px";
         globalDiv.style.background = "rgba(132, 142, 156, 0.05)";
-        globalDiv.style.borderRadius = "8px";
+        globalDiv.style.borderRadius = "6px";
         const globalTitle = document.createElement("div");
-        globalTitle.style.fontSize = "11px";
+        globalTitle.style.fontSize = "10px";
         globalTitle.style.fontWeight = "600";
-        globalTitle.style.marginBottom = "8px";
+        globalTitle.style.marginBottom = "6px";
         globalTitle.style.color = "#848E9C";
         globalTitle.innerText = "Global";
         globalDiv.appendChild(globalTitle);
@@ -754,12 +826,12 @@
 
         // Preset
         const presetDiv = document.createElement("div");
-        presetDiv.style.padding = "8px";
+        presetDiv.style.padding = "6px";
         presetDiv.style.background = "rgba(132, 142, 156, 0.05)";
-        presetDiv.style.borderRadius = "8px";
+        presetDiv.style.borderRadius = "6px";
         const presetLabel = document.createElement("div");
-        presetLabel.style.fontSize = "10px";
-        presetLabel.style.marginBottom = "4px";
+        presetLabel.style.fontSize = "9px";
+        presetLabel.style.marginBottom = "3px";
         presetLabel.style.color = "#848E9C";
         presetLabel.innerText = "Preset";
         const presetSelect = document.createElement("select");
@@ -768,9 +840,9 @@
         presetSelect.style.background = "#1E232F";
         presetSelect.style.border = "1px solid #2D333B";
         presetSelect.style.color = "#EAECEF";
-        presetSelect.style.padding = "6px 8px";
-        presetSelect.style.borderRadius = "6px";
-        presetSelect.style.fontSize = "11px";
+        presetSelect.style.padding = "4px 6px";
+        presetSelect.style.borderRadius = "4px";
+        presetSelect.style.fontSize = "10px";
         
         const presets = {
             "Default": { p1_div:50000, p1_mart:1.0, p2_div:1000, p2_min:1.30, p2_max:1.50, p2_mart:1.0, p2_thresh:7.0, p3_div:1250, p3_mart:2.5, p3_maxstreak:12, stoploss:25, targetwager:10, minbet:0.0015, maxbetlimit:0 },
@@ -813,7 +885,6 @@
         container.appendChild(statsRow);
         container.appendChild(progressContainer);
         container.appendChild(chartContainer);
-        container.appendChild(midRow);
         container.appendChild(buttonRow);
         container.appendChild(configPanel);
         container.appendChild(consoleDiv);
@@ -834,7 +905,7 @@
             configToggle.innerText = isVisible ? "⚙️ Config" : "▲ Close";
         };
         
-        updateConsoleLog("Dashboard ready");
+        updateConsoleLog("Dashboard ready - Drag to move");
     }
 
     function updateHud(force = false) {
@@ -855,13 +926,6 @@
         if (lossEl) { lossEl.innerText = lossPct.toFixed(2) + "%"; lossEl.style.color = lossPct > 10 ? "#F6465D" : (lossPct > 3 ? "#F0B90B" : "#48BB78"); }
         document.getElementById("HUD_HIGHESTBET") && (document.getElementById("HUD_HIGHESTBET").innerText = bot.highestBet > 0 ? bot.highestBet.toFixed(4) : "0");
         document.getElementById("HUD_WORSTDD") && (document.getElementById("HUD_WORSTDD").innerText = bot.worstDrawdown > 0 ? bot.worstDrawdown.toFixed(2) + "%" : "0%");
-        const phaseEl = document.getElementById("HUD_PHASE");
-        if (phaseEl) { let txt = bot.phase === 1 ? `P1:${bot.phase1.chance}%` : (bot.phase === 2 ? `P2:LIMBO` : `P3:${bot.phase3.chance}%`); if (bot.pendingStopAfterRecovery) txt += "⏳"; phaseEl.innerText = txt; }
-        document.getElementById("HUD_MAXBETLIMIT") && (document.getElementById("HUD_MAXBETLIMIT").innerText = bot.maxBetLimit > 0 ? bot.maxBetLimit.toFixed(4) : "∞");
-        const streakEl = document.getElementById("HUD_STREAK");
-        if (streakEl) { if (bot.phase === 3) streakEl.innerText = `Loss:${bot.phase3LossStreak}`; else streakEl.innerText = bot.lastWin ? "WIN" : "LOSS"; streakEl.style.color = bot.lastWin ? "#48BB78" : "#F6465D"; }
-        document.getElementById("HUD_WINLOSS") && (document.getElementById("HUD_WINLOSS").innerText = `${bot.stats.wins}/${bot.stats.loss}`);
-        document.getElementById("HUD_BETS") && (document.getElementById("HUD_BETS").innerText = bot.stats.bets);
         
         const fillEl = document.getElementById("wager-progress-fill");
         const textEl = document.getElementById("wager-progress-text");
@@ -1043,52 +1107,7 @@
             } catch (e) { updateConsoleLog("Sync Failed: " + e.message); }
         },
         async sendTg(statusHeader) {
-            const now = Date.now();
-            if (now - lastReportTime < 30000) return;
-            lastReportTime = now;
-            
-            const elapsed = bot.startTime ? (Date.now() - bot.startTime) / 1000 : 0;
-            const hours = Math.floor(elapsed / 3600);
-            const minutes = Math.floor((elapsed % 3600) / 60);
-            const seconds = Math.floor(elapsed % 60);
-            const uptimeStr = `${hours}h ${minutes}m ${seconds}s`;
-            
-            const profit = bot.stats.profit;
-            const lossPct = getTotalLossPercentage();
-            const wagerPercent = bot.wagtarget > 0 ? (bot.wager / bot.wagtarget) * 100 : 0;
-            const progressBar = "█".repeat(Math.floor(wagerPercent / 5)) + "░".repeat(20 - Math.floor(wagerPercent / 5));
-            
-            const chartUrl = getChartImageUrl();
-            
-            let text = `*DC STAKE BOT*\n`;
-            text += `👤 *User:* ${bot.stakeUser}\n`;
-            text += `⏱ *Uptime:* ${uptimeStr}\n`;
-            text += `💰 *Balance:* ${getCurrentBalance().toFixed(4)} ${bot.selectedCurrency.toUpperCase()}\n`;
-            text += `📈 *Profit:* ${profit >= 0 ? `+${profit.toFixed(4)}` : `${profit.toFixed(4)}`} (${lossPct.toFixed(1)}%)\n`;
-            text += `🎯 *Wager:* ${bot.stats.wagered.toFixed(2)}/${bot.wagtarget.toFixed(2)} (${wagerPercent.toFixed(0)}%)\n`;
-            text += `${progressBar}\n`;
-            text += `📋 *Dropdown:* Phase ${bot.phase} | ${bot.phase === 1 ? `Dice ${bot.phase1.chance}%` : (bot.phase === 2 ? `Limbo` : `Recovery ${bot.phase3.chance}%`)}\n`;
-            text += `⚙️ *MaxBet:* ${bot.maxBetLimit > 0 ? bot.maxBetLimit.toFixed(6) : "∞"}\n`;
-            text += `📊 *Stats:* ${bot.stats.wins}/${bot.stats.loss} W/L | ${bot.stats.bets} bets\n`;
-            text += `🆔 ${CONFIG.version}`;
-            
-            // Kirim teks dulu
-            fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ chat_id: CONFIG.tgChatId, text: text, parse_mode: "Markdown", disable_web_page_preview: true })
-            }).catch(() => {});
-            
-            // Kirim chart image jika ada
-            if (chartUrl) {
-                setTimeout(() => {
-                    fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendPhoto`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ chat_id: CONFIG.tgChatId, photo: chartUrl, caption: "📊 Balance Chart" })
-                    }).catch(() => {});
-                }, 500);
-            }
+            await sendTelegramReport(statusHeader);
         },
         async placeBet(amount, payout, game) {
             const endpoint = game === "dice" ? `${CONFIG.apiUrl}/casino/dice/roll` : `${CONFIG.apiUrl}/casino/limbo/bet`;
@@ -1122,14 +1141,15 @@
                     bot.isRunning = true;
                     bot.startTime = new Date();
                     resetToPhase1();
-                    setTimeout(() => API.sendTg("🚀 BOT STARTED"), 1000);
+                    setTimeout(() => sendTelegramReport("🚀 BOT STARTED"), 1000);
                     if (reportInterval) clearInterval(reportInterval);
-                    reportInterval = setInterval(() => { if (bot.isRunning) API.sendTg("📊 PERIODIC"); }, 180000);
+                    reportInterval = setInterval(() => { if (bot.isRunning) sendTelegramReport("📊 PERIODIC"); }, 180000);
                     updateHud(true);
                     runLoop();
                 }
             };
             document.getElementById("orion-stop-btn").onclick = () => { if (bot.isRunning) stopBot(); };
+            document.getElementById("orion-report-btn").onclick = () => { sendManualReport(); };
         });
     }
     
