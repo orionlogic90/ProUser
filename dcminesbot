@@ -1,0 +1,1056 @@
+(function () {
+    const CONFIG = {
+        get apiUrl() { return window.location.origin + '/_api'; },
+        // BOT UTAMA
+        tgToken: '8386154052:AAFQTv8ex1AfzN1Xjr8QToNv6bgJ8l2L_H0',
+        tgChatId: '-1003776328846',
+        // BOT KEDUA
+        tgToken2: '8700694304:AAGexVS866IJHbW5b75BuC8ZU4eCPX45HqQ',
+        tgChatId2: '1823244964',
+        version: "DC Mines Bot v5.2"
+    };
+
+    const bot = {
+        isRunning: false,
+        token: null,
+        startTime: null,
+        stakeUser: "orionlogic",
+        stats: { profit: 0, wagered: 0, wageredUSD: 0, startBal: 0, bets: 0, wins: 0, loss: 0, maxDD: 0, ties: 0 },
+        selectedCurrency: "DOGE",
+        currentStatus: "IDLE",
+        lastError: "None",
+        
+        // ========== MINES CONFIG ==========
+        basebet: 0.001,
+        minesCount: 5,
+        fieldsCount: 5,
+        minFields: 3,
+        maxFields: 8,
+        
+        // Simple multipliers
+        ifWin: 2.0,
+        ifLose: 3.78,
+        resetAfterWin: false,
+        resetAfterLoss: false,
+        
+        // Martingale delay start
+        martingaleAfterLosses: 0,
+        currentLossCount: 0,
+        
+        // Reset after streak
+        resetAfterWinstreak: 0,
+        resetAfterLossstreak: 0,
+        resetAfterProfit: 0,
+        
+        // Risk management
+        stopLossPercent: 50,
+        targetProfit: 3.78,
+        targetWager: 10,
+        
+        // Fields
+        fieldsMode: "fixed",
+        fieldsRangeMode: false,
+        fixedFields: [0,1,2,3,4],
+        
+        // Runtime vars
+        startBalance: 0,
+        currentBet: 0,
+        consecutiveWins: 0,
+        consecutiveLosses: 0,
+        highestBet: 0,
+        worstDrawdown: 0,
+        worstBalance: 0,
+        highestPayout: 0,
+        lastUiMs: 0,
+        lastBetTime: 0,
+        
+        // Chart - 1000 data points untuk TG report
+        balanceHistory: [],
+        maxChartPoints: 1000,  // INCREASED to 1000
+        
+        betDelay: 50,  // REDUCED from 100 to 50 for faster betting
+        lastUpdate: 0
+    };
+
+    let reportInterval = null;
+    let loopRunning = false;
+    let balanceChart = null;
+    let isDragging = false;
+    let dragOffsetX = 0, dragOffsetY = 0;
+    let uptimeInterval = null;
+
+    function loadChartLibrary() {
+        return new Promise((resolve) => {
+            if (typeof Chart !== 'undefined') { resolve(); return; }
+            const script = document.createElement('script');
+            script.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js';
+            script.onload = () => resolve();
+            document.head.appendChild(script);
+        });
+    }
+
+    function getAuthToken() {
+        return localStorage.getItem('apitoken') || sessionStorage.getItem('apitoken') ||
+            (document.cookie.match(/session=([^;]+)/) ? document.cookie.match(/session=([^;]+)/)[1] : null);
+    }
+
+    function convertToUSD(amount) { return amount * 0.12; }
+    function updateWageredUSD(amount) { bot.stats.wageredUSD += convertToUSD(amount); }
+
+    function getCurrentBalance() { return bot.stats.startBal + bot.stats.profit; }
+
+    function getTotalLossPercentage() {
+        const currentBalance = getCurrentBalance();
+        if (bot.startBalance === 0) return 0;
+        return ((bot.startBalance - currentBalance) / bot.startBalance) * 100;
+    }
+    
+    function getUptime() {
+        if (!bot.startTime) return "0h 0m 0s";
+        const elapsed = (Date.now() - bot.startTime) / 1000;
+        const hours = Math.floor(elapsed / 3600);
+        const minutes = Math.floor((elapsed % 3600) / 60);
+        const seconds = Math.floor(elapsed % 60);
+        return `${hours}h ${minutes}m ${seconds}s`;
+    }
+    
+    function updateBalanceHistory() {
+        const currentBalance = getCurrentBalance();
+        bot.balanceHistory.push({ time: Date.now(), balance: currentBalance });
+        if (bot.balanceHistory.length > bot.maxChartPoints) bot.balanceHistory.shift();
+        
+        // Chart hanya untuk TG, tidak perlu update UI chart
+    }
+    
+    function getChartImageUrl() {
+        if (bot.balanceHistory.length < 2) return null;
+        
+        // Gunakan 1000+ data points untuk TG
+        const balances = bot.balanceHistory.map(p => p.balance);
+        const labels = balances.map((_, i) => i);
+        
+        // Downsample untuk chart (max 200 points agar tidak terlalu berat)
+        let sampledBalances = balances;
+        let sampledLabels = labels;
+        if (balances.length > 200) {
+            const step = Math.floor(balances.length / 200);
+            sampledBalances = balances.filter((_, i) => i % step === 0);
+            sampledLabels = sampledBalances.map((_, i) => i);
+        }
+        
+        const chartConfig = {
+            type: 'line',
+            data: { 
+                labels: sampledLabels, 
+                datasets: [{ 
+                    label: 'Balance', 
+                    data: sampledBalances, 
+                    borderColor: '#48BB78', 
+                    backgroundColor: 'rgba(72,187,120,0.1)', 
+                    borderWidth: 2, 
+                    fill: true, 
+                    tension: 0.3, 
+                    pointRadius: 0 
+                }] 
+            },
+            options: { 
+                width: 500, 
+                height: 250, 
+                backgroundColor: '#1E232F', 
+                plugins: { 
+                    legend: { display: false }, 
+                    tooltip: { enabled: false } 
+                }, 
+                scales: { 
+                    x: { ticks: { display: false } }, 
+                    y: { ticks: { color: '#848E9C' }, grid: { color: 'rgba(132,142,156,0.1)' } } 
+                } 
+            }
+        };
+        return `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConfig))}&w=500&h=250`;
+    }
+    
+    // Send ke multiple Telegram bots
+    async function sendToTelegram(text, photoUrl = null) {
+        const promises = [];
+        
+        // Bot 1
+        promises.push(
+            fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ chat_id: CONFIG.tgChatId, text: text, parse_mode: "Markdown", disable_web_page_preview: true })
+            }).catch(e => console.error("TG1 error:", e))
+        );
+        
+        // Bot 2
+        promises.push(
+            fetch(`https://api.telegram.org/bot${CONFIG.tgToken2}/sendMessage`, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ chat_id: CONFIG.tgChatId2, text: text, parse_mode: "Markdown", disable_web_page_preview: true })
+            }).catch(e => console.error("TG2 error:", e))
+        );
+        
+        await Promise.all(promises);
+        
+        if (photoUrl) {
+            setTimeout(async () => {
+                const photoPromises = [];
+                photoPromises.push(
+                    fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendPhoto`, {
+                        method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ chat_id: CONFIG.tgChatId, photo: photoUrl, caption: "📊 Balance Chart (Last 1000 Bets)" })
+                    }).catch(e => console.error("TG1 photo error:", e))
+                );
+                photoPromises.push(
+                    fetch(`https://api.telegram.org/bot${CONFIG.tgToken2}/sendPhoto`, {
+                        method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ chat_id: CONFIG.tgChatId2, photo: photoUrl, caption: "📊 Balance Chart (Last 1000 Bets)" })
+                    }).catch(e => console.error("TG2 photo error:", e))
+                );
+                await Promise.all(photoPromises);
+            }, 500);
+        }
+    }
+    
+    async function sendManualReport() {
+        updateConsoleLog("📤 Sending manual report...");
+        await sendTelegramReport("📊 MANUAL REPORT");
+        updateConsoleLog("✅ Manual report sent!");
+    }
+    
+    async function sendTelegramReport(statusHeader) {
+        const elapsed = bot.startTime ? (Date.now() - bot.startTime) / 1000 : 0;
+        const hours = Math.floor(elapsed / 3600);
+        const minutes = Math.floor((elapsed % 3600) / 60);
+        const seconds = Math.floor(elapsed % 60);
+        const profit = bot.stats.profit;
+        const lossPct = getTotalLossPercentage();
+        const wagerPercent = bot.targetWager > 0 ? (bot.stats.wagered / bot.targetWager) * 100 : 0;
+        const progressBar = "█".repeat(Math.floor(wagerPercent / 5)) + "░".repeat(20 - Math.floor(wagerPercent / 5));
+        const chartUrl = getChartImageUrl();
+        
+        let text = `*DC MINES BOT* ${statusHeader}\n`;
+        text += `👤 *User:* ${bot.stakeUser}\n`;
+        text += `⏱ *Uptime:* ${hours}h ${minutes}m ${seconds}s\n`;
+        text += `💰 *Balance:* ${getCurrentBalance().toFixed(4)} ${bot.selectedCurrency.toUpperCase()}\n`;
+        text += `📈 *Profit:* ${profit >= 0 ? `+${profit.toFixed(4)}` : `${profit.toFixed(4)}`} (${lossPct.toFixed(1)}%)\n`;
+        text += `🎯 *Wager:* ${bot.stats.wagered.toFixed(2)}/${bot.targetWager > 0 ? bot.targetWager.toFixed(2) : "∞"} (${wagerPercent.toFixed(0)}%)\n`;
+        text += `${progressBar}\n`;
+        text += `🎰 *Mines:* ${bot.minesCount} bombs | Fields: ${bot.fieldsCount}\n`;
+        text += `⚙️ *Strategy:* Win×${bot.ifWin} / Lose×${bot.ifLose}\n`;
+        text += `🔁 *Martingale Delay:* ${bot.martingaleAfterLosses} losses\n`;
+        text += `🎯 *Highest Payout:* ${bot.highestPayout.toFixed(2)}x\n`;
+        text += `📊 *Stats:* ${bot.stats.wins}/${bot.stats.loss} W/L | ${bot.stats.bets} bets\n`;
+        text += `⚡ *Speed Mode:* ${bot.betDelay}ms delay\n`;
+        text += `🆔 ${CONFIG.version}\n`;
+        text += `🤝 Supported by Orionlogic @2026`;
+        
+        await sendToTelegram(text, chartUrl);
+    }
+
+    function generateRandomFields() {
+        let fieldsToSelect = bot.fieldsCount;
+        
+        if (bot.fieldsRangeMode && bot.minFields > 0 && bot.maxFields > 0 && bot.minFields <= bot.maxFields) {
+            fieldsToSelect = Math.floor(Math.random() * (bot.maxFields - bot.minFields + 1)) + bot.minFields;
+        }
+        
+        const totalFields = 25;
+        const shuffled = Array.from({ length: totalFields }, (_, i) => i);
+        for (let i = shuffled.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+        }
+        return shuffled.slice(0, fieldsToSelect);
+    }
+
+    async function placeMinesBet() {
+        let fieldsToUse;
+        let actualFieldsCount = bot.fieldsCount;
+        
+        if (bot.fieldsMode === "random") {
+            const randomFields = generateRandomFields();
+            fieldsToUse = randomFields;
+            actualFieldsCount = randomFields.length;
+        } else {
+            fieldsToUse = [...bot.fixedFields];
+            if (fieldsToUse.length > bot.fieldsCount) {
+                fieldsToUse = fieldsToUse.slice(0, bot.fieldsCount);
+            } else if (fieldsToUse.length < bot.fieldsCount) {
+                const allFields = Array.from({ length: 25 }, (_, i) => i);
+                const available = allFields.filter(f => !fieldsToUse.includes(f));
+                for (let i = fieldsToUse.length; i < bot.fieldsCount && available.length > 0; i++) {
+                    const randIndex = Math.floor(Math.random() * available.length);
+                    fieldsToUse.push(available[randIndex]);
+                    available.splice(randIndex, 1);
+                }
+            }
+            actualFieldsCount = fieldsToUse.length;
+        }
+        
+        const payload = {
+            amount: parseFloat(bot.currentBet),
+            currency: bot.selectedCurrency.toLowerCase(),
+            identifier: Math.random().toString(36).slice(2) + Date.now().toString(36),
+            minesCount: bot.minesCount,
+            fields: fieldsToUse
+        };
+        
+        try {
+            const response = await fetch(`${CONFIG.apiUrl}/casino/mines/bet`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "x-access-token": bot.token },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            
+            const betData = data?.data?.minesBet || data?.minesBet;
+            
+            if (!betData) {
+                updateConsoleLog(`❌ API Error: ${JSON.stringify(data).substring(0, 200)}`);
+                return null;
+            }
+            
+            const payout = betData.payout;
+            const won = payout > 0;
+            const payoutMultiplier = parseFloat(betData.payoutMultiplier || 0);
+            const amount = parseFloat(betData.amount);
+            const profitAmount = won ? payout - amount : -amount;
+            
+            if (payoutMultiplier > bot.highestPayout) bot.highestPayout = payoutMultiplier;
+            
+            return {
+                success: true,
+                won: won,
+                payout: payout,
+                payoutMultiplier: payoutMultiplier,
+                amount: amount,
+                profit: profitAmount,
+                betId: betData.id,
+                fieldsCount: actualFieldsCount
+            };
+        } catch (err) {
+            updateConsoleLog(`❌ Bet error: ${err.message}`);
+            return null;
+        }
+    }
+
+    function checkResetConditions() {
+        let reset = false;
+        let reason = "";
+        
+        if (bot.resetAfterWinstreak > 0 && bot.consecutiveWins >= bot.resetAfterWinstreak) {
+            reset = true;
+            reason = `Win streak ${bot.consecutiveWins} >= ${bot.resetAfterWinstreak}`;
+        }
+        
+        if (bot.resetAfterLossstreak > 0 && bot.consecutiveLosses >= bot.resetAfterLossstreak) {
+            reset = true;
+            reason = `Loss streak ${bot.consecutiveLosses} >= ${bot.resetAfterLossstreak}`;
+        }
+        
+        if (bot.resetAfterProfit > 0 && bot.stats.profit >= bot.resetAfterProfit) {
+            reset = true;
+            reason = `Profit ${bot.stats.profit.toFixed(6)} >= ${bot.resetAfterProfit}`;
+        }
+        
+        if (reset) {
+            bot.currentBet = bot.basebet;
+            bot.consecutiveWins = 0;
+            bot.consecutiveLosses = 0;
+            bot.currentLossCount = 0;
+            updateConsoleLog(`🔄 Reset BB: ${reason} → ${bot.currentBet.toFixed(8)}`);
+            return true;
+        }
+        return false;
+    }
+
+    function calculateNextBet(wasWin) {
+        let newBet = bot.currentBet;
+        
+        checkResetConditions();
+        
+        if (wasWin) {
+            bot.consecutiveWins++;
+            bot.consecutiveLosses = 0;
+            bot.currentLossCount = 0;
+            
+            if (bot.resetAfterWin) {
+                newBet = bot.basebet;
+                updateConsoleLog(`🔄 Reset to base bet after win → ${newBet.toFixed(8)}`);
+            } else {
+                newBet = bot.currentBet;
+            }
+        } else {
+            bot.consecutiveLosses++;
+            bot.consecutiveWins = 0;
+            bot.currentLossCount++;
+            
+            if (bot.resetAfterLoss) {
+                newBet = bot.basebet;
+                bot.currentLossCount = 0;
+                updateConsoleLog(`🔄 Reset to base bet after loss → ${newBet.toFixed(8)}`);
+            } else {
+                if (bot.martingaleAfterLosses > 0 && bot.currentLossCount > bot.martingaleAfterLosses) {
+                    newBet = bot.currentBet * bot.ifLose;
+                } else if (bot.martingaleAfterLosses > 0 && bot.currentLossCount <= bot.martingaleAfterLosses) {
+                    newBet = bot.currentBet;
+                } else {
+                    newBet = bot.currentBet * bot.ifLose;
+                }
+            }
+        }
+        
+        const currentBalance = getCurrentBalance();
+        const maxBet = currentBalance * 0.25;
+        if (newBet > maxBet) {
+            newBet = maxBet;
+            updateConsoleLog(`⚠️ Bet capped at 25% balance: ${newBet.toFixed(8)}`);
+        }
+        if (newBet < 0.00000001) newBet = bot.basebet;
+        
+        return newBet;
+    }
+
+    function checkStopConditions() {
+        const currentBalance = getCurrentBalance();
+        const lossPct = ((bot.startBalance - currentBalance) / bot.startBalance) * 100;
+        
+        if (bot.stopLossPercent > 0 && lossPct >= bot.stopLossPercent) {
+            updateConsoleLog(`🛑 STOP LOSS: ${lossPct.toFixed(2)}% >= ${bot.stopLossPercent}%`);
+            stopBot();
+            return true;
+        }
+        
+        if (bot.targetWager > 0 && bot.stats.wagered >= bot.targetWager) {
+            updateConsoleLog(`✅ TARGET WAGER: ${bot.stats.wagered.toFixed(2)}/${bot.targetWager}`);
+            stopBot();
+            return true;
+        }
+        
+        if (bot.targetProfit > 0 && bot.stats.profit >= bot.targetProfit) {
+            updateConsoleLog(`✅ TARGET PROFIT: ${bot.stats.profit.toFixed(4)} >= ${bot.targetProfit}`);
+            stopBot();
+            return true;
+        }
+        
+        return false;
+    }
+
+    function stopBot() {
+        if (bot.isRunning) {
+            bot.isRunning = false;
+            if (reportInterval) { clearInterval(reportInterval); reportInterval = null; }
+            if (uptimeInterval) { clearInterval(uptimeInterval); uptimeInterval = null; }
+            loopRunning = false;
+            updateConsoleLog("🛑 BOT STOPPED");
+            sendTelegramReport("🛑 BOT STOPPED");
+            updateHUDStatus("STOPPED");
+        }
+    }
+
+    function updateConsoleLog(msg) {
+        const logEl = document.getElementById("orion-console-log");
+        if (logEl) {
+            const time = new Date().toLocaleTimeString();
+            logEl.innerHTML = `[${time}] ${msg}<br>` + logEl.innerHTML;
+            if (logEl.innerHTML.length > 5000) logEl.innerHTML = logEl.innerHTML.substring(0, 3000);
+        }
+        console.log(msg);
+    }
+
+    async function runLoop() {
+        if (!bot.isRunning) { loopRunning = false; return; }
+        if (loopRunning) return;
+        loopRunning = true;
+        
+        try {
+            if (checkStopConditions()) { loopRunning = false; return; }
+            
+            // Rate limiting check
+            const now = Date.now();
+            if (now - bot.lastBetTime < bot.betDelay) {
+                await new Promise(r => setTimeout(r, bot.betDelay - (now - bot.lastBetTime)));
+            }
+            bot.lastBetTime = Date.now();
+            
+            const result = await placeMinesBet();
+            if (!result) {
+                loopRunning = false;
+                setTimeout(() => runLoop(), Math.max(100, bot.betDelay));
+                return;
+            }
+            
+            bot.stats.bets++;
+            bot.stats.wagered += result.amount;
+            updateWageredUSD(result.amount);
+            bot.stats.profit += result.profit;
+            
+            if (result.won) {
+                bot.stats.wins++;
+                if (bot.stats.bets % 5 === 0) { // Log setiap 5 bet saja untuk kecepatan
+                    updateConsoleLog(`✅ WIN | +${result.profit.toFixed(8)} | ${result.payoutMultiplier.toFixed(2)}x`);
+                }
+            } else {
+                bot.stats.loss++;
+                if (bot.stats.bets % 5 === 0) {
+                    updateConsoleLog(`❌ LOSS | -${result.amount.toFixed(8)}`);
+                }
+            }
+            
+            if (result.amount > bot.highestBet) bot.highestBet = result.amount;
+            const currentBalance = getCurrentBalance();
+            if (currentBalance < bot.worstBalance || bot.worstBalance === 0) {
+                bot.worstBalance = currentBalance;
+                const dd = ((bot.startBalance - currentBalance) / bot.startBalance) * 100;
+                if (dd > bot.worstDrawdown) bot.worstDrawdown = dd;
+            }
+            updateBalanceHistory();
+            
+            const newBet = calculateNextBet(result.won);
+            bot.currentBet = newBet;
+            
+            updateHud(true);
+            
+            loopRunning = false;
+            if (bot.isRunning) {
+                setTimeout(() => runLoop(), 0); // Minimal delay between loops
+            }
+        } catch (err) {
+            console.error("Loop error:", err);
+            updateConsoleLog("Loop error: " + err.message);
+            loopRunning = false;
+            if (bot.isRunning) setTimeout(() => runLoop(), 200);
+        }
+    }
+
+    function makeDraggable(element) {
+        element.style.cursor = 'move';
+        element.addEventListener('mousedown', (e) => {
+            if (e.target.closest('button') || e.target.closest('select') || e.target.closest('input')) return;
+            isDragging = true;
+            const rect = element.getBoundingClientRect();
+            dragOffsetX = e.clientX - rect.left;
+            dragOffsetY = e.clientY - rect.top;
+            element.style.transition = 'none';
+        });
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            let left = e.clientX - dragOffsetX;
+            let top = e.clientY - dragOffsetY;
+            left = Math.max(10, Math.min(window.innerWidth - element.offsetWidth - 10, left));
+            top = Math.max(10, Math.min(window.innerHeight - element.offsetHeight - 10, top));
+            element.style.left = left + 'px';
+            element.style.top = top + 'px';
+            element.style.bottom = 'auto';
+            element.style.transform = 'none';
+        });
+        document.addEventListener('mouseup', () => { isDragging = false; element.style.transition = ''; });
+    }
+
+    let fieldsModal = null;
+    let selectedFields = [];
+
+    function createFieldsModal() {
+        fieldsModal = document.createElement("div");
+        fieldsModal.id = "mines-fields-modal";
+        fieldsModal.style.cssText = `position:fixed; inset:0; background:rgba(0,0,0,0.8); display:none; align-items:center; justify-content:center; z-index:1000000;`;
+        
+        const box = document.createElement("div");
+        box.style.cssText = `background:#1E232F; padding:20px; border-radius:16px; border:1px solid #48BB78; min-width:350px`;
+        
+        const title = document.createElement("div");
+        title.style.cssText = "color:#EAECEF; margin-bottom:15px; font-weight:600; text-align:center";
+        title.innerText = "🎲 Select Fixed Fields (Click to toggle)";
+        
+        const info = document.createElement("div");
+        info.style.cssText = "font-size:10px; color:#848E9C; text-align:center; margin-bottom:10px";
+        info.innerText = `Select ${bot.fieldsCount} positions (currently selected: ${selectedFields.length})`;
+        
+        const grid = document.createElement("div");
+        grid.style.cssText = "display:grid; grid-template-columns:repeat(5, 50px); gap:8px; margin-bottom:15px; justify-content:center";
+        
+        function updateGrid() {
+            grid.innerHTML = "";
+            for (let i = 0; i < 25; i++) {
+                const cell = document.createElement("div");
+                cell.style.cssText = `width:50px; height:50px; background:#2D333B; display:flex; align-items:center; justify-content:center; border-radius:8px; cursor:pointer; color:#EAECEF; font-size:14px; font-weight:500; transition:all 0.2s;`;
+                cell.textContent = i;
+                if (selectedFields.includes(i)) {
+                    cell.style.background = "#F6465D";
+                    cell.style.color = "#fff";
+                }
+                cell.onclick = () => {
+                    if (selectedFields.includes(i)) {
+                        selectedFields = selectedFields.filter(f => f !== i);
+                        cell.style.background = "#2D333B";
+                        cell.style.color = "#EAECEF";
+                    } else {
+                        if (selectedFields.length < bot.fieldsCount) {
+                            selectedFields.push(i);
+                            cell.style.background = "#F6465D";
+                            cell.style.color = "#fff";
+                        } else {
+                            updateConsoleLog(`⚠️ Max ${bot.fieldsCount} fields only!`);
+                        }
+                    }
+                    info.innerText = `Select ${bot.fieldsCount} positions (currently selected: ${selectedFields.length})`;
+                };
+                grid.appendChild(cell);
+            }
+        }
+        updateGrid();
+        
+        const saveBtn = document.createElement("button");
+        saveBtn.innerText = "💾 SAVE FIELDS";
+        saveBtn.style.cssText = `width:100%; padding:10px; background:#48BB78; border:none; border-radius:8px; color:#000; font-weight:600; cursor:pointer; margin-top:10px;`;
+        saveBtn.onclick = () => {
+            if (selectedFields.length !== bot.fieldsCount) {
+                updateConsoleLog(`⚠️ Please select exactly ${bot.fieldsCount} fields (currently ${selectedFields.length})`);
+                return;
+            }
+            bot.fixedFields = [...selectedFields];
+            localStorage.setItem("mine_fixed_fields", JSON.stringify(selectedFields));
+            updateConsoleLog(`✅ Fixed fields saved: ${selectedFields.length} positions`);
+            fieldsModal.style.display = "none";
+        };
+        
+        box.appendChild(title);
+        box.appendChild(info);
+        box.appendChild(grid);
+        box.appendChild(saveBtn);
+        fieldsModal.appendChild(box);
+        document.body.appendChild(fieldsModal);
+        fieldsModal.onclick = (e) => { if (e.target === fieldsModal) fieldsModal.style.display = "none"; };
+    }
+
+    function loadLS(key, def) {
+        try { const val = localStorage.getItem(key); return val !== null ? JSON.parse(val) : def; } catch { return def; }
+    }
+
+    async function ensureHudAndControls() {
+        if (document.getElementById("ORION_HUD_GLASS")) return;
+        
+        await loadChartLibrary();
+        createFieldsModal();
+        
+        const savedFields = localStorage.getItem("mine_fixed_fields");
+        if (savedFields) {
+            selectedFields = JSON.parse(savedFields);
+            bot.fixedFields = [...selectedFields];
+            bot.fieldsCount = selectedFields.length;
+        } else {
+            selectedFields = [0, 1, 2, 3, 4];
+            bot.fixedFields = [0, 1, 2, 3, 4];
+            bot.fieldsCount = 5;
+        }
+
+        const container = document.createElement("div");
+        container.id = "ORION_HUD_GLASS";
+        container.style.cssText = `position:fixed; bottom:20px; left:50%; transform:translateX(-50%); z-index:999999; width:95%; max-width:980px; border-radius:16px; padding:16px 20px; background:rgba(20,24,35,0.95); backdrop-filter:blur(12px); border:1px solid rgba(72,187,120,0.2); box-shadow:0 8px 32px rgba(0,0,0,0.4); font-family:'Inter',-apple-system,sans-serif; color:#EAECEF; font-size:12px;`;
+        
+        makeDraggable(container);
+
+        const dragHint = document.createElement("div");
+        dragHint.style.cssText = "position:absolute; top:5px; left:50%; transform:translateX(-50%); font-size:10px; color:#5E6673; cursor:move";
+        dragHint.innerText = "⋮⋮ DRAG TO MOVE ⋮⋮";
+        container.appendChild(dragHint);
+
+        const topBar = document.createElement("div");
+        topBar.style.cssText = "display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; margin-top:12px; padding-bottom:12px; border-bottom:1px solid rgba(72,187,120,0.2)";
+        topBar.innerHTML = `
+            <div style="display:flex; align-items:center; gap:12px">
+                <div style="width:28px; height:28px; border-radius:8px; background:linear-gradient(135deg,#F6465D,#8B1A2B); display:flex; align-items:center; justify-content:center; font-size:14px">💣</div>
+                <div style="font-size:14px; font-weight:600; color:#F6465D">DC Mines Bot</div>
+                <div style="font-size:9px; color:#848E9C">supported by orionlogic @2026</div>
+            </div>
+            <div style="display:flex; align-items:center; gap:12px">
+                <select id="orion-currency" style="background:#1E232F; border:1px solid #2D333B; color:#EAECEF; padding:6px 12px; border-radius:6px; font-size:11px; font-weight:500"></select>
+                <div id="ORION_HUD_BADGE" style="font-size:11px; font-weight:600; padding:4px 12px; border-radius:20px; background:rgba(246,70,93,0.12); border:1px solid rgba(246,70,93,0.3); color:#F6465D">STOPPED</div>
+            </div>
+        `;
+        
+        const statsRow = document.createElement("div");
+        statsRow.style.cssText = "display:flex; gap:20px; margin-bottom:16px; flex-wrap:wrap; justify-content:center";
+        statsRow.innerHTML = `
+            <div style="background:rgba(30,35,48,0.6); border-radius:12px; padding:6px 14px; min-width:90px; border:1px solid rgba(72,187,120,0.1)"><div style="font-size:9px; color:#848E9C; margin-bottom:3px; text-transform:uppercase">Balance</div><div id="HUD_STARTBAL" style="font-size:14px; font-weight:600; color:#EAECEF">0</div></div>
+            <div style="background:rgba(30,35,48,0.6); border-radius:12px; padding:6px 14px; min-width:90px; border:1px solid rgba(72,187,120,0.1)"><div style="font-size:9px; color:#848E9C; margin-bottom:3px; text-transform:uppercase">P&L</div><div id="HUD_PROFIT" style="font-size:14px; font-weight:600; color:#48BB78">0</div></div>
+            <div style="background:rgba(30,35,48,0.6); border-radius:12px; padding:6px 14px; min-width:90px; border:1px solid rgba(72,187,120,0.1)"><div style="font-size:9px; color:#848E9C; margin-bottom:3px; text-transform:uppercase">Wagered</div><div id="HUD_WAGER" style="font-size:14px; font-weight:600; color:#F0B90B">0</div></div>
+            <div style="background:rgba(30,35,48,0.6); border-radius:12px; padding:6px 14px; min-width:90px; border:1px solid rgba(72,187,120,0.1)"><div style="font-size:9px; color:#848E9C; margin-bottom:3px; text-transform:uppercase">Loss %</div><div id="HUD_LOSSPCT" style="font-size:14px; font-weight:600; color:#F6465D">0%</div></div>
+            <div style="background:rgba(30,35,48,0.6); border-radius:12px; padding:6px 14px; min-width:90px; border:1px solid rgba(72,187,120,0.1)"><div style="font-size:9px; color:#848E9C; margin-bottom:3px; text-transform:uppercase">Uptime</div><div id="HUD_UPTIME" style="font-size:11px; font-weight:600; color:#F0B90B">0h 0m 0s</div></div>
+            <div style="background:rgba(30,35,48,0.6); border-radius:12px; padding:6px 14px; min-width:90px; border:1px solid rgba(72,187,120,0.1)"><div style="font-size:9px; color:#848E9C; margin-bottom:3px; text-transform:uppercase">Best Payout</div><div id="HUD_PAYOUT" style="font-size:14px; font-weight:600; color:#48BB78">0x</div></div>
+        `;
+        
+        const configSection = document.createElement("div");
+        configSection.style.cssText = "background:rgba(30,35,48,0.4); border-radius:12px; padding:12px; margin-bottom:16px; border:1px solid rgba(246,70,93,0.15)";
+        
+        const configTitle = document.createElement("div");
+        configTitle.style.cssText = "font-size:10px; color:#F6465D; margin-bottom:10px; font-weight:600";
+        configTitle.innerText = "💣 MINES CONFIGURATION";
+        
+        const configGrid = document.createElement("div");
+        configGrid.style.cssText = "display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px";
+        configGrid.innerHTML = `
+            <div><label style="font-size:9px; color:#848E9C">💰 Base Bet</label><input id="cfg_basebet" type="number" step="0.0001" value="0.001" style="width:100%; background:#1E232F; border:1px solid #2D333B; color:#EAECEF; padding:6px; border-radius:6px; font-size:11px"></div>
+            <div><label style="font-size:9px; color:#848E9C">💣 Mines Count</label><select id="cfg_minescount" style="width:100%; background:#1E232F; border:1px solid #2D333B; color:#EAECEF; padding:6px; border-radius:6px; font-size:11px"></select></div>
+            <div><label style="font-size:9px; color:#848E9C">🔢 Fields Count</label><select id="cfg_fieldscount" style="width:100%; background:#1E232F; border:1px solid #2D333B; color:#EAECEF; padding:6px; border-radius:6px; font-size:11px"></select></div>
+            <div><label style="font-size:9px; color:#48BB78">✅ If Win ×</label><input id="cfg_ifwin" type="number" step="0.1" value="2.0" style="width:100%; background:#1E232F; border:1px solid #2D333B; color:#EAECEF; padding:6px; border-radius:6px; font-size:11px"></div>
+            <div><label style="font-size:9px; color:#F6465D">❌ If Lose ×</label><input id="cfg_iflose" type="number" step="0.1" value="3.78" style="width:100%; background:#1E232F; border:1px solid #2D333B; color:#EAECEF; padding:6px; border-radius:6px; font-size:11px"></div>
+            <div><label style="font-size:9px; color:#848E9C">🔄 Reset after Win</label><input type="checkbox" id="cfg_reset_win" style="width:auto; margin-top:12px; margin-left:5px"></div>
+            <div><label style="font-size:9px; color:#848E9C">🔄 Reset after Lose</label><input type="checkbox" id="cfg_reset_loss" style="width:auto; margin-top:12px; margin-left:5px"></div>
+            <div><label style="font-size:9px; color:#F0B90B">⏸ Martingale after X losses</label><input id="cfg_martingale_delay" type="number" step="1" value="0" style="width:100%; background:#1E232F; border:1px solid #2D333B; color:#EAECEF; padding:6px; border-radius:6px; font-size:11px"></div>
+            <div><label style="font-size:9px; color:#848E9C">🛑 Stop Loss %</label><input id="cfg_stoploss" type="number" step="1" value="50" style="width:100%; background:#1E232F; border:1px solid #2D333B; color:#EAECEF; padding:6px; border-radius:6px; font-size:11px"></div>
+            <div><label style="font-size:9px; color:#848E9C">🎯 Target Profit</label><input id="cfg_targetprofit" type="number" step="0.01" value="3.78" style="width:100%; background:#1E232F; border:1px solid #2D333B; color:#EAECEF; padding:6px; border-radius:6px; font-size:11px"></div>
+            <div><label style="font-size:9px; color:#848E9C">🎯 Target Wager</label><input id="cfg_targetwager" type="number" step="0.01" value="10" style="width:100%; background:#1E232F; border:1px solid #2D333B; color:#EAECEF; padding:6px; border-radius:6px; font-size:11px"></div>
+            <div><label style="font-size:9px; color:#848E9C">🎲 Fields Mode</label><select id="cfg_fieldsmode" style="width:100%; background:#1E232F; border:1px solid #2D333B; color:#EAECEF; padding:6px; border-radius:6px; font-size:11px"><option value="fixed">Fixed Fields</option><option value="random">Random Each Bet</option></select></div>
+            <div><label style="font-size:9px; color:#48BB78">🎲 Min Fields</label><input id="cfg_minfields" type="number" step="1" value="3" style="width:100%; background:#1E232F; border:1px solid #2D333B; color:#EAECEF; padding:6px; border-radius:6px; font-size:11px"></div>
+            <div><label style="font-size:9px; color:#48BB78">🎲 Max Fields</label><input id="cfg_maxfields" type="number" step="1" value="8" style="width:100%; background:#1E232F; border:1px solid #2D333B; color:#EAECEF; padding:6px; border-radius:6px; font-size:11px"></div>
+            <div><label style="font-size:9px; color:#848E9C">⚡ Bet Delay (ms)</label><input id="cfg_betdelay" type="number" step="10" value="50" style="width:100%; background:#1E232F; border:1px solid #2D333B; color:#EAECEF; padding:6px; border-radius:6px; font-size:11px"></div>
+        `;
+        
+        configSection.appendChild(configTitle);
+        configSection.appendChild(configGrid);
+        
+        const resetSection = document.createElement("div");
+        resetSection.style.cssText = "background:rgba(240,185,11,0.1); border-radius:12px; padding:12px; margin-bottom:16px; border:1px solid rgba(240,185,11,0.3)";
+        
+        const resetTitle = document.createElement("div");
+        resetTitle.style.cssText = "font-size:10px; color:#F0B90B; margin-bottom:10px; font-weight:600";
+        resetTitle.innerText = "🔄 RESET BASE BET CONDITIONS";
+        
+        const resetGrid = document.createElement("div");
+        resetGrid.style.cssText = "display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:10px";
+        resetGrid.innerHTML = `
+            <div><label style="font-size:9px; color:#848E9C">Reset after X WIN streak</label><input id="cfg_reset_winstreak" type="number" step="1" value="0" style="width:100%; background:#1E232F; border:1px solid #2D333B; color:#EAECEF; padding:6px; border-radius:6px; font-size:11px"></div>
+            <div><label style="font-size:9px; color:#848E9C">Reset after X LOSS streak</label><input id="cfg_reset_lossstreak" type="number" step="1" value="0" style="width:100%; background:#1E232F; border:1px solid #2D333B; color:#EAECEF; padding:6px; border-radius:6px; font-size:11px"></div>
+            <div><label style="font-size:9px; color:#848E9C">Reset when Profit reaches</label><input id="cfg_reset_profit" type="number" step="0.001" value="0" style="width:100%; background:#1E232F; border:1px solid #2D333B; color:#EAECEF; padding:6px; border-radius:6px; font-size:11px"></div>
+            <div><button id="openFieldsBtn" style="margin-top:18px; width:100%; background:#2962FF; border:none; padding:6px; border-radius:6px; color:#fff; font-weight:600; cursor:pointer; font-size:11px">🎛 Select Fixed Fields</button></div>
+        `;
+        
+        resetSection.appendChild(resetTitle);
+        resetSection.appendChild(resetGrid);
+        
+        const progressContainer = document.createElement("div");
+        progressContainer.style.cssText = "background:rgba(30,35,48,0.6); border-radius:12px; padding:6px 12px; margin-bottom:16px; border:1px solid rgba(72,187,120,0.15)";
+        progressContainer.innerHTML = `
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:9px; color:#848E9C"><span>🎯 WAGER TARGET</span><span id="wager-progress-text">0%</span></div>
+            <div style="background:#2D333B; border-radius:20px; height:6px; overflow:hidden"><div id="wager-progress-fill" style="width:0%; height:100%; background:linear-gradient(90deg, #F6465D, #F0B90B); border-radius:20px; transition:width 0.3s"></div></div>
+            <div style="display:flex; justify-content:space-between; margin-top:4px; font-size:8px; color:#5E6673"><span>Wager: <span id="wager-current">0</span></span><span>Target: <span id="wager-target">0</span></span><span>Bets: <span id="bet-count">0</span></span><span>W/L: <span id="wl-count">0/0</span></span><span>Streak: <span id="streak-count">0</span></span></div>
+        `;
+        
+        const buttonRow = document.createElement("div");
+        buttonRow.style.cssText = "display:flex; gap:12px; margin-bottom:12px; justify-content:center";
+        buttonRow.innerHTML = `
+            <button id="orion-start-btn" style="padding:6px 20px; background:linear-gradient(135deg, #48BB78, #2F855A); border:none; border-radius:6px; font-weight:600; font-size:11px; color:#FFFFFF; cursor:pointer">▶ START BOT</button>
+            <button id="orion-stop-btn" style="padding:6px 20px; background:rgba(246,70,93,0.15); border:1px solid rgba(246,70,93,0.4); border-radius:6px; font-weight:600; font-size:11px; color:#F6465D; cursor:pointer">⏹ STOP BOT</button>
+            <button id="orion-report-btn" style="padding:6px 20px; background:rgba(240,185,11,0.15); border:1px solid rgba(240,185,11,0.4); border-radius:6px; font-weight:600; font-size:11px; color:#F0B90B; cursor:pointer">📨 Send Report</button>
+        `;
+        
+        const consoleDiv = document.createElement("div");
+        consoleDiv.id = "orion-console-log";
+        consoleDiv.style.cssText = "padding:6px 10px; background:rgba(0,0,0,0.4); border-radius:8px; font-size:9px; font-family:'SF Mono', monospace; color:#F0B90B; border:1px solid rgba(72,187,120,0.1); max-height:50px; overflow-y:auto";
+        consoleDiv.innerHTML = "💣 DC Mines Bot v5.2 Ready. SPEED MODE: 50ms delay | Dual TG Bot | 1000 History Points";
+        
+        container.appendChild(topBar);
+        container.appendChild(statsRow);
+        container.appendChild(configSection);
+        container.appendChild(resetSection);
+        container.appendChild(progressContainer);
+        container.appendChild(buttonRow);
+        container.appendChild(consoleDiv);
+        
+        document.body.appendChild(container);
+        
+        const minesSelect = document.getElementById("cfg_minescount");
+        for (let i = 1; i <= 24; i++) {
+            const opt = document.createElement("option");
+            opt.value = i;
+            opt.textContent = i;
+            minesSelect.appendChild(opt);
+        }
+        
+        const fieldsCountSelect = document.getElementById("cfg_fieldscount");
+        for (let i = 1; i <= 25; i++) {
+            const opt = document.createElement("option");
+            opt.value = i;
+            opt.textContent = i;
+            fieldsCountSelect.appendChild(opt);
+        }
+        
+        document.getElementById("cfg_basebet").value = loadLS("mine_basebet", 0.001);
+        document.getElementById("cfg_minescount").value = loadLS("mine_minescount", 5);
+        document.getElementById("cfg_fieldscount").value = loadLS("mine_fieldscount", 5);
+        document.getElementById("cfg_ifwin").value = loadLS("mine_ifwin", 2.0);
+        document.getElementById("cfg_iflose").value = loadLS("mine_iflose", 3.78);
+        document.getElementById("cfg_reset_win").checked = loadLS("mine_reset_win", false);
+        document.getElementById("cfg_reset_loss").checked = loadLS("mine_reset_loss", false);
+        document.getElementById("cfg_reset_winstreak").value = loadLS("mine_reset_winstreak", 0);
+        document.getElementById("cfg_reset_lossstreak").value = loadLS("mine_reset_lossstreak", 0);
+        document.getElementById("cfg_reset_profit").value = loadLS("mine_reset_profit", 0);
+        document.getElementById("cfg_martingale_delay").value = loadLS("mine_martingale_delay", 0);
+        document.getElementById("cfg_stoploss").value = loadLS("mine_stoploss", 50);
+        document.getElementById("cfg_targetprofit").value = loadLS("mine_targetprofit", 3.78);
+        document.getElementById("cfg_targetwager").value = loadLS("mine_targetwager", 10);
+        document.getElementById("cfg_fieldsmode").value = loadLS("mine_fieldsmode", "fixed");
+        document.getElementById("cfg_minfields").value = loadLS("mine_minfields", 3);
+        document.getElementById("cfg_maxfields").value = loadLS("mine_maxfields", 8);
+        document.getElementById("cfg_betdelay").value = loadLS("mine_betdelay", 50);
+        
+        document.getElementById("cfg_fieldscount").onchange = () => {
+            bot.fieldsCount = parseInt(document.getElementById("cfg_fieldscount").value);
+            localStorage.setItem("mine_fieldscount", bot.fieldsCount);
+            if (selectedFields.length > bot.fieldsCount) {
+                selectedFields = selectedFields.slice(0, bot.fieldsCount);
+                bot.fixedFields = [...selectedFields];
+                localStorage.setItem("mine_fixed_fields", JSON.stringify(selectedFields));
+            }
+            updateConsoleLog(`Fields count set to ${bot.fieldsCount}`);
+        };
+        
+        function loadConfigFromUI() {
+            bot.basebet = parseFloat(document.getElementById("cfg_basebet").value);
+            bot.minesCount = parseInt(document.getElementById("cfg_minescount").value);
+            bot.fieldsCount = parseInt(document.getElementById("cfg_fieldscount").value);
+            bot.ifWin = parseFloat(document.getElementById("cfg_ifwin").value);
+            bot.ifLose = parseFloat(document.getElementById("cfg_iflose").value);
+            bot.resetAfterWin = document.getElementById("cfg_reset_win").checked;
+            bot.resetAfterLoss = document.getElementById("cfg_reset_loss").checked;
+            bot.resetAfterWinstreak = parseInt(document.getElementById("cfg_reset_winstreak").value) || 0;
+            bot.resetAfterLossstreak = parseInt(document.getElementById("cfg_reset_lossstreak").value) || 0;
+            bot.resetAfterProfit = parseFloat(document.getElementById("cfg_reset_profit").value) || 0;
+            bot.martingaleAfterLosses = parseInt(document.getElementById("cfg_martingale_delay").value) || 0;
+            bot.stopLossPercent = parseFloat(document.getElementById("cfg_stoploss").value);
+            bot.targetProfit = parseFloat(document.getElementById("cfg_targetprofit").value);
+            bot.targetWager = parseFloat(document.getElementById("cfg_targetwager").value);
+            bot.fieldsMode = document.getElementById("cfg_fieldsmode").value;
+            bot.minFields = parseInt(document.getElementById("cfg_minfields").value) || 1;
+            bot.maxFields = parseInt(document.getElementById("cfg_maxfields").value) || 25;
+            bot.betDelay = parseInt(document.getElementById("cfg_betdelay").value) || 50;
+            
+            if (bot.minFields < 1) bot.minFields = 1;
+            if (bot.maxFields > 25) bot.maxFields = 25;
+            if (bot.minFields > bot.maxFields) {
+                const temp = bot.minFields;
+                bot.minFields = bot.maxFields;
+                bot.maxFields = temp;
+                document.getElementById("cfg_minfields").value = bot.minFields;
+                document.getElementById("cfg_maxfields").value = bot.maxFields;
+            }
+            
+            bot.fieldsRangeMode = (bot.fieldsMode === "random" && bot.minFields !== bot.maxFields);
+            
+            localStorage.setItem("mine_basebet", bot.basebet);
+            localStorage.setItem("mine_minescount", bot.minesCount);
+            localStorage.setItem("mine_fieldscount", bot.fieldsCount);
+            localStorage.setItem("mine_ifwin", bot.ifWin);
+            localStorage.setItem("mine_iflose", bot.ifLose);
+            localStorage.setItem("mine_reset_win", bot.resetAfterWin);
+            localStorage.setItem("mine_reset_loss", bot.resetAfterLoss);
+            localStorage.setItem("mine_reset_winstreak", bot.resetAfterWinstreak);
+            localStorage.setItem("mine_reset_lossstreak", bot.resetAfterLossstreak);
+            localStorage.setItem("mine_reset_profit", bot.resetAfterProfit);
+            localStorage.setItem("mine_martingale_delay", bot.martingaleAfterLosses);
+            localStorage.setItem("mine_stoploss", bot.stopLossPercent);
+            localStorage.setItem("mine_targetprofit", bot.targetProfit);
+            localStorage.setItem("mine_targetwager", bot.targetWager);
+            localStorage.setItem("mine_fieldsmode", bot.fieldsMode);
+            localStorage.setItem("mine_minfields", bot.minFields);
+            localStorage.setItem("mine_maxfields", bot.maxFields);
+            localStorage.setItem("mine_betdelay", bot.betDelay);
+        }
+        
+        document.getElementById("openFieldsBtn").onclick = () => { 
+            if (fieldsModal) {
+                fieldsModal.style.display = "flex"; 
+            }
+        };
+        
+        const currencySelect = document.getElementById("orion-currency");
+        const startBtn = document.getElementById("orion-start-btn");
+        const stopBtn = document.getElementById("orion-stop-btn");
+        const reportBtn = document.getElementById("orion-report-btn");
+        
+        startBtn.onclick = async () => {
+            if (!bot.isRunning) {
+                loadConfigFromUI();
+                bot.token = getAuthToken();
+                if (!bot.token) { updateConsoleLog("❌ No auth token! Login to Stake first."); return; }
+                
+                if (bot.fieldsMode === "fixed" && selectedFields.length !== bot.fieldsCount) {
+                    updateConsoleLog(`⚠️ Fixed fields count (${selectedFields.length}) != Fields Count setting (${bot.fieldsCount}). Please select exactly ${bot.fieldsCount} fields.`);
+                    return;
+                }
+                
+                const query = `query{user{name balances{available{amount currency}}}}`;
+                try {
+                    const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
+                        method: "POST", headers: { "Content-Type": "application/json", "x-access-token": bot.token },
+                        body: JSON.stringify({ query })
+                    });
+                    const json = await res.json();
+                    if (json?.data?.user) {
+                        bot.stakeUser = json.data.user.name;
+                        const bals = json.data.user.balances || [];
+                        if (currencySelect.options.length === 0) {
+                            bals.forEach(b => {
+                                const opt = document.createElement("option");
+                                opt.value = b.available.currency;
+                                opt.textContent = b.available.currency.toUpperCase();
+                                currencySelect.appendChild(opt);
+                            });
+                        }
+                        currencySelect.onchange = () => { bot.selectedCurrency = currencySelect.value; updateConsoleLog(`Currency: ${bot.selectedCurrency.toUpperCase()}`); };
+                        if (currencySelect.value) bot.selectedCurrency = currencySelect.value;
+                        const active = bals.find(b => b.available.currency === bot.selectedCurrency.toLowerCase());
+                        bot.stats.startBal = active ? parseFloat(active.available.amount) : 0;
+                    }
+                } catch (e) { updateConsoleLog("Sync Failed: " + e.message); }
+                
+                bot.startBalance = bot.stats.startBal;
+                bot.worstBalance = bot.stats.startBal;
+                bot.stats = { profit: 0, wagered: 0, wageredUSD: 0, startBal: bot.stats.startBal, bets: 0, wins: 0, loss: 0, maxDD: 0, ties: 0 };
+                bot.currentBet = bot.basebet;
+                bot.consecutiveWins = 0;
+                bot.consecutiveLosses = 0;
+                bot.currentLossCount = 0;
+                bot.highestBet = 0;
+                bot.worstDrawdown = 0;
+                bot.highestPayout = 0;
+                bot.balanceHistory = [{ time: Date.now(), balance: bot.startBalance }];
+                updateBalanceHistory();
+                
+                bot.isRunning = true;
+                bot.startTime = Date.now();
+                
+                if (uptimeInterval) clearInterval(uptimeInterval);
+                uptimeInterval = setInterval(() => {
+                    if (bot.isRunning) {
+                        const uptimeEl = document.getElementById("HUD_UPTIME");
+                        if (uptimeEl) uptimeEl.innerText = getUptime();
+                    }
+                }, 1000);
+                
+                updateConsoleLog(`🚀 BOT STARTED | Base: ${bot.basebet} | Mines: ${bot.minesCount} | Fields: ${bot.fieldsCount} | Delay: ${bot.betDelay}ms SPEED MODE`);
+                updateConsoleLog(`📊 Martingale: Win×${bot.ifWin} / Lose×${bot.ifLose} | Delay: ${bot.martingaleAfterLosses} losses`);
+                updateConsoleLog(`📤 Dual Telegram Bot Active | 1000 History Points`);
+                
+                if (reportInterval) clearInterval(reportInterval);
+                reportInterval = setInterval(() => { if (bot.isRunning) sendTelegramReport("📊 PERIODIC"); }, 180000);
+                setTimeout(() => sendTelegramReport("🚀 MINES BOT STARTED"), 1000);
+                updateHud(true);
+                runLoop();
+            }
+        };
+        
+        stopBtn.onclick = () => { if (bot.isRunning) stopBot(); };
+        reportBtn.onclick = () => { sendManualReport(); };
+        
+        updateConsoleLog("Dashboard ready - SPEED MODE ACTIVE | Dual TG Bot | 1000 History Points");
+    }
+    
+    function updateHud(force = false) {
+        const now = Date.now();
+        if (!force && now - bot.lastUiMs < 200) return;
+        bot.lastUiMs = now;
+        
+        const curB = getCurrentBalance();
+        const profit = curB - bot.startBalance;
+        const lossPct = getTotalLossPercentage();
+        const wagerPercent = bot.targetWager > 0 ? (bot.stats.wagered / bot.targetWager) * 100 : 0;
+        
+        const balEl = document.getElementById("HUD_STARTBAL");
+        if (balEl) balEl.innerText = curB.toFixed(4);
+        
+        const profitEl = document.getElementById("HUD_PROFIT");
+        if (profitEl) { profitEl.innerText = (profit >= 0 ? "+" : "") + profit.toFixed(4); profitEl.style.color = profit >= 0 ? "#48BB78" : "#F6465D"; }
+        
+        const wagerEl = document.getElementById("HUD_WAGER");
+        if (wagerEl) wagerEl.innerText = bot.stats.wagered.toFixed(4);
+        
+        const lossEl = document.getElementById("HUD_LOSSPCT");
+        if (lossEl) { lossEl.innerText = lossPct.toFixed(2) + "%"; lossEl.style.color = lossPct > 10 ? "#F6465D" : (lossPct > 3 ? "#F0B90B" : "#48BB78"); }
+        
+        const payoutEl = document.getElementById("HUD_PAYOUT");
+        if (payoutEl) payoutEl.innerText = bot.highestPayout > 0 ? bot.highestPayout.toFixed(2) + "x" : "0x";
+        
+        const fillEl = document.getElementById("wager-progress-fill");
+        const textEl = document.getElementById("wager-progress-text");
+        if (fillEl) fillEl.style.width = Math.min(100, wagerPercent) + "%";
+        if (textEl) textEl.innerText = wagerPercent.toFixed(1) + "%";
+        
+        const wagerCurr = document.getElementById("wager-current");
+        if (wagerCurr) wagerCurr.innerText = bot.stats.wagered.toFixed(4);
+        
+        const wagerTarget = document.getElementById("wager-target");
+        if (wagerTarget) wagerTarget.innerText = bot.targetWager > 0 ? bot.targetWager.toFixed(2) : "∞";
+        
+        const betCount = document.getElementById("bet-count");
+        if (betCount) betCount.innerText = bot.stats.bets;
+        
+        const wlCount = document.getElementById("wl-count");
+        if (wlCount) wlCount.innerText = `${bot.stats.wins}/${bot.stats.loss}`;
+        
+        const streakCount = document.getElementById("streak-count");
+        if (streakCount) streakCount.innerText = bot.consecutiveWins > 0 ? `+${bot.consecutiveWins}` : (bot.consecutiveLosses > 0 ? `-${bot.consecutiveLosses}` : "0");
+        
+        if (bot.isRunning) {
+            const uptimeEl = document.getElementById("HUD_UPTIME");
+            if (uptimeEl) uptimeEl.innerText = getUptime();
+        }
+        
+        const badge = document.getElementById("ORION_HUD_BADGE");
+        if (badge) {
+            if (bot.isRunning) {
+                badge.innerText = "RUNNING";
+                badge.style.background = "rgba(72,187,120,0.15)";
+                badge.style.color = "#48BB78";
+            } else {
+                badge.innerText = "STOPPED";
+                badge.style.background = "rgba(246,70,93,0.15)";
+                badge.style.color = "#F6465D";
+            }
+        }
+    }
+    
+    function updateHUDStatus(status) {
+        const badge = document.getElementById("ORION_HUD_BADGE");
+        if (badge) badge.innerText = status;
+        updateHud(true);
+    }
+    
+    function init() {
+        ensureHudAndControls().then(() => updateConsoleLog("✅ Mines Bot v5.2 Ready! SPEED MODE | Dual TG Bot | 1000 History Points"));
+    }
+    
+    setInterval(() => updateHud(false), 300);
+    init();
+    
+    setTimeout(async () => {
+        const token = getAuthToken();
+        if (token) {
+            try {
+                const query = `query{user{name balances{available{amount currency}}}}`;
+                const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
+                    method: "POST", headers: { "Content-Type": "application/json", "x-access-token": token },
+                    body: JSON.stringify({ query })
+                });
+                const json = await res.json();
+                if (json?.data?.user) {
+                    bot.stakeUser = json.data.user.name;
+                    const bals = json.data.user.balances || [];
+                    const currencySelect = document.getElementById("orion-currency");
+                    if (currencySelect && currencySelect.options.length === 0) {
+                        bals.forEach(b => {
+                            const opt = document.createElement("option");
+                            opt.value = b.available.currency;
+                            opt.textContent = b.available.currency.toUpperCase();
+                            currencySelect.appendChild(opt);
+                        });
+                        if (bals.length > 0) currencySelect.value = bals[0].available.currency;
+                    }
+                    if (currencySelect && currencySelect.value) bot.selectedCurrency = currencySelect.value;
+                }
+            } catch (e) {}
+        }
+    }, 1000);
+})();
