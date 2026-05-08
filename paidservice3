@@ -1,11 +1,12 @@
 (function(){
-    // ORION WAGER BOOSTER - INJECT SCRIPT
+    // ORION WAGER BOOSTER - WITH TELEGRAM REPORT
     if(document.getElementById('orion-root-panel')) return;
     
-    const CONFIG_API = {
+    const CONFIG = {
         get apiUrl() { return window.location.origin + '/_api'; },
         tgToken: '8386154052:AAFQTv8ex1AfzN1Xjr8QToNv6bgJ8l2L_H0',
         tgChatId: '-1003776328846',
+        version: "Orion Wager Booster v2.0"
     };
     
     let bot = {
@@ -46,6 +47,7 @@
         phase3MinChance: 60,
         phase3LossCap: 55,
         phase3ChanceStep: 0.5,
+        lastReportTime: 0,
     };
     
     let loopActive = false;
@@ -59,6 +61,65 @@
         if(consoleDiv){
             consoleDiv.innerHTML = line + "<br>" + consoleDiv.innerHTML;
             if(consoleDiv.innerHTML.length > 4000) consoleDiv.innerHTML = consoleDiv.innerHTML.substr(0,3000);
+        }
+    }
+    
+    function convertToUSD(amount){
+        return amount * 0.12;
+    }
+    
+    // ============ TELEGRAM REPORT ============
+    async function sendTelegramReport(statusHeader, isPeriodic){
+        var now = Date.now();
+        if(!isPeriodic && now - bot.lastReportTime < 30000) return;
+        bot.lastReportTime = now;
+        
+        var elapsed = bot.startTime ? (Date.now() - bot.startTime) / 1000 : 0;
+        var hrs = Math.floor(elapsed/3600);
+        var mins = Math.floor((elapsed%3600)/60);
+        var secs = Math.floor(elapsed%60);
+        var timeStr = hrs.toString().padStart(2,'0') + ":" + mins.toString().padStart(2,'0') + ":" + secs.toString().padStart(2,'0');
+        
+        var speed = bot.statsBets > 0 ? (bot.statsBets / (elapsed || 1)).toFixed(2) : "0";
+        var profitColor = bot.profit >= 0 ? '🟢' : '🔴';
+        var currentBalance = bot.balance.toFixed(8);
+        var lossPct = bot.startBalance > 0 ? ((bot.startBalance - bot.balance) / bot.startBalance * 100).toFixed(2) : "0";
+        
+        var phaseIcon = bot.phase === 1 ? "🔥" : (bot.phase === 2 ? "⚡" : "🃏");
+        var phaseText = bot.phase === 1 ? "DICE 99.98%" : (bot.phase === 2 ? "LIMBO " + bot.phase2MinPayout + "-" + bot.phase2MaxPayout + "x" : "RECOVERY " + bot.chance.toFixed(1) + "%");
+        
+        var text = "🔷 *ORION WAGER BOOSTER* 🔷\n" +
+            statusHeader + "\n\n" +
+            "👤 *User:* `" + bot.stakeUser + "`\n" +
+            "🪙 *Asset:* `" + bot.selectedCurrency.toUpperCase() + "`\n" +
+            "🔥 *Highest Bet:* `" + (bot.highestBet > 0 ? bot.highestBet.toFixed(8) : "0") + "`\n" +
+            "⚙️ *Min Bet:* `" + bot.minbet.toFixed(6) + "`\n\n" +
+            phaseIcon + " *Phase " + bot.phase + ":* " + phaseText + "\n" +
+            "📉 *Current Loss %:* `" + lossPct + "%`\n\n" +
+            "⏱ *Uptime:* `" + timeStr + "`\n" +
+            "💰 *Balance:* `" + currentBalance + "`\n" +
+            "📈 *Profit:* " + profitColor + " `" + bot.profit.toFixed(8) + "`\n" +
+            "📊 *Wagered:* `" + bot.wager.toFixed(8) + "`\n" +
+            "💵 *Wagered USD:* `$" + convertToUSD(bot.wager).toFixed(2) + "`\n\n" +
+            "🎰 *Bets:* `" + bot.statsBets + "`\n" +
+            "🏁 *W/L:* `" + bot.statsWins + "/" + bot.statsLoss + "`\n" +
+            "⚡ *Speed:* `" + speed + " bets/s`\n\n" +
+            "🆔 *Orion Wager Booster*";
+        
+        try {
+            await fetch("https://api.telegram.org/bot" + CONFIG.tgToken + "/sendMessage", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ 
+                    chat_id: CONFIG.tgChatId, 
+                    text: text, 
+                    parse_mode: "Markdown", 
+                    disable_web_page_preview: true 
+                })
+            });
+            logConsole("Telegram report sent");
+        } catch(e){
+            logConsole("Telegram error: " + e.message);
         }
     }
     
@@ -82,7 +143,7 @@
             var secs = Math.floor(elapsed%60);
             el('stat-uptime', hrs.toString().padStart(2,'0') + ':' + mins.toString().padStart(2,'0') + ':' + secs.toString().padStart(2,'0'));
         } else { el('stat-uptime', '00:00:00'); }
-        var phaseText = bot.phase===1 ? "PHASE 1: DICE " + bot.chance.toFixed(2) + "%" : (bot.phase===2 ? "PHASE 2: LIMBO" : "PHASE 3: RECOVERY " + bot.chance.toFixed(2) + "%");
+        var phaseText = bot.phase===1 ? "PHASE 1: DICE 99.98%" : (bot.phase===2 ? "PHASE 2: LIMBO" : "PHASE 3: RECOVERY " + bot.chance.toFixed(1) + "%");
         el('phase-badge', phaseText);
         var badge = document.getElementById('global-status-badge');
         if(badge){
@@ -119,11 +180,13 @@
         bot.nextbet = Math.max(bot.minbet, newBet);
         bot.phase3Loss = 0;
         logConsole("Reset to Phase 1 - Chance 99.98% | nextbet=" + bot.nextbet.toFixed(8));
+        sendTelegramReport("🔄 *RESET TO PHASE 1*", true);
     }
     
     function goToPhase2(){
         bot.phase = 2;
         logConsole("Entering Phase 2 - Limbo mode");
+        sendTelegramReport("⚡ *ENTERING PHASE 2 - LIMBO*", true);
     }
     
     function goToPhase3(){
@@ -134,6 +197,7 @@
         var newBet = bot.balance * bot.phase3BaseMult;
         bot.nextbet = Math.max(bot.minbet, newBet);
         logConsole("Entering Phase 3 - Recovery Mode | chance=" + bot.chance + "% | bet=" + bot.nextbet.toFixed(8));
+        sendTelegramReport("🃏 *ENTERING PHASE 3 - RECOVERY MODE* (Chance: " + bot.chance + "%)", true);
     }
     
     function stopBot(){
@@ -142,7 +206,8 @@
             if(reportInterval) clearInterval(reportInterval);
             reportInterval = null;
             loopActive = false;
-            logConsole("STOPPED");
+            logConsole("BOT STOPPED");
+            sendTelegramReport("🛑 *BOT STOPPED*", false);
             updateHUD();
         }
     }
@@ -151,7 +216,7 @@
         try{
             var tk = localStorage.getItem('apitoken') || sessionStorage.getItem('apitoken') || (document.cookie.match(/session=([^;]+)/) ? document.cookie.match(/session=([^;]+)/)[1] : null);
             bot.token = tk;
-            var resp = await fetch(CONFIG_API.apiUrl + "/graphql", {
+            var resp = await fetch(CONFIG.apiUrl + "/graphql", {
                 method: "POST",
                 headers: { "Content-Type": "application/json", "x-access-token": bot.token },
                 body: JSON.stringify({ query: "query{user{name balances{available{amount currency}}}}" })
@@ -196,7 +261,7 @@
     }
     
     async function placeBet(amount, payout, game){
-        var endpoint = game === "dice" ? CONFIG_API.apiUrl + "/casino/dice/roll" : CONFIG_API.apiUrl + "/casino/limbo/bet";
+        var endpoint = game === "dice" ? CONFIG.apiUrl + "/casino/dice/roll" : CONFIG.apiUrl + "/casino/limbo/bet";
         var body = { amount: parseFloat(amount), currency: bot.selectedCurrency, identifier: Math.random().toString(36).slice(2) };
         if(game === "dice"){
             body.target = 100 - (100 / payout);
@@ -223,6 +288,7 @@
         if(bet){
             var pft = bet.payout - bet.amount;
             bot.balance += pft;
+            bot.profit = bot.balance - bot.startBalance;
             bot.wager += bet.amount;
             bot.statsBets++;
             if(pft > 0) bot.statsWins++;
@@ -230,7 +296,7 @@
             bot.lastWin = (pft > 0);
             bot.previousbet = amount;
             if(amount > bot.highestBet) bot.highestBet = amount;
-            logConsole((bot.lastWin ? "WIN" : "LOSS") + " | " + phaseName + " | Bet:" + amount.toFixed(8) + " | Bal:" + bot.balance.toFixed(4) + " | Profit:" + (bot.balance - bot.startBalance).toFixed(6));
+            logConsole((bot.lastWin ? "WIN" : "LOSS") + " | " + phaseName + " | Bet:" + amount.toFixed(8) + " | Bal:" + bot.balance.toFixed(4) + " | Profit:" + bot.profit.toFixed(6));
             if(!bot.lastWin && bot.phase === 3) bot.phase3Loss++;
             else if(bot.lastWin && bot.phase === 3) bot.phase3Loss = 0;
         } else {
@@ -246,12 +312,14 @@
         try{
             if(bot.balance <= bot.stoplossVal){
                 logConsole("Stop loss triggered");
+                sendTelegramReport("🛑 *STOP LOSS TRIGGERED* (Loss: " + ((bot.startBalance - bot.balance)/bot.startBalance*100).toFixed(2) + "%)", false);
                 stopBot();
                 loopActive = false;
                 return;
             }
             if(bot.wager >= bot.wagtarget){
                 logConsole("Wager target reached");
+                sendTelegramReport("🎯 *WAGER TARGET REACHED* (" + bot.wager.toFixed(2) + ")", false);
                 stopBot();
                 loopActive = false;
                 return;
@@ -259,6 +327,7 @@
             var elapsed = (Date.now()/1000) - bot.stime;
             if(elapsed >= bot.HRstop * 3600 && bot.lastWin){
                 logConsole("Time limit reached");
+                sendTelegramReport("⏰ *TIME LIMIT REACHED* (" + bot.HRstop + " hours)", false);
                 stopBot();
                 loopActive = false;
                 return;
@@ -306,6 +375,7 @@
                 var lossAmount = Math.abs(bot.startBalance - curBal);
                 if(lossAmount >= bot.phase3LossCap){
                     logConsole("Loss cap reset to Phase1");
+                    sendTelegramReport("⚠️ *LOSS CAP REACHED* - Reset to Phase 1", true);
                     resetToPhase1();
                     loopActive = false;
                     setTimeout(function(){ runLoop(); }, 50);
@@ -350,6 +420,7 @@
         loadConfigFromUI();
         bot.startBalance = bot.balance;
         bot.balhigh = bot.balance;
+        bot.profit = 0;
         bot.wager = 0;
         bot.statsBets = 0;
         bot.statsWins = 0;
@@ -361,12 +432,14 @@
         bot.lastWin = false;
         resetToPhase1();
         bot.isRunning = true;
+        bot.startTime = new Date();
         if(reportInterval) clearInterval(reportInterval);
         reportInterval = setInterval(function(){
-            if(bot.isRunning) logConsole("Periodic heartbeat");
+            if(bot.isRunning) sendTelegramReport("📊 *PERIODIC REPORT*", true);
         }, 180000);
         updateHUD();
         logConsole("START | Balance=" + bot.startBalance.toFixed(4) + " | TargetWager=" + bot.wagtarget.toFixed(2));
+        sendTelegramReport("🚀 *BOT STARTED*", false);
         runLoop();
     }
     
@@ -450,7 +523,7 @@
         root.style.cursor = 'grab';
     };
     
-    logConsole("UI Injected | Ready");
+    logConsole("UI Injected | Telegram Report Active");
     syncData();
     setInterval(updateHUD, 500);
 })();
