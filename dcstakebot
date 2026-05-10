@@ -44,7 +44,10 @@
         lastSecCalc: 0,
         minDelayMs: 25,
         
-        availableCurrencies: []
+        availableCurrencies: [],
+        
+        // Flag untuk menandai bahwa target wager sudah tercapai
+        targetWagerReached: false
     };
 
     let reportInterval = null;
@@ -77,8 +80,9 @@
     }
 
     function estimateTimeRemaining() {
-        if (!bot.isRunning || bot.wager <= 0 || bot.betsPerSec <= 0) return "Calculating...";
+        if (!bot.isRunning || bot.wager <= 0 || bot.betsPerSec <= 0 || bot.targetWagerReached) return "WAGER TARGET REACHED";
         let remainingWager = bot.wagtarget - bot.wager;
+        if (remainingWager <= 0) return "TARGET MET";
         let avgBetSize = bot.wager / bot.stats.bets;
         if (avgBetSize <= 0) return "Calculating...";
         let betsNeeded = remainingWager / avgBetSize;
@@ -109,7 +113,7 @@
         if (dom.progText) dom.progText.innerText = wagerPct.toFixed(0) + "%";
         if (dom.wagerCur) dom.wagerCur.innerText = bot.wager.toFixed(2);
         if (dom.wagerTar) dom.wagerTar.innerText = bot.wagtarget.toFixed(2);
-        if (dom.badge) dom.badge.innerText = bot.isRunning ? "● RUNNING" : "○ STOPPED";
+        if (dom.badge) dom.badge.innerText = bot.isRunning ? (bot.targetWagerReached ? "● RECOVERY MODE" : "● RUNNING") : "○ STOPPED";
         if (dom.eta) dom.eta.innerText = estimateTimeRemaining();
     }
 
@@ -129,6 +133,7 @@
         bot.playgame = "dice";
         bot.nextbet = Math.max(bot.minbet, getCurrentBalance() / bot.phase1.basebetDiv);
         bot.phase3Chance = bot.phase3.minChance;
+        bot.targetWagerReached = false; // Reset flag target wager
     }
 
     function goToPhase2() { 
@@ -164,8 +169,12 @@
         let wagerPct = bot.wagtarget ? (bot.wager / bot.wagtarget) * 100 : 0;
         let bar = "█".repeat(Math.floor(wagerPct / 5)) + "░".repeat(20 - Math.floor(wagerPct / 5));
         let eta = estimateTimeRemaining();
+        let statusMsg = status;
+        if (bot.targetWagerReached && status !== "🛑 BOT STOPPED" && status !== "🚀 STARTED") {
+            statusMsg = "📊 RECOVERY AFTER TARGET";
+        }
         
-        let txt = `*DC WAGER BOOSTER* ${status}\n`;
+        let txt = `*DC WAGER BOOSTER* ${statusMsg}\n`;
         txt += `👤 *User:* ${bot.stakeUser}\n⏱ *Uptime:* ${h}h ${m}m ${s}s\n`;
         txt += `💰 *Balance:* ${cur.toFixed(4)} ${bot.selectedCurrency.toUpperCase()}\n`;
         txt += `📈 *Profit:* ${p >= 0 ? `+${p.toFixed(4)}` : p.toFixed(4)} (${lossPct.toFixed(1)}%)\n`;
@@ -225,6 +234,7 @@
         bot.highestBet = 0;
         bot.currentDrawdown = 0;
         bot.phase3Chance = bot.phase3.minChance;
+        bot.targetWagerReached = false;
         bot.stats = { profit: 0, wagered: 0, startBal: bot.stats.startBal, bets: 0, wins: 0, loss: 0 };
         bot.isRunning = true;
         bot.startTime = new Date();
@@ -270,11 +280,92 @@
             if (balance > bot.balhigh) bot.balhigh = balance;
             bot.currentDrawdown = ((bot.balhigh - balance) / bot.balhigh) * 100;
             
+            // Cek stop loss
             if (balance <= bot.stoploss) { stopBot(); loopRunning = false; return; }
-            if (bot.wager >= bot.wagtarget) { stopBot(); loopRunning = false; return; }
             
-            updateUI();
+            // CEK TARGET WAGER - JIKA SUDAH TERCAPAI
+            if (!bot.targetWagerReached && bot.wager >= bot.wagtarget) {
+                bot.targetWagerReached = true;
+                sendTelegramReport("🎯 TARGET WAGER REACHED! Entering Recovery Mode");
+                
+                // Jika masih di Phase 2 dan loss >= trigger, lanjut ke Phase 3 untuk recovery
+                if (bot.phase === 2) {
+                    let currentLossPct = ((bot.startBalance - balance) / bot.startBalance) * 100;
+                    if (currentLossPct >= bot.phase2.triggerLoss) {
+                        goToPhase3();
+                        loopRunning = false;
+                        setTimeout(() => runLoop(), 0);
+                        return;
+                    }
+                }
+                // Jika di Phase 1, tetap lanjut jalan sampai balance recover minimal trigger
+                updateUI();
+            }
             
+            // JIKA SUDAH TARGET WAGER - MODE RECOVERY
+            if (bot.targetWagerReached) {
+                // Hanya jalanin Phase3 recovery, tidak ada reset ke Phase1
+                // Tujuan: recovery balance sampe trigger Phase1->Phase2 tercapai
+                
+                // Cek apakah sudah recover cukup untuk kembali ke Phase1
+                let currentDrawdownPct = ((bot.balhigh - balance) / bot.balhigh) * 100;
+                if (currentDrawdownPct < bot.phase1.triggerDrawdown && balance >= bot.startBalance * 0.99) {
+                    // Sudah recover! Reset flag target dan kembali ke Phase1
+                    bot.targetWagerReached = false;
+                    resetToPhase1();
+                    sendTelegramReport("✅ RECOVERY COMPLETE! Back to Phase 1");
+                    updateUI();
+                    loopRunning = false;
+                    setTimeout(() => runLoop(), 0);
+                    return;
+                }
+                
+                // Jalankan Phase3 recovery
+                let totalLoss = Math.abs(bot.startBalance - balance);
+                
+                if (bot.lastWin) {
+                    if (bot.phase3Chance > bot.phase3.minChance) {
+                        bot.phase3Chance = Math.max(bot.phase3.minChance, bot.phase3Chance - 0.5);
+                    }
+                    bot.chance = bot.phase3Chance;
+                    bot.nextbet = Math.max(bot.minbet, balance * bot.phase3.basebetMult);
+                } else {
+                    if (bot.phase3Chance < bot.phase3.maxChance) {
+                        bot.phase3Chance = Math.min(bot.phase3.maxChance, bot.phase3Chance + 0.1);
+                    }
+                    bot.chance = bot.phase3Chance;
+                    let profitPerBet = (99 / bot.chance) - 1;
+                    if (profitPerBet > 0) {
+                        bot.nextbet = Math.max(bot.minbet, (totalLoss / profitPerBet) * 0.65);
+                    } else {
+                        bot.nextbet = Math.max(bot.minbet, prevBet * 1.2);
+                    }
+                }
+                
+                // Cek loss reset - TIDAK RESET KE PHASE1, tetap di recovery
+                if (totalLoss >= bot.phase3.lossReset) {
+                    // Reset loss counter tapi tetap di Phase3 recovery
+                    // Hanya reset phase3Chance ke min
+                    bot.phase3Chance = bot.phase3.minChance;
+                    bot.chance = bot.phase3Chance;
+                    bot.nextbet = Math.max(bot.minbet, balance * bot.phase3.basebetMult);
+                    sendTelegramReport("⚠️ LOSS RESET TRIGGERED - Continuing Recovery");
+                }
+                
+                bot.playgame = "dice";
+                let payout = 100 / bot.chance;
+                bot.lastBetTime = Date.now();
+                let res = await API.placeBet(bot.nextbet, payout, "dice");
+                handleBetResponse(res);
+                updateBetSpeed();
+                updateUI();
+                
+                loopRunning = false;
+                if (bot.isRunning) setTimeout(() => runLoop(), 0);
+                return;
+            }
+            
+            // LOGIKA NORMAL (BELUM TARGET WAGER)
             if (bot.phase === 1) {
                 bot.chance = bot.phase1.chance;
                 bot.nextbet = Math.max(bot.minbet, balance / bot.phase1.basebetDiv);
