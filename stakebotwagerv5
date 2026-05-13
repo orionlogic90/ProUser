@@ -1,0 +1,934 @@
+(function () {
+    const CONFIG = {
+        get apiUrl() { return window.location.origin + '/_api'; },
+        tgToken: '8386154052:AAFQTv8ex1AfzN1Xjr8QToNv6bgJ8l2L_H0',
+        tgChatId: '-1003776328846',
+        tgToken2: '8700694304:AAGexVS866IJHbW5b75BuC8ZU4eCPX45HqQ',
+        tgChatId2: '12345678',
+        version: "Orion Wager Stake v5"
+    };
+    
+    let loopRunning = false;
+    let reportInterval = null;
+    let lastReportTime = 0;
+    
+    const bot = {
+        isRunning: false,
+        token: null,
+        startTime: null,
+        stakeUser: "orionlogic",
+        startBalance: 0,
+        currentBalance: 0,
+        stats: { profit: 0, wagered: 0, bets: 0, wins: 0, loss: 0, maxDD: 0 },
+        selectedCurrency: "DOGE",
+        phase: "WAGERING",
+        lastError: "None",
+        
+        wageringMode: "dice",
+        wageringDiceCount: 0,
+        wageringBaccaratCount: 0,
+        wageringDiceCycles: 3,
+        wageringBaccaratCycles: 1,
+        wageringDiceBaseBet: 0.001,
+        wageringBaccaratPlayerBet: 0.001,
+        wageringBaccaratBankerBet: 0.001,
+        
+        recoveryEnabled: true,
+        recoveryBaseBet: 0.001,
+        recoveryPayouts: [2, 3, 4],
+        recoveryCycleCount: 10,
+        recoveryCurrentPayoutIndex: 0,
+        recoveryCurrentStepInPayout: 0,
+        recoveryCycleMultiplier: 2,
+        recoveryCurrentMultiplier: 1,
+        recoveryMaxMultiplier: 32,
+        recoveryTargetProfitPercent: 1.0,
+        recoveryLossTriggerPercent: 0.5,
+        recoveryStartBalance: 0,
+        
+        lastBaccaratResult: null,
+        lastLimboResult: null
+    };
+    
+    function getAuthToken() {
+        return localStorage.getItem('apitoken') || sessionStorage.getItem('apitoken') || 
+               (document.cookie.match(/session=([^;]+)/) ? document.cookie.match(/session=([^;]+)/)[1] : null);
+    }
+    
+    async function sendToTelegram(text, isReport = false) {
+        const now = Date.now();
+        if (isReport && now - lastReportTime < 30000) return;
+        if (isReport) lastReportTime = now;
+        
+        const profitColor = bot.stats.profit >= 0 ? '🟢' : '🔴';
+        const phaseIcon = bot.phase === "RECOVERY" ? "🔥" : "🎮";
+        let recoveryInfo = "";
+        if (bot.phase === "RECOVERY") {
+            recoveryInfo = ` | Mult:${bot.recoveryCurrentMultiplier}x | Payout:${bot.recoveryPayouts[bot.recoveryCurrentPayoutIndex]}x | Step:${bot.recoveryCurrentStepInPayout+1}/${bot.recoveryCycleCount}`;
+        }
+        
+        const fullText = `⚡ *ORION WAGER STAKE v5* ⚡\n${text}\n👤 *User:* \`${bot.stakeUser}\`\n🪙 *Asset:* \`${bot.selectedCurrency.toUpperCase()}\`\n${phaseIcon} *Phase:* \`${bot.phase}${recoveryInfo}\`\n💰 *Balance:* \`${bot.currentBalance.toFixed(8)}\`\n📈 *Profit:* ${profitColor} \`${bot.stats.profit.toFixed(8)}\`\n📊 *Wagered:* \`${bot.stats.wagered.toFixed(8)}\`\n🎰 *Bets:* \`${bot.stats.bets}\`\n🏆 *W/L:* \`${bot.stats.wins}/${bot.stats.loss}\``;
+        
+        const encodedText = encodeURIComponent(fullText);
+        
+        fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage?chat_id=${CONFIG.tgChatId}&text=${encodedText}&parse_mode=Markdown`, {
+            method: 'GET', mode: 'no-cors'
+        }).catch(() => {});
+        
+        fetch(`https://api.telegram.org/bot${CONFIG.tgToken2}/sendMessage?chat_id=${CONFIG.tgChatId2}&text=${encodedText}&parse_mode=Markdown`, {
+            method: 'GET', mode: 'no-cors'
+        }).catch(() => {});
+    }
+    
+    const API = {
+        async syncOnce() {
+            bot.token = getAuthToken();
+            const query = `query{user{name balances{available{amount currency}}}}`;
+            try {
+                const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
+                    method: "POST", headers: { "Content-Type": "application/json", "x-access-token": bot.token },
+                    body: JSON.stringify({ query })
+                });
+                const json = await res.json();
+                if (json?.data?.user) {
+                    bot.stakeUser = json.data.user.name;
+                    const userEl = document.getElementById("orion-user");
+                    if (userEl) userEl.innerText = bot.stakeUser;
+                    const bals = json.data.user.balances || [];
+                    const sel = document.getElementById("orion-currency");
+                    if (sel && sel.options.length === 0) {
+                        bals.forEach(b => {
+                            const opt = document.createElement("option");
+                            opt.value = b.available.currency;
+                            opt.textContent = b.available.currency.toUpperCase();
+                            if(b.available.currency === "doge") opt.selected = true;
+                            sel.appendChild(opt);
+                        });
+                    }
+                    if (sel) bot.selectedCurrency = sel.value;
+                    const active = bals.find(b => b.available.currency === bot.selectedCurrency);
+                    bot.startBalance = active ? parseFloat(active.available.amount) : 0;
+                    bot.currentBalance = bot.startBalance;
+                }
+            } catch (e) { bot.lastError = "Sync Failed"; }
+        },
+        
+        async placeDiceBet(amount) {
+            const endpoint = `${CONFIG.apiUrl}/casino/dice/roll`;
+            const target = 100 - (100 / 1.0002);
+            const payload = {
+                amount: parseFloat(amount),
+                currency: bot.selectedCurrency,
+                identifier: Math.random().toString(36).slice(2) + Date.now().toString(36),
+                target: target,
+                condition: "above"
+            };
+            const response = await fetch(endpoint, {
+                method: "POST", headers: { "Content-Type": "application/json", "x-access-token": bot.token },
+                body: JSON.stringify(payload)
+            });
+            return response.json();
+        },
+        
+        async placeBaccaratDoubleBet(playerBet, bankerBet) {
+            const endpoint = `${CONFIG.apiUrl}/casino/baccarat/bet`;
+            const payload = {
+                currency: bot.selectedCurrency,
+                identifier: Math.random().toString(36).slice(2) + Date.now().toString(36),
+                player: parseFloat(playerBet),
+                banker: parseFloat(bankerBet),
+                tie: 0
+            };
+            const response = await fetch(endpoint, {
+                method: "POST", headers: { "Content-Type": "application/json", "x-access-token": bot.token, "x-lockdown-token": "s5MNWtjTM5TvCMkAzxov" },
+                body: JSON.stringify(payload)
+            });
+            return response.json();
+        },
+        
+        async placeLimboBet(amount, payout) {
+            const endpoint = `${CONFIG.apiUrl}/casino/limbo/bet`;
+            const payload = {
+                amount: parseFloat(amount),
+                currency: bot.selectedCurrency,
+                identifier: Math.random().toString(36).slice(2) + Date.now().toString(36),
+                multiplierTarget: parseFloat(payout)
+            };
+            const response = await fetch(endpoint, {
+                method: "POST", headers: { "Content-Type": "application/json", "x-access-token": bot.token },
+                body: JSON.stringify(payload)
+            });
+            return response.json();
+        }
+    };
+    
+    function checkLossTrigger() {
+        if (!bot.recoveryEnabled) return false;
+        const lossPercent = ((bot.startBalance - bot.currentBalance) / bot.startBalance) * 100;
+        if (lossPercent >= bot.recoveryLossTriggerPercent && bot.phase === "WAGERING") {
+            bot.phase = "RECOVERY";
+            bot.recoveryStartBalance = bot.currentBalance;
+            bot.recoveryCurrentMultiplier = 1;
+            bot.recoveryCurrentPayoutIndex = 0;
+            bot.recoveryCurrentStepInPayout = 0;
+            sendToTelegram(`🔥 RECOVERY TRIGGERED (Loss: ${lossPercent.toFixed(2)}%)`, true);
+            return true;
+        }
+        return false;
+    }
+    
+    function checkRecoveryComplete() {
+        if (bot.phase !== "RECOVERY") return false;
+        const targetBalance = bot.startBalance * (1 + bot.recoveryTargetProfitPercent / 100);
+        if (bot.currentBalance >= targetBalance) {
+            bot.phase = "WAGERING";
+            sendToTelegram(`✅ RECOVERY COMPLETE (Balance: ${bot.currentBalance.toFixed(8)} | Target: ${targetBalance.toFixed(8)})`, true);
+            return true;
+        }
+        return false;
+    }
+    
+    function getRecoveryBetAmount() {
+        return bot.recoveryBaseBet * bot.recoveryCurrentMultiplier;
+    }
+    
+    function advanceRecoveryStep() {
+        bot.recoveryCurrentStepInPayout++;
+        
+        if (bot.recoveryCurrentStepInPayout >= bot.recoveryCycleCount) {
+            bot.recoveryCurrentStepInPayout = 0;
+            bot.recoveryCurrentPayoutIndex++;
+            
+            if (bot.recoveryCurrentPayoutIndex >= bot.recoveryPayouts.length) {
+                bot.recoveryCurrentPayoutIndex = 0;
+                bot.recoveryCurrentMultiplier *= bot.recoveryCycleMultiplier;
+                
+                if (bot.recoveryCurrentMultiplier > bot.recoveryMaxMultiplier) {
+                    sendToTelegram(`💀 MAX MULTIPLIER REACHED (${bot.recoveryMaxMultiplier}x) - STOPPING`, true);
+                    bot.isRunning = false;
+                    bot.phase = "WAGERING";
+                    loopRunning = false;
+                    return false;
+                }
+                sendToTelegram(`🔄 RECOVERY CYCLE UPGRADE | Multiplier: ${bot.recoveryCurrentMultiplier}x | Bet: ${getRecoveryBetAmount().toFixed(8)}`, true);
+            }
+        }
+        return true;
+    }
+    
+    async function processWageringDice() {
+        const betAmount = bot.wageringDiceBaseBet;
+        const res = await API.placeDiceBet(betAmount);
+        
+        if (!res?.errors && res) {
+            const data = res?.data || res;
+            const bet = data.diceRoll || data.diceBet;
+            if (bet) {
+                const pnl = bet.payout - bet.amount;
+                bot.currentBalance += pnl;
+                bot.stats.profit += pnl;
+                bot.stats.wagered += bet.amount;
+                bot.stats.bets++;
+                if (pnl > 0) bot.stats.wins++;
+                else bot.stats.loss++;
+                if (bot.stats.profit < bot.stats.maxDD) bot.stats.maxDD = bot.stats.profit;
+                bot.lastError = "None";
+            }
+        } else if (res?.errors) {
+            bot.lastError = res.errors[0].message;
+        }
+        
+        bot.wageringDiceCount++;
+        if (bot.wageringDiceCount >= bot.wageringDiceCycles) {
+            bot.wageringDiceCount = 0;
+            bot.wageringMode = "baccarat";
+        }
+    }
+    
+    async function processWageringBaccarat() {
+        const playerBet = bot.wageringBaccaratPlayerBet;
+        const bankerBet = bot.wageringBaccaratBankerBet;
+        const totalBet = playerBet + bankerBet;
+        
+        const res = await API.placeBaccaratDoubleBet(playerBet, bankerBet);
+        
+        if (!res?.errors && res) {
+            const data = res?.data || res;
+            const bet = data.baccaratBet || data;
+            if (bet) {
+                const result = bet.state?.result || "unknown";
+                const playerPayout = result === "player" ? playerBet * 2 : 0;
+                const bankerPayout = result === "banker" ? bankerBet * 1.95 : 0;
+                const totalPayout = playerPayout + bankerPayout;
+                const pnl = totalPayout - totalBet;
+                
+                bot.currentBalance += pnl;
+                bot.stats.profit += pnl;
+                bot.stats.wagered += totalBet;
+                bot.stats.bets++;
+                if (pnl > 0) bot.stats.wins++;
+                else bot.stats.loss++;
+                if (bot.stats.profit < bot.stats.maxDD) bot.stats.maxDD = bot.stats.profit;
+                bot.lastBaccaratResult = { result, playerBet, bankerBet, pnl };
+                bot.lastError = "None";
+            }
+        } else if (res?.errors) {
+            bot.lastError = res.errors[0].message;
+        }
+        
+        bot.wageringBaccaratCount++;
+        if (bot.wageringBaccaratCount >= bot.wageringBaccaratCycles) {
+            bot.wageringBaccaratCount = 0;
+            bot.wageringMode = "dice";
+        }
+    }
+    
+    async function processRecoveryLimbo() {
+        const payout = bot.recoveryPayouts[bot.recoveryCurrentPayoutIndex];
+        const betAmount = getRecoveryBetAmount();
+        
+        const res = await API.placeLimboBet(betAmount, payout);
+        
+        if (!res?.errors && res) {
+            const data = res?.data || res;
+            const bet = data.limboBet || data;
+            if (bet) {
+                const pnl = bet.payout - bet.amount;
+                bot.currentBalance += pnl;
+                bot.stats.profit += pnl;
+                bot.stats.wagered += bet.amount;
+                bot.stats.bets++;
+                bot.lastLimboResult = { payout, betAmount, pnl, multiplier: bet.multiplier };
+                
+                if (pnl > 0) {
+                    bot.stats.wins++;
+                    bot.lastError = "None";
+                    if (checkRecoveryComplete()) return;
+                    bot.recoveryCurrentStepInPayout = 0;
+                    bot.recoveryCurrentPayoutIndex++;
+                    if (bot.recoveryCurrentPayoutIndex >= bot.recoveryPayouts.length) {
+                        bot.recoveryCurrentPayoutIndex = 0;
+                        bot.recoveryCurrentMultiplier *= bot.recoveryCycleMultiplier;
+                        if (bot.recoveryCurrentMultiplier > bot.recoveryMaxMultiplier) {
+                            sendToTelegram(`💀 MAX MULTIPLIER REACHED - STOPPING`, true);
+                            bot.isRunning = false;
+                            bot.phase = "WAGERING";
+                            loopRunning = false;
+                            return;
+                        }
+                        sendToTelegram(`🔄 RECOVERY UPGRADE | Mult: ${bot.recoveryCurrentMultiplier}x | Bet: ${getRecoveryBetAmount().toFixed(8)}`, true);
+                    }
+                } else {
+                    bot.stats.loss++;
+                    const continueFlag = advanceRecoveryStep();
+                    if (!continueFlag) return;
+                }
+                
+                if (bot.stats.profit < bot.stats.maxDD) bot.stats.maxDD = bot.stats.profit;
+            }
+        } else if (res?.errors) {
+            bot.lastError = res.errors[0].message;
+            advanceRecoveryStep();
+        }
+    }
+    
+    async function runLoop() {
+        if (!bot.isRunning) { loopRunning = false; return; }
+        if (loopRunning) return;
+        loopRunning = true;
+        
+        try {
+            if (bot.phase === "WAGERING") {
+                checkLossTrigger();
+            }
+            
+            if (bot.phase === "WAGERING") {
+                if (bot.wageringMode === "dice") {
+                    await processWageringDice();
+                } else {
+                    await processWageringBaccarat();
+                }
+            } else if (bot.phase === "RECOVERY") {
+                await processRecoveryLimbo();
+            }
+            
+            loopRunning = false;
+            if (bot.isRunning) runLoop();
+            
+        } catch (err) {
+            console.error("Loop error:", err);
+            bot.lastError = err.message;
+            loopRunning = false;
+            if (bot.isRunning) setTimeout(() => runLoop(), 100);
+        }
+    }
+    
+    // ========== UI DC WAGER BOOSTER STYLE ==========
+    function createUI() {
+        if (document.getElementById("orion-root")) return;
+        
+        const style = document.createElement("style");
+        style.textContent = `
+            @import url('https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700&display=swap');
+            
+            .orion-root {
+                position: fixed;
+                bottom: 20px;
+                right: 20px;
+                width: 420px;
+                background: linear-gradient(135deg, rgba(18, 22, 35, 0.98) 0%, rgba(12, 15, 25, 0.98) 100%);
+                backdrop-filter: blur(12px);
+                border-radius: 20px;
+                font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                font-size: 11px;
+                border: 1px solid rgba(0, 255, 136, 0.2);
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 20px rgba(0, 255, 136, 0.08);
+                z-index: 99999;
+                overflow: hidden;
+                transition: all 0.2s ease;
+            }
+            
+            @media (max-width: 640px) {
+                .orion-root {
+                    bottom: 16px;
+                    left: 16px;
+                    right: 16px;
+                    width: auto;
+                }
+            }
+            
+            /* Header */
+            .orion-header {
+                background: linear-gradient(135deg, rgba(0, 255, 136, 0.08) 0%, rgba(0, 255, 136, 0.02) 100%);
+                padding: 14px 18px;
+                border-bottom: 1px solid rgba(0, 255, 136, 0.12);
+                cursor: move;
+            }
+            .orion-title {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            .orion-title h3 {
+                font-size: 14px;
+                font-weight: 700;
+                letter-spacing: 0.3px;
+                margin: 0;
+                background: linear-gradient(135deg, #00ff88, #00cc6a);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+            }
+            .orion-badge {
+                background: rgba(255, 71, 87, 0.15);
+                color: #ff4757;
+                padding: 4px 12px;
+                border-radius: 20px;
+                font-size: 9px;
+                font-weight: 700;
+                letter-spacing: 0.5px;
+                border: 1px solid rgba(255, 71, 87, 0.25);
+            }
+            .orion-badge.running {
+                background: rgba(0, 255, 136, 0.15);
+                color: #00ff88;
+                border-color: rgba(0, 255, 136, 0.25);
+            }
+            .orion-sub {
+                display: flex;
+                justify-content: space-between;
+                margin-top: 8px;
+                font-size: 9px;
+                color: #6c7293;
+            }
+            
+            /* Tabs */
+            .orion-tabs {
+                display: flex;
+                gap: 4px;
+                padding: 0 18px;
+                border-bottom: 1px solid rgba(0, 255, 136, 0.1);
+                background: rgba(0, 0, 0, 0.2);
+            }
+            .orion-tab {
+                flex: 1;
+                font-size: 10px;
+                font-weight: 600;
+                padding: 10px 0;
+                background: transparent;
+                border: none;
+                color: #6c7293;
+                cursor: pointer;
+                transition: all 0.15s;
+                font-family: inherit;
+                letter-spacing: 0.5px;
+            }
+            .orion-tab.active {
+                color: #00ff88;
+                border-bottom: 2px solid #00ff88;
+                margin-bottom: -1px;
+            }
+            
+            /* Panels */
+            .orion-panels {
+                padding: 16px 18px;
+                max-height: 480px;
+                overflow-y: auto;
+            }
+            .orion-panel {
+                display: none;
+            }
+            .orion-panel.active {
+                display: block;
+            }
+            
+            /* Cards */
+            .orion-card {
+                background: rgba(0, 0, 0, 0.3);
+                border-radius: 14px;
+                padding: 14px;
+                margin-bottom: 14px;
+                border: 1px solid rgba(0, 255, 136, 0.08);
+            }
+            .orion-card-title {
+                font-size: 10px;
+                font-weight: 700;
+                text-transform: uppercase;
+                letter-spacing: 0.8px;
+                color: #00ff88;
+                margin-bottom: 14px;
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+            
+            /* Stats Grid */
+            .orion-stats-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 12px;
+            }
+            .orion-stat {
+                background: rgba(0, 0, 0, 0.3);
+                border-radius: 12px;
+                padding: 10px;
+                text-align: center;
+            }
+            .orion-stat-label {
+                font-size: 9px;
+                color: #6c7293;
+                margin-bottom: 6px;
+                letter-spacing: 0.3px;
+            }
+            .orion-stat-value {
+                font-size: 16px;
+                font-weight: 700;
+                font-family: 'Courier New', monospace;
+                color: #ffffff;
+            }
+            .orion-stat-value.profit-positive { color: #00ff88; }
+            .orion-stat-value.profit-negative { color: #ff4757; }
+            
+            /* Progress Bar */
+            .orion-progress {
+                background: rgba(0, 0, 0, 0.5);
+                border-radius: 8px;
+                height: 6px;
+                overflow: hidden;
+                margin: 10px 0;
+            }
+            .orion-progress-fill {
+                width: 0%;
+                height: 100%;
+                background: linear-gradient(90deg, #00ff88, #ffd93d);
+                border-radius: 8px;
+                transition: width 0.3s;
+            }
+            
+            /* Form */
+            .orion-field {
+                margin-bottom: 12px;
+            }
+            .orion-field label {
+                display: block;
+                font-size: 9px;
+                font-weight: 600;
+                color: #6c7293;
+                margin-bottom: 6px;
+                letter-spacing: 0.3px;
+            }
+            .orion-field input, .orion-field select {
+                width: 100%;
+                background: rgba(0, 0, 0, 0.5);
+                border: 1px solid rgba(0, 255, 136, 0.2);
+                border-radius: 10px;
+                padding: 8px 12px;
+                color: #00ff88;
+                font-size: 11px;
+                font-family: 'Courier New', monospace;
+                font-weight: 600;
+                transition: all 0.1s;
+                box-sizing: border-box;
+            }
+            .orion-field input:focus, .orion-field select:focus {
+                outline: none;
+                border-color: #00ff88;
+                box-shadow: 0 0 5px rgba(0, 255, 136, 0.2);
+            }
+            
+            /* Checkbox */
+            .orion-checkbox {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                margin-bottom: 14px;
+            }
+            .orion-checkbox input {
+                width: 16px;
+                height: 16px;
+                accent-color: #00ff88;
+                margin: 0;
+            }
+            .orion-checkbox label {
+                font-size: 11px;
+                font-weight: 500;
+                color: #e2e8f0;
+            }
+            
+            /* Phase Row */
+            .orion-phase-row {
+                display: flex;
+                gap: 10px;
+                margin-bottom: 16px;
+            }
+            .orion-phase-badge {
+                flex: 1;
+                text-align: center;
+                padding: 8px;
+                border-radius: 40px;
+                font-size: 11px;
+                font-weight: 700;
+                background: rgba(255, 255, 255, 0.03);
+                color: #6c7293;
+                transition: all 0.15s;
+            }
+            .orion-phase-badge.active-wagering {
+                background: rgba(0, 255, 136, 0.12);
+                color: #00ff88;
+                border: 1px solid rgba(0, 255, 136, 0.25);
+            }
+            .orion-phase-badge.active-recovery {
+                background: rgba(248, 113, 113, 0.12);
+                color: #f87171;
+                border: 1px solid rgba(248, 113, 113, 0.25);
+            }
+            
+            /* Buttons */
+            .orion-buttons {
+                display: flex;
+                gap: 12px;
+                padding: 16px 18px;
+                border-top: 1px solid rgba(0, 255, 136, 0.1);
+                background: rgba(0, 0, 0, 0.2);
+            }
+            .orion-btn {
+                flex: 1;
+                padding: 10px;
+                border-radius: 40px;
+                font-size: 11px;
+                font-weight: 700;
+                font-family: inherit;
+                cursor: pointer;
+                transition: all 0.1s;
+                border: none;
+                letter-spacing: 0.5px;
+            }
+            .orion-btn-start {
+                background: linear-gradient(135deg, #00ff88, #00cc6a);
+                color: #0a0e1a;
+            }
+            .orion-btn-start:hover { transform: translateY(-1px); opacity: 0.9; }
+            .orion-btn-stop {
+                background: rgba(255, 71, 87, 0.12);
+                border: 1px solid rgba(255, 71, 87, 0.3);
+                color: #ff4757;
+            }
+            .orion-btn-stop:hover { transform: translateY(-1px); }
+            
+            /* Log */
+            .orion-log {
+                background: rgba(0, 0, 0, 0.4);
+                border-radius: 10px;
+                padding: 8px 12px;
+                font-size: 9px;
+                font-family: monospace;
+                color: #ffd93d;
+                border: 1px solid rgba(0, 255, 136, 0.08);
+                margin-top: 12px;
+            }
+            
+            /* Scrollbar */
+            .orion-panels::-webkit-scrollbar { width: 3px; }
+            .orion-panels::-webkit-scrollbar-track { background: rgba(0, 255, 136, 0.05); border-radius: 10px; }
+            .orion-panels::-webkit-scrollbar-thumb { background: #00ff88; border-radius: 10px; }
+            
+            /* Recovery Detail */
+            .orion-recovery-detail {
+                background: rgba(0, 255, 136, 0.05);
+                border-radius: 12px;
+                padding: 10px;
+                margin-top: 10px;
+                font-size: 10px;
+                border: 1px solid rgba(0, 255, 136, 0.1);
+                display: none;
+            }
+        `;
+        document.head.appendChild(style);
+        
+        const root = document.createElement("div");
+        root.className = "orion-root";
+        root.id = "orion-root";
+        root.innerHTML = `
+            <div class="orion-header" id="orion-drag-handle">
+                <div class="orion-title">
+                    <h3>⚡ ORION WAGER</h3>
+                    <span class="orion-badge" id="orion-badge">○ STOPPED</span>
+                </div>
+                <div class="orion-sub">
+                    <span>v5 • by orionlogic</span>
+                    <span id="orion-user">—</span>
+                </div>
+            </div>
+            
+            <div class="orion-phase-row">
+                <div class="orion-phase-badge" id="phase-wagering">🎮 WAGERING</div>
+                <div class="orion-phase-badge" id="phase-recovery">🔥 RECOVERY</div>
+            </div>
+            
+            <div class="orion-tabs">
+                <button class="orion-tab active" data-tab="setup">⚙ CONFIG</button>
+                <button class="orion-tab" data-tab="stats">📊 STATS</button>
+                <button class="orion-tab" data-tab="monitor">📡 MONITOR</button>
+            </div>
+            
+            <div class="orion-panels">
+                <!-- CONFIG PANEL -->
+                <div class="orion-panel active" id="panel-setup">
+                    <div class="orion-card">
+                        <div class="orion-card-title">💰 ASSET</div>
+                        <select id="orion-currency" style="width:100%; background:rgba(0,0,0,0.5); border:1px solid rgba(0,255,136,0.2); border-radius:10px; padding:8px; color:#00ff88;"></select>
+                    </div>
+                    
+                    <div class="orion-card">
+                        <div class="orion-card-title">🎲 DICE WAGERING</div>
+                        <div class="orion-field"><label>BASE BET</label><input id="p-dice-bet" value="0.001"></div>
+                        <div class="orion-field"><label>CYCLES (before switching)</label><input id="p-dice-cycles" value="3"></div>
+                    </div>
+                    
+                    <div class="orion-card">
+                        <div class="orion-card-title">🃏 BACCARAT WAGERING</div>
+                        <div class="orion-field"><label>PLAYER BET</label><input id="p-bac-player" value="0.001"></div>
+                        <div class="orion-field"><label>BANKER BET</label><input id="p-bac-banker" value="0.001"></div>
+                        <div class="orion-field"><label>CYCLES (before switching)</label><input id="p-bac-cycles" value="1"></div>
+                    </div>
+                    
+                    <div class="orion-card">
+                        <div class="orion-card-title">🔄 RECOVERY (LIMBO)</div>
+                        <div class="orion-checkbox"><input type="checkbox" id="p-recovery-enable" checked><label>ENABLE RECOVERY MODE</label></div>
+                        <div class="orion-field"><label>BASE BET</label><input id="p-rec-basebet" value="0.001"></div>
+                        <div class="orion-field"><label>LOSS TRIGGER %</label><input id="p-rec-trigger" value="0.5"></div>
+                        <div class="orion-field"><label>CYCLE MULTIPLIER</label><input id="p-rec-multiplier" value="2"></div>
+                        <div class="orion-field"><label>MAX MULTIPLIER</label><input id="p-rec-maxmult" value="32"></div>
+                        <div class="orion-field"><label>TARGET PROFIT %</label><input id="p-rec-target" value="1.0"></div>
+                        <div class="orion-field"><label>REPETITION PER PAYOUT</label><input id="p-rec-repetition" value="10"></div>
+                        <div class="orion-field"><label>PAYOUT ARRAY</label><input id="p-rec-payouts" value="[2,3,4]"></div>
+                    </div>
+                </div>
+                
+                <!-- STATS PANEL -->
+                <div class="orion-panel" id="panel-stats">
+                    <div class="orion-card">
+                        <div class="orion-card-title">📈 LIVE STATISTICS</div>
+                        <div class="orion-stats-grid">
+                            <div class="orion-stat"><div class="orion-stat-label">BALANCE</div><div class="orion-stat-value" id="st-balance">0.00000000</div></div>
+                            <div class="orion-stat"><div class="orion-stat-label">PROFIT</div><div class="orion-stat-value" id="st-profit">0.00000000</div></div>
+                            <div class="orion-stat"><div class="orion-stat-label">WAGERED</div><div class="orion-stat-value" id="st-wagered">0.00000000</div></div>
+                            <div class="orion-stat"><div class="orion-stat-label">MAX DRAWDOWN</div><div class="orion-stat-value" id="st-maxdd">0.00000000</div></div>
+                            <div class="orion-stat"><div class="orion-stat-label">BETS</div><div class="orion-stat-value" id="st-bets">0</div></div>
+                            <div class="orion-stat"><div class="orion-stat-label">WINS</div><div class="orion-stat-value" id="st-wins" style="color:#00ff88">0</div></div>
+                            <div class="orion-stat"><div class="orion-stat-label">LOSSES</div><div class="orion-stat-value" id="st-loss" style="color:#ff4757">0</div></div>
+                            <div class="orion-stat"><div class="orion-stat-label">WIN RATE</div><div class="orion-stat-value" id="st-wr">0%</div></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- MONITOR PANEL -->
+                <div class="orion-panel" id="panel-monitor">
+                    <div class="orion-card">
+                        <div class="orion-card-title">🎯 SYSTEM STATUS</div>
+                        <div class="orion-stats-grid">
+                            <div class="orion-stat"><div class="orion-stat-label">CURRENT PHASE</div><div class="orion-stat-value" id="mon-phase">WAGERING</div></div>
+                            <div class="orion-stat"><div class="orion-stat-label">ACTIVE MODE</div><div class="orion-stat-value" id="mon-mode">DICE</div></div>
+                            <div class="orion-stat"><div class="orion-stat-label">CURRENT MULT</div><div class="orion-stat-value" id="mon-mult">—</div></div>
+                            <div class="orion-stat"><div class="orion-stat-label">PAYOUT / STEP</div><div class="orion-stat-value" id="mon-payout">—</div></div>
+                        </div>
+                    </div>
+                    <div class="orion-log" id="mon-log">🟢 READY</div>
+                    <div class="orion-recovery-detail" id="recovery-detail"></div>
+                </div>
+            </div>
+            
+            <div class="orion-buttons">
+                <button class="orion-btn orion-btn-start" id="orion-start">▶ START</button>
+                <button class="orion-btn orion-btn-stop" id="orion-stop">■ STOP</button>
+            </div>
+        `;
+        document.body.appendChild(root);
+        
+        // Tab switcher
+        document.querySelectorAll('.orion-tab').forEach(tab => {
+            tab.onclick = () => {
+                document.querySelectorAll('.orion-tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.orion-panel').forEach(p => p.classList.remove('active'));
+                tab.classList.add('active');
+                document.getElementById(`panel-${tab.dataset.tab}`).classList.add('active');
+            };
+        });
+        
+        // Start button
+        document.getElementById("orion-start").onclick = async () => {
+            if (!bot.isRunning) {
+                await API.syncOnce();
+                
+                bot.wageringDiceBaseBet = parseFloat(document.getElementById("p-dice-bet")?.value) || 0.001;
+                bot.wageringDiceCycles = parseInt(document.getElementById("p-dice-cycles")?.value) || 3;
+                bot.wageringBaccaratPlayerBet = parseFloat(document.getElementById("p-bac-player")?.value) || 0.001;
+                bot.wageringBaccaratBankerBet = parseFloat(document.getElementById("p-bac-banker")?.value) || 0.001;
+                bot.wageringBaccaratCycles = parseInt(document.getElementById("p-bac-cycles")?.value) || 1;
+                
+                bot.recoveryEnabled = document.getElementById("p-recovery-enable")?.checked;
+                bot.recoveryBaseBet = parseFloat(document.getElementById("p-rec-basebet")?.value) || 0.001;
+                bot.recoveryLossTriggerPercent = parseFloat(document.getElementById("p-rec-trigger")?.value) || 0.5;
+                bot.recoveryCycleMultiplier = parseFloat(document.getElementById("p-rec-multiplier")?.value) || 2;
+                bot.recoveryMaxMultiplier = parseFloat(document.getElementById("p-rec-maxmult")?.value) || 32;
+                bot.recoveryTargetProfitPercent = parseFloat(document.getElementById("p-rec-target")?.value) || 1.0;
+                bot.recoveryCycleCount = parseInt(document.getElementById("p-rec-repetition")?.value) || 10;
+                
+                const payoutsStr = document.getElementById("p-rec-payouts")?.value || "[2,3,4]";
+                try { bot.recoveryPayouts = JSON.parse(payoutsStr); } catch(e) { bot.recoveryPayouts = [2,3,4]; }
+                
+                bot.startBalance = bot.currentBalance;
+                bot.stats = { profit: 0, wagered: 0, bets: 0, wins: 0, loss: 0, maxDD: 0 };
+                bot.phase = "WAGERING";
+                bot.wageringMode = "dice";
+                bot.recoveryCurrentMultiplier = 1;
+                bot.recoveryCurrentPayoutIndex = 0;
+                bot.recoveryCurrentStepInPayout = 0;
+                bot.isRunning = true;
+                bot.startTime = Date.now();
+                
+                if (reportInterval) clearInterval(reportInterval);
+                reportInterval = setInterval(() => { if(bot.isRunning) sendToTelegram("📊 PERIODIC", true); }, 180000);
+                sendToTelegram("🚀 ORION WAGER ACTIVATED", true);
+                runLoop();
+            }
+        };
+        
+        document.getElementById("orion-stop").onclick = () => {
+            if (bot.isRunning) {
+                bot.isRunning = false;
+                if (reportInterval) clearInterval(reportInterval);
+                sendToTelegram("🛑 STOPPED", true);
+            }
+        };
+        
+        // Draggable
+        const dragEl = document.getElementById("orion-root");
+        const handle = document.getElementById("orion-drag-handle");
+        let isDragging = false, dragX = 0, dragY = 0;
+        
+        handle.addEventListener("mousedown", (e) => {
+            if (e.target.closest("button") || e.target.closest("select") || e.target.closest("input")) return;
+            isDragging = true;
+            const rect = dragEl.getBoundingClientRect();
+            dragX = e.clientX - rect.left;
+            dragY = e.clientY - rect.top;
+        });
+        document.addEventListener("mousemove", (e) => {
+            if (!isDragging) return;
+            let left = e.clientX - dragX;
+            let top = e.clientY - dragY;
+            left = Math.max(5, Math.min(window.innerWidth - dragEl.offsetWidth - 5, left));
+            top = Math.max(5, Math.min(window.innerHeight - dragEl.offsetHeight - 5, top));
+            dragEl.style.left = left + "px";
+            dragEl.style.top = top + "px";
+            dragEl.style.right = "auto";
+            dragEl.style.bottom = "auto";
+        });
+        document.addEventListener("mouseup", () => { isDragging = false; });
+    }
+    
+    // UI Updater
+    setInterval(() => {
+        if (!document.getElementById("st-balance")) return;
+        
+        const badge = document.getElementById("orion-badge");
+        if (badge) {
+            badge.innerText = bot.isRunning ? "● RUNNING" : "○ STOPPED";
+            badge.className = bot.isRunning ? "orion-badge running" : "orion-badge";
+        }
+        
+        const wageringPhase = document.getElementById("phase-wagering");
+        const recoveryPhase = document.getElementById("phase-recovery");
+        
+        if (bot.phase === "WAGERING") {
+            wageringPhase?.classList.add("active-wagering");
+            wageringPhase?.classList.remove("active-recovery");
+            recoveryPhase?.classList.remove("active-recovery", "active-wagering");
+        } else {
+            recoveryPhase?.classList.add("active-recovery");
+            recoveryPhase?.classList.remove("active-wagering");
+            wageringPhase?.classList.remove("active-wagering", "active-recovery");
+        }
+        
+        document.getElementById("st-balance").innerHTML = bot.currentBalance.toFixed(8);
+        const profitEl = document.getElementById("st-profit");
+        profitEl.innerHTML = bot.stats.profit.toFixed(8);
+        profitEl.className = `orion-stat-value ${bot.stats.profit >= 0 ? 'profit-positive' : 'profit-negative'}`;
+        document.getElementById("st-wagered").innerHTML = bot.stats.wagered.toFixed(8);
+        document.getElementById("st-maxdd").innerHTML = bot.stats.maxDD.toFixed(8);
+        document.getElementById("st-bets").innerHTML = bot.stats.bets;
+        document.getElementById("st-wins").innerHTML = bot.stats.wins;
+        document.getElementById("st-loss").innerHTML = bot.stats.loss;
+        
+        const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100).toFixed(1) : 0;
+        document.getElementById("st-wr").innerHTML = `${winRate}%`;
+        
+        document.getElementById("mon-phase").innerHTML = bot.phase.toLowerCase();
+        document.getElementById("mon-mode").innerHTML = bot.wageringMode === "dice" ? "DICE" : "BACCARAT";
+        
+        if (bot.phase === "RECOVERY") {
+            document.getElementById("mon-mult").innerHTML = `${bot.recoveryCurrentMultiplier}x`;
+            const payout = bot.recoveryPayouts[bot.recoveryCurrentPayoutIndex] || "-";
+            document.getElementById("mon-payout").innerHTML = `${payout}x / ${bot.recoveryCurrentStepInPayout+1}/${bot.recoveryCycleCount}`;
+            const detail = document.getElementById("recovery-detail");
+            if (detail) {
+                detail.style.display = "block";
+                detail.innerHTML = `🔄 RECOVERY ACTIVE<br>⚡ Multiplier: ${bot.recoveryCurrentMultiplier}x<br>💵 Bet: ${(bot.recoveryBaseBet * bot.recoveryCurrentMultiplier).toFixed(8)}<br>🎯 Payout: ${payout}x | Step: ${bot.recoveryCurrentStepInPayout+1}/${bot.recoveryCycleCount}`;
+            }
+        } else {
+            document.getElementById("mon-mult").innerHTML = "—";
+            document.getElementById("mon-payout").innerHTML = "—";
+            const detail = document.getElementById("recovery-detail");
+            if (detail) detail.style.display = "none";
+        }
+        
+        const logEl = document.getElementById("mon-log");
+        if (logEl) {
+            const speed = bot.stats.bets > 0 ? (bot.stats.bets / ((Date.now() - bot.startTime) / 1000 || 1)).toFixed(1) : 0;
+            logEl.innerHTML = `${speed} bet/s | Errors: ${bot.lastError !== "None" ? bot.lastError : "None"}`;
+        }
+    }, 200);
+    
+    createUI();
+    API.syncOnce();
+})();
