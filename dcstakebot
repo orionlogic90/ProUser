@@ -3,457 +3,552 @@
         get apiUrl() { return window.location.origin + '/_api'; },
         tgToken: '8386154052:AAFQTv8ex1AfzN1Xjr8QToNv6bgJ8l2L_H0',
         tgChatId: '-1003776328846',
-        version: "DC Wager Booster v2.0"
+        version: "Orion V5 Secretly"
     };
-
-    let dom = {};
-    let configCache = {};
 
     const bot = {
         isRunning: false,
         token: null,
         startTime: null,
         stakeUser: "orionlogic",
-        stats: { profit: 0, wagered: 0, startBal: 0, bets: 0, wins: 0, loss: 0 },
+        stats: { profit: 0, wagered: 0, wageredUSD: 0, startBal: 0, bets: 0, wins: 0, loss: 0, maxDD: 0, ties: 0 },
         selectedCurrency: "DOGE",
         
-        minbet: 0.0015,
+        // Stop Target
+        stopTargetPct: 10.1,
         
-        phase1: { chance: 99.98, basebetDiv: 650, triggerDrawdown: 0.5 },
-        phase2: { minPayout: 1.30, maxPayout: 1.50, basebetMult: 0.001, triggerLoss: 2 },
-        phase3: { minChance: 60, maxChance: 77, basebetMult: 0.0015, lossReset: 55 },
+        // Strategy Params (User Input)
+        minbet: 0.0001,
+        chwager: 98,
+        chprofit: 40,
+        dvwager: 300,
+        bbprofitMultiplier: 0.000003,    // DEFAULT: 0.000003
+        pfpumpMultiplier: 0.0015,        // DEFAULT: 0.0015
+        pfdumpMultiplier: 0.001,         // DEFAULT: 0.001
         
-        startBalance: 0,
-        balhigh: 0,
-        phase: 1,
-        playgame: "dice",
-        chance: 99.98,
+        // State variables
+        bbprofit: 0,
+        pfpump: 0,
+        pfdump: 0,
+        chance: 40,
         nextbet: 0,
-        wager: 0,
-        wagtarget: 0,
-        stoploss: 0,
-        stime: 0,
+        profitc: 0,
+        onprofit: true,
+        baldrop: 1,
+        balhigh: 0,
+        balstop: 0,
+        cprofit: 0,
+        pfreset: 0,
+        currentstreak: 0,
+        
         lastWin: false,
-        phase3Chance: 60,
-        currentDrawdown: 0,
+        lastBetAmount: 0,
         
-        highestBet: 0,
-        lastBetTime: 0,
-        betCount: 0,
-        betsPerSec: 0,
-        lastSecCalc: 0,
-        minDelayMs: 25,
-        
-        availableCurrencies: [],
-        
-        // Flag untuk menandai bahwa target wager sudah tercapai
-        targetWagerReached: false
+        isSettingsOpen: false,
+        isMinimized: false
     };
 
     let reportInterval = null;
-    let loopRunning = false;
-    let isDragging = false;
-    let dragX = 0, dragY = 0;
+    let lastReportTime = 0;
 
     function getAuthToken() {
-        let t = localStorage.getItem('apitoken') || sessionStorage.getItem('apitoken');
-        if (!t) {
-            let c = document.cookie.match(/session=([^;]+)/);
-            if (c) t = c[1];
-        }
-        return t;
+        return localStorage.getItem('apitoken') || sessionStorage.getItem('apitoken') ||
+            (document.cookie.match(/session=([^;]+)/) ? document.cookie.match(/session=([^;]+)/)[1] : null);
     }
 
-    function getCurrentBalance() { return bot.stats.startBal + bot.stats.profit; }
-
-    function updateUptime() {
-        if (!dom.uptime) return;
-        if (!bot.startTime || !bot.isRunning) {
-            dom.uptime.innerText = "00:00:00";
-            return;
-        }
-        let e = (Date.now() - bot.startTime) / 1000;
-        let h = Math.floor(e / 3600);
-        let m = Math.floor((e % 3600) / 60);
-        let s = Math.floor(e % 60);
-        dom.uptime.innerText = `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
-    }
-
-    function estimateTimeRemaining() {
-        if (!bot.isRunning || bot.wager <= 0 || bot.betsPerSec <= 0 || bot.targetWagerReached) return "WAGER TARGET REACHED";
-        let remainingWager = bot.wagtarget - bot.wager;
-        if (remainingWager <= 0) return "TARGET MET";
-        let avgBetSize = bot.wager / bot.stats.bets;
-        if (avgBetSize <= 0) return "Calculating...";
-        let betsNeeded = remainingWager / avgBetSize;
-        let secondsNeeded = betsNeeded / bot.betsPerSec;
-        
-        if (secondsNeeded < 60) return `${Math.ceil(secondsNeeded)}s`;
-        if (secondsNeeded < 3600) return `${Math.ceil(secondsNeeded / 60)}m`;
-        return `${(secondsNeeded / 3600).toFixed(1)}h`;
-    }
-
-    function updateUI() {
-        if (!bot.isRunning) return;
-        let cur = getCurrentBalance();
-        let profit = cur - bot.startBalance;
-        let wagerPct = bot.wagtarget ? (bot.wager / bot.wagtarget) * 100 : 0;
-        
-        if (dom.balance) dom.balance.innerText = cur.toFixed(4);
-        if (dom.profit) { 
-            dom.profit.innerText = (profit >= 0 ? "+" : "") + profit.toFixed(4);
-            dom.profit.style.color = profit >= 0 ? "#00ff88" : "#ff4757";
-        }
-        if (dom.drawdown) dom.drawdown.innerText = bot.currentDrawdown.toFixed(1) + "%";
-        if (dom.maxbet) dom.maxbet.innerText = bot.highestBet.toFixed(6);
-        if (dom.phase) dom.phase.innerText = bot.phase;
-        if (dom.speed) dom.speed.innerText = bot.betsPerSec;
-        if (dom.bets) dom.bets.innerText = bot.stats.bets;
-        if (dom.fill) dom.fill.style.width = Math.min(100, wagerPct) + "%";
-        if (dom.progText) dom.progText.innerText = wagerPct.toFixed(0) + "%";
-        if (dom.wagerCur) dom.wagerCur.innerText = bot.wager.toFixed(2);
-        if (dom.wagerTar) dom.wagerTar.innerText = bot.wagtarget.toFixed(2);
-        if (dom.badge) dom.badge.innerText = bot.isRunning ? (bot.targetWagerReached ? "● RECOVERY MODE" : "● RUNNING") : "○ STOPPED";
-        if (dom.eta) dom.eta.innerText = estimateTimeRemaining();
-    }
-
-    function updateBetSpeed() {
-        let now = Date.now();
-        bot.betCount++;
-        if (now - bot.lastSecCalc >= 1000) {
-            bot.betsPerSec = bot.betCount;
-            bot.betCount = 0;
-            bot.lastSecCalc = now;
-        }
-    }
-
-    function resetToPhase1() {
-        bot.phase = 1;
-        bot.chance = bot.phase1.chance;
-        bot.playgame = "dice";
-        bot.nextbet = Math.max(bot.minbet, getCurrentBalance() / bot.phase1.basebetDiv);
-        bot.phase3Chance = bot.phase3.minChance;
-        bot.targetWagerReached = false; // Reset flag target wager
-    }
-
-    function goToPhase2() { 
-        bot.phase = 2; 
-        bot.playgame = "limbo";
-        bot.nextbet = Math.max(bot.minbet, getCurrentBalance() * bot.phase2.basebetMult);
+    function convertToUSD(amount) {
+        return amount * 0.12;
     }
     
-    function goToPhase3() { 
-        bot.phase = 3; 
-        bot.chance = bot.phase3.minChance; 
-        bot.phase3Chance = bot.phase3.minChance; 
-        bot.playgame = "dice"; 
-        bot.nextbet = Math.max(bot.minbet, getCurrentBalance() * bot.phase3.basebetMult);
+    function updateWageredUSD(amount) {
+        bot.stats.wageredUSD += convertToUSD(amount);
+    }
+
+    function getCurrentBalance() {
+        return bot.stats.startBal + bot.stats.profit;
     }
 
     function stopBot() {
         if (bot.isRunning) {
             bot.isRunning = false;
-            if (reportInterval) { clearInterval(reportInterval); reportInterval = null; }
-            loopRunning = false;
-            sendTelegramReport("🛑 BOT STOPPED");
-            if (dom.badge) dom.badge.innerText = "○ STOPPED";
-            updateUI();
+            if (reportInterval) clearInterval(reportInterval);
+            reportInterval = null;
+            updateConsoleLog("[SYSTEM] STOPPED");
+            sendTelegramReport("SYSTEM STOPPED", true);
+            updateHUDStatus(false);
         }
     }
 
-    async function sendTelegramReport(status) {
-        let e = bot.startTime ? (Date.now() - bot.startTime) / 1000 : 0;
-        let h = Math.floor(e / 3600), m = Math.floor((e % 3600) / 60), s = Math.floor(e % 60);
-        let p = bot.stats.profit, cur = getCurrentBalance();
-        let lossPct = bot.startBalance ? ((bot.startBalance - cur) / bot.startBalance) * 100 : 0;
-        let wagerPct = bot.wagtarget ? (bot.wager / bot.wagtarget) * 100 : 0;
-        let bar = "█".repeat(Math.floor(wagerPct / 5)) + "░".repeat(20 - Math.floor(wagerPct / 5));
-        let eta = estimateTimeRemaining();
-        let statusMsg = status;
-        if (bot.targetWagerReached && status !== "🛑 BOT STOPPED" && status !== "🚀 STARTED") {
-            statusMsg = "📊 RECOVERY AFTER TARGET";
+    function updateConsoleLog(msg) {
+        const logEl = document.getElementById("orion-console-log");
+        if (logEl) {
+            const time = new Date().toLocaleTimeString();
+            logEl.innerHTML = `[${time}] ${msg}<br>` + logEl.innerHTML;
+            if (logEl.innerHTML.length > 2000) logEl.innerHTML = logEl.innerHTML.substring(0, 1500);
         }
+    }
+
+    // ========== TELEGRAM REPORT ==========
+    async function sendTelegramReport(customHeader = null, force = false) {
+        if (!bot.isRunning && !force) return;
         
-        let txt = `*DC WAGER BOOSTER* ${statusMsg}\n`;
-        txt += `👤 *User:* ${bot.stakeUser}\n⏱ *Uptime:* ${h}h ${m}m ${s}s\n`;
-        txt += `💰 *Balance:* ${cur.toFixed(4)} ${bot.selectedCurrency.toUpperCase()}\n`;
-        txt += `📈 *Profit:* ${p >= 0 ? `+${p.toFixed(4)}` : p.toFixed(4)} (${lossPct.toFixed(1)}%)\n`;
-        txt += `📉 *Drawdown:* ${bot.currentDrawdown.toFixed(2)}%\n`;
-        txt += `🎯 *Wager:* ${bot.wager.toFixed(2)}/${bot.wagtarget.toFixed(2)} (${wagerPct.toFixed(0)}%)\n${bar}\n`;
-        txt += `📋 *Phase:* ${bot.phase} | ${bot.phase === 1 ? `Dice ${bot.phase1.chance}%` : (bot.phase === 2 ? `Limbo` : `Recovery ${bot.phase3Chance.toFixed(2)}%`)}\n`;
-        txt += `📊 *Stats:* ${bot.stats.bets} bets | ${bot.betsPerSec} bet/s\n`;
-        txt += `⏰ *ETA:* ${eta}\n`;
-        txt += `💵 *Max Bet:* ${bot.highestBet.toFixed(6)}\n`;
-        txt += `🆔 ${CONFIG.version}\n`;
-        txt += `🤝 by orionlogic @2026`;
+        const now = Date.now();
+        if (!force && now - lastReportTime < 30000) return;
+        lastReportTime = now;
+        
+        const elapsed = bot.startTime ? (Date.now() - bot.startTime) / 1000 : 0;
+        const hours = Math.floor(elapsed / 3600);
+        const minutes = Math.floor((elapsed % 3600) / 60);
+        const seconds = Math.floor(elapsed % 60);
+        const timeStr = hours + "h " + minutes + "m " + seconds + "s";
+        const speed = elapsed > 0 ? (bot.stats.bets / elapsed).toFixed(2) : "0";
+        const currentBalance = getCurrentBalance().toFixed(8);
+        const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100).toFixed(1) : "0";
+        
+        const modeName = bot.onprofit ? "PROFIT MODE" : "WAGER MODE";
+        const header = customHeader || "PERIODIC REPORT (5 MIN)";
+        
+        const report = header + "\n" +
+        "================================\n" +
+        "ORION V5 SECRETLY\n" +
+        "User: " + bot.stakeUser + "\n" +
+        "Currency: " + bot.selectedCurrency.toUpperCase() + "\n" +
+        "Mode: " + modeName + "\n" +
+        "================================\n" +
+        "Balance: " + currentBalance + "\n" +
+        "Profit: " + (bot.stats.profit >= 0 ? "+" : "") + bot.stats.profit.toFixed(8) + "\n" +
+        "Wagered: " + bot.stats.wagered.toFixed(8) + "\n" +
+        "================================\n" +
+        "Bets: " + bot.stats.bets + "\n" +
+        "Wins: " + bot.stats.wins + "\n" +
+        "Loss: " + bot.stats.loss + "\n" +
+        "Win Rate: " + winRate + "%\n" +
+        "Speed: " + speed + " bets/s\n" +
+        "================================\n" +
+        "Uptime: " + timeStr + "\n" +
+        "Stop Target: " + bot.stopTargetPct + "%\n" +
+        "Minbet: " + bot.minbet + "\n" +
+        "Chance: " + bot.chance.toFixed(1) + "%\n" +
+        "================================\n" +
+        "Orion V5 Secretly";
         
         try {
             await fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`, {
-                method: "POST", headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ chat_id: CONFIG.tgChatId, text: txt, parse_mode: "Markdown", disable_web_page_preview: true })
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ 
+                    chat_id: CONFIG.tgChatId, 
+                    text: "```\n" + report + "\n```", 
+                    parse_mode: "Markdown",
+                    disable_web_page_preview: true
+                })
             });
-        } catch(e) {}
+        } catch (e) {}
     }
 
-    function loadConfig() {
-        if (configCache.minbet) bot.minbet = parseFloat(configCache.minbet.value) || 0.0015;
-        if (configCache.p1chance) bot.phase1.chance = parseFloat(configCache.p1chance.value) || 99.98;
-        if (configCache.p1div) bot.phase1.basebetDiv = parseFloat(configCache.p1div.value) || 650;
-        if (configCache.p1trigger) bot.phase1.triggerDrawdown = parseFloat(configCache.p1trigger.value) || 0.5;
-        if (configCache.p2min) bot.phase2.minPayout = parseFloat(configCache.p2min.value) || 1.30;
-        if (configCache.p2max) bot.phase2.maxPayout = parseFloat(configCache.p2max.value) || 1.50;
-        if (configCache.p2mult) bot.phase2.basebetMult = parseFloat(configCache.p2mult.value) || 0.001;
-        if (configCache.p2trigger) bot.phase2.triggerLoss = parseFloat(configCache.p2trigger.value) || 2;
-        if (configCache.p3min) bot.phase3.minChance = parseFloat(configCache.p3min.value) || 60;
-        if (configCache.p3max) bot.phase3.maxChance = parseFloat(configCache.p3max.value) || 77;
-        if (configCache.p3mult) bot.phase3.basebetMult = parseFloat(configCache.p3mult.value) || 0.0015;
-        if (configCache.p3reset) bot.phase3.lossReset = parseFloat(configCache.p3reset.value) || 55;
+    // ========== BENTO GRID HUD ==========
+    function createGlassHUD() {
+        if (document.getElementById("ORION_GLASS_HUD")) return;
+
+        const style = document.createElement("style");
+        style.innerHTML = `
+            * { box-sizing: border-box; }
+            .orion-settings-panel { max-height: 0; overflow: hidden; transition: max-height 0.3s ease; }
+            .orion-settings-panel.open { max-height: 520px; overflow-y: auto; }
+            .orion-input-group { margin-bottom: 8px; }
+            .orion-input-group label { font-size: 9px; display: block; color: #FCA5A5; margin-bottom: 2px; }
+            .orion-input-group input, .orion-input-group select { width: 100%; background: #1a0a0a; border: 1px solid #7f1a1a; color: #FECACA; padding: 5px 7px; border-radius: 6px; font-size: 10px; }
+            .orion-input-group input:focus { outline: none; border-color: #ef4444; }
+            .orion-section-title { font-size: 9px; font-weight: 600; margin: 10px 0 6px 0; padding-bottom: 3px; border-bottom: 1px solid #7f1a1a; color: #ef4444; }
+            .orion-drag-handle { cursor: move; user-select: none; }
+            .orion-minimize-btn { cursor: pointer; background: rgba(239,68,68,0.2); border: 1px solid rgba(239,68,68,0.3); border-radius: 6px; padding: 3px 7px; font-size: 10px; color: #ef4444; margin-right: 5px; }
+            .orion-minimize-btn:hover { background: rgba(239,68,68,0.4); }
+            .orion-content-wrapper.minimized { display: none; }
+            #orion-start-btn { background: linear-gradient(135deg, #dc2626, #991b1b); color: white; border: none; cursor: pointer; }
+            #orion-start-btn:hover { background: linear-gradient(135deg, #ef4444, #b91c1c); }
+            #orion-stop-btn { background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); color: #fca5a5; cursor: pointer; }
+            #orion-stop-btn:hover { background: rgba(239,68,68,0.3); }
+            
+            /* BENTO GRID STYLES */
+            .bento-grid {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 8px;
+                margin-bottom: 12px;
+            }
+            .bento-card {
+                background: rgba(30,10,10,0.6);
+                border-radius: 12px;
+                padding: 8px 10px;
+                border: 1px solid #7f1a1a;
+                transition: all 0.2s ease;
+            }
+            .bento-card:hover {
+                border-color: #ef4444;
+                background: rgba(40,15,15,0.7);
+            }
+            .bento-label {
+                font-size: 8px;
+                color: #FCA5A5;
+                letter-spacing: 0.5px;
+                margin-bottom: 4px;
+            }
+            .bento-value {
+                font-size: 13px;
+                font-weight: 700;
+                color: #FECACA;
+                font-family: monospace;
+            }
+            .bento-value.positive {
+                color: #4ADE80;
+            }
+            .bento-value.negative {
+                color: #F87171;
+            }
+            .bento-progress {
+                margin-top: 4px;
+                height: 3px;
+                background: #3a0a0a;
+                border-radius: 3px;
+                overflow: hidden;
+            }
+            .bento-progress-fill {
+                height: 100%;
+                border-radius: 3px;
+                transition: width 0.2s ease;
+            }
+            .full-width {
+                grid-column: span 2;
+            }
+        `;
+        document.head.appendChild(style);
+
+        const hud = document.createElement("div");
+        hud.id = "ORION_GLASS_HUD";
+        hud.style.cssText = `position:fixed;bottom:16px;right:16px;width:340px;max-height:95vh;background:rgba(20,8,8,0.96);backdrop-filter:blur(16px);border-radius:24px;border:1px solid rgba(239,68,68,0.4);z-index:999999;font-size:11px;display:flex;flex-direction:column;box-shadow:0 0 25px rgba(239,68,68,0.15);`;
         
-        if (bot.isRunning) {
-            let slpct = configCache.stoploss ? parseFloat(configCache.stoploss.value) || 30 : 30;
-            let tx = configCache.targetX ? parseFloat(configCache.targetX.value) || 5 : 5;
-            bot.stoploss = bot.startBalance * (slpct / 100);
-            bot.wagtarget = bot.startBalance * tx;
-            if (bot.phase === 1) resetToPhase1();
+        hud.innerHTML = `
+            <div style="padding:14px 14px 8px 14px;flex-shrink:0;">
+                <div class="orion-drag-handle" style="display:flex;justify-content:space-between;align-items:center;">
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <div id="orion-status-dot" style="width:8px;height:8px;border-radius:50%;background:#EF4444;box-shadow:0 0 6px #ef4444;"></div>
+                        <span style="font-weight:800;font-size:14px;background:linear-gradient(135deg,#ef4444,#f97316);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">ORION V5</span>
+                    </div>
+                    <div>
+                        <button id="orion-minimize-btn" class="orion-minimize-btn">−</button>
+                        <button id="orion-settings-toggle" style="background:rgba(239,68,68,0.2);border:1px solid rgba(239,68,68,0.3);border-radius:8px;padding:4px 10px;font-size:10px;cursor:pointer;color:#ef4444;">⚙️</button>
+                    </div>
+                </div>
+            </div>
+            
+            <div id="orion-content-wrapper" style="overflow-y:auto;padding:0 14px 14px 14px;">
+                <!-- BENTO GRID STATS -->
+                <div class="bento-grid">
+                    <div class="bento-card">
+                        <div class="bento-label">BALANCE</div>
+                        <div class="bento-value" id="orion-balance">0.0000</div>
+                    </div>
+                    <div class="bento-card">
+                        <div class="bento-label">PROFIT</div>
+                        <div class="bento-value" id="orion-profit">0.0000</div>
+                    </div>
+                    <div class="bento-card">
+                        <div class="bento-label">WAGERED</div>
+                        <div class="bento-value" id="orion-wagered">0.0000</div>
+                    </div>
+                    <div class="bento-card">
+                        <div class="bento-label">BETS</div>
+                        <div class="bento-value" id="orion-bets">0</div>
+                    </div>
+                    <div class="bento-card">
+                        <div class="bento-label">WINS</div>
+                        <div class="bento-value" id="orion-wins">0</div>
+                    </div>
+                    <div class="bento-card">
+                        <div class="bento-label">LOSS</div>
+                        <div class="bento-value" id="orion-loss">0</div>
+                    </div>
+                </div>
+                
+                <!-- PROGRESS BARS -->
+                <div class="bento-card full-width" style="margin-bottom:8px;">
+                    <div class="bento-label">DRAWDOWN</div>
+                    <div class="bento-value" id="orion-drawdown" style="font-size:11px;">0%</div>
+                    <div class="bento-progress">
+                        <div id="orion-drawdown-bar" class="bento-progress-fill" style="width:0%;background:linear-gradient(90deg,#ef4444,#dc2626);"></div>
+                    </div>
+                </div>
+                
+                <div class="bento-card full-width" style="margin-bottom:12px;">
+                    <div class="bento-label">STOP TARGET</div>
+                    <div class="bento-value" id="orion-stop-target" style="font-size:11px;">0%</div>
+                    <div class="bento-progress">
+                        <div id="orion-stop-bar" class="bento-progress-fill" style="width:0%;background:linear-gradient(90deg,#f97316,#ea580c);"></div>
+                    </div>
+                </div>
+                
+                <!-- MODE INDICATOR -->
+                <div style="text-align:center;margin-bottom:10px;">
+                    <span id="orion-mode" style="background:rgba(239,68,68,0.15);border-radius:20px;padding:3px 12px;font-size:9px;color:#ef4444;">PROFIT MODE</span>
+                </div>
+                
+                <!-- SETTINGS PANEL -->
+                <div id="orion-settings-panel" class="orion-settings-panel">
+                    <div style="border-top:1px solid #7f1a1a;margin:6px 0;"></div>
+                    
+                    <div class="orion-section-title">🎯 STOP TARGET</div>
+                    <div class="orion-input-group">
+                        <label>STOP TARGET (%)</label>
+                        <input type="number" id="param-stop-target" step="0.1" value="10.1">
+                        <div style="font-size:7px;color:#7f1a1a;">Berhenti jika profit mencapai persentase ini dari balance awal</div>
+                    </div>
+                    
+                    <div class="orion-section-title">⚙️ STRATEGY</div>
+                    <div class="orion-input-group"><label>MINBET</label><input type="number" id="param-minbet" step="0.0001" value="0.0001"></div>
+                    <div class="orion-input-group"><label>CH WAGER (%)</label><input type="number" id="param-chwager" step="1" value="98"></div>
+                    <div class="orion-input-group"><label>CH PROFIT (%)</label><input type="number" id="param-chprofit" step="1" value="40"></div>
+                    <div class="orion-input-group"><label>DV WAGER</label><input type="number" id="param-dvwager" step="10" value="300"></div>
+                    
+                    <div class="orion-section-title">🔧 TRIGGER MULTIPLIERS</div>
+                    <div class="orion-input-group"><label>BBPROFIT MULTIPLIER</label><input type="number" id="param-bbprofit" step="0.000001" value="0.000003"><div style="font-size:7px;color:#7f1a1a;">bbprofit = balance × multiplier</div></div>
+                    <div class="orion-input-group"><label>PFPUMP MULTIPLIER</label><input type="number" id="param-pfpump" step="0.0001" value="0.0015"><div style="font-size:7px;color:#7f1a1a;">pfpump = balance × multiplier</div></div>
+                    <div class="orion-input-group"><label>PFDUMP MULTIPLIER</label><input type="number" id="param-pfdump" step="0.0001" value="0.001"><div style="font-size:7px;color:#7f1a1a;">pfdump = balance × multiplier</div></div>
+                    
+                    <div class="orion-input-group"><label>CURRENCY</label><select id="orion-currency"></select></div>
+                    <div style="border-top:1px solid #7f1a1a;margin:8px 0;"></div>
+                </div>
+                
+                <!-- BUTTONS -->
+                <div style="display:flex;gap:10px;margin-bottom:10px;">
+                    <button id="orion-start-btn" style="flex:1;padding:10px;border:none;border-radius:30px;font-weight:700;font-size:12px;">▶ START</button>
+                    <button id="orion-stop-btn" style="flex:1;padding:10px;border:none;border-radius:30px;font-weight:700;font-size:12px;">⏹ STOP</button>
+                </div>
+                
+                <!-- CONSOLE LOG -->
+                <div id="orion-console-log" style="padding:8px;background:rgba(0,0,0,0.6);border-radius:12px;font-size:7px;font-family:monospace;color:#f87171;max-height:70px;overflow-y:auto;border:1px solid #7f1a1a;"></div>
+            </div>
+        `;
+        document.body.appendChild(hud);
+        
+        // Minimize
+        const minimizeBtn = document.getElementById("orion-minimize-btn");
+        const contentWrapper = document.getElementById("orion-content-wrapper");
+        minimizeBtn.onclick = () => {
+            bot.isMinimized = !bot.isMinimized;
+            if (bot.isMinimized) {
+                contentWrapper.style.display = "none";
+                minimizeBtn.innerHTML = "+";
+                document.getElementById("ORION_GLASS_HUD").style.width = "auto";
+                document.getElementById("ORION_GLASS_HUD").style.minWidth = "100px";
+            } else {
+                contentWrapper.style.display = "block";
+                minimizeBtn.innerHTML = "−";
+                document.getElementById("ORION_GLASS_HUD").style.width = "340px";
+                document.getElementById("ORION_GLASS_HUD").style.minWidth = "";
+            }
+        };
+        
+        // Draggable
+        let isDragging = false, startX, startY, startLeft, startTop;
+        const dragHandle = hud.querySelector('.orion-drag-handle');
+        const savedLeft = localStorage.getItem('orion_hud_left');
+        const savedTop = localStorage.getItem('orion_hud_top');
+        if (savedLeft && savedTop) {
+            hud.style.left = savedLeft + 'px';
+            hud.style.right = 'auto';
+            hud.style.bottom = 'auto';
+            hud.style.top = savedTop + 'px';
+        }
+        dragHandle.addEventListener('mousedown', (e) => {
+            if (e.target.tagName === 'BUTTON' || e.target.closest('button')) return;
+            isDragging = true;
+            startX = e.clientX;
+            startY = e.clientY;
+            const rect = hud.getBoundingClientRect();
+            startLeft = rect.left;
+            startTop = rect.top;
+            hud.style.cursor = 'grabbing';
+            e.preventDefault();
+        });
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            let newLeft = startLeft + (e.clientX - startX);
+            let newTop = startTop + (e.clientY - startY);
+            newLeft = Math.max(0, Math.min(newLeft, window.innerWidth - hud.offsetWidth));
+            newTop = Math.max(0, Math.min(newTop, window.innerHeight - hud.offsetHeight));
+            hud.style.left = newLeft + 'px';
+            hud.style.top = newTop + 'px';
+            hud.style.right = 'auto';
+            hud.style.bottom = 'auto';
+        });
+        document.addEventListener('mouseup', () => {
+            if (isDragging) {
+                isDragging = false;
+                hud.style.cursor = '';
+                const left = parseInt(hud.style.left);
+                const top = parseInt(hud.style.top);
+                if (!isNaN(left) && !isNaN(top)) {
+                    localStorage.setItem('orion_hud_left', left);
+                    localStorage.setItem('orion_hud_top', top);
+                }
+            }
+        });
+        
+        document.getElementById("orion-settings-toggle").onclick = () => {
+            const panel = document.getElementById("orion-settings-panel");
+            panel.classList.toggle("open");
+        };
+        
+        setTimeout(() => {
+            API.syncOnce();
+        }, 100);
+    }
+
+    function updateGlassHUD() {
+        const balance = getCurrentBalance();
+        const startBal = bot.stats.startBal;
+        const profit = balance - startBal;
+        const drawdownPct = bot.balhigh > 0 ? ((bot.balhigh - balance) / bot.balhigh) * 100 : 0;
+        
+        const stopTargetAmount = startBal * (1 + bot.stopTargetPct / 100);
+        const stopProgress = ((balance - startBal) / (stopTargetAmount - startBal)) * 100;
+        
+        const el = (id) => document.getElementById(id);
+        if (el("orion-balance")) el("orion-balance").innerText = balance.toFixed(8);
+        if (el("orion-profit")) {
+            el("orion-profit").innerText = (profit >= 0 ? "+" : "") + profit.toFixed(8);
+            el("orion-profit").className = "bento-value " + (profit >= 0 ? "positive" : "negative");
+        }
+        if (el("orion-wagered")) el("orion-wagered").innerText = bot.stats.wagered.toFixed(8);
+        if (el("orion-bets")) el("orion-bets").innerText = bot.stats.bets;
+        if (el("orion-wins")) el("orion-wins").innerText = bot.stats.wins;
+        if (el("orion-loss")) el("orion-loss").innerText = bot.stats.loss;
+        if (el("orion-mode")) el("orion-mode").innerText = bot.onprofit ? "PROFIT MODE" : "WAGER MODE";
+        if (el("orion-drawdown")) el("orion-drawdown").innerText = drawdownPct.toFixed(2) + "%";
+        if (el("orion-drawdown-bar")) el("orion-drawdown-bar").style.width = Math.min(100, drawdownPct) + "%";
+        if (el("orion-stop-target")) el("orion-stop-target").innerText = bot.stopTargetPct + "%";
+        if (el("orion-stop-bar")) el("orion-stop-bar").style.width = Math.min(100, Math.max(0, stopProgress)) + "%";
+        
+        const statusDot = document.getElementById("orion-status-dot");
+        if (statusDot) {
+            statusDot.style.background = bot.isRunning ? "#4ADE80" : "#EF4444";
+            statusDot.style.boxShadow = bot.isRunning ? "0 0 8px #4ADE80" : "0 0 6px #ef4444";
+        }
+    }
+    
+    function updateHUDStatus(isRunning) {
+        const statusDot = document.getElementById("orion-status-dot");
+        if (statusDot) {
+            statusDot.style.background = isRunning ? "#4ADE80" : "#EF4444";
+            statusDot.style.boxShadow = isRunning ? "0 0 8px #4ADE80" : "0 0 6px #ef4444";
         }
     }
 
-    function startBot() {
-        if (bot.isRunning) return;
-        loadConfig();
-        bot.startBalance = bot.stats.startBal;
-        bot.balhigh = bot.stats.startBal;
-        bot.stoploss = bot.stats.startBal * ((configCache.stoploss ? parseFloat(configCache.stoploss.value) : 30) / 100);
-        bot.wagtarget = bot.stats.startBal * ((configCache.targetX ? parseFloat(configCache.targetX.value) : 5));
-        bot.stime = Date.now() / 1000;
-        bot.wager = 0;
-        bot.betCount = 0;
-        bot.betsPerSec = 0;
-        bot.lastSecCalc = Date.now();
-        bot.lastWin = false;
-        bot.highestBet = 0;
-        bot.currentDrawdown = 0;
-        bot.phase3Chance = bot.phase3.minChance;
-        bot.targetWagerReached = false;
-        bot.stats = { profit: 0, wagered: 0, startBal: bot.stats.startBal, bets: 0, wins: 0, loss: 0 };
-        bot.isRunning = true;
-        bot.startTime = new Date();
-        resetToPhase1();
-        setTimeout(() => sendTelegramReport("🚀 STARTED"), 1000);
-        if (reportInterval) clearInterval(reportInterval);
-        reportInterval = setInterval(() => { if (bot.isRunning) sendTelegramReport("📊 PERIODIC"); }, 180000);
-        updateUI();
-        runLoop();
-    }
-
-    function handleBetResponse(res) {
-        if (!res || res.errors) { bot.lastWin = false; return; }
-        let bet = res?.data?.diceRoll || res?.data?.diceBet || res?.data?.limboBet || res?.diceRoll || res?.diceBet || res?.limboBet;
-        if (bet && bot.isRunning) {
-            bot.stats.bets++;
-            let pft = bet.payout - bet.amount;
-            bot.stats.profit += pft;
-            bot.lastWin = pft > 0;
-            if (pft > 0) bot.stats.wins++;
-            else bot.stats.loss++;
-        }
-    }
-
+    // ========== MAIN BETTING LOGIC ==========
+    let isProcessing = false;
+    
     async function runLoop() {
-        if (!bot.isRunning) { loopRunning = false; return; }
-        if (loopRunning) return;
-        loopRunning = true;
+        if (!bot.isRunning || isProcessing) return;
+        isProcessing = true;
         
         try {
-            let now = Date.now();
-            if (now - bot.lastBetTime < bot.minDelayMs) {
-                await new Promise(r => setTimeout(r, bot.minDelayMs - (now - bot.lastBetTime)));
-            }
+            const balance = getCurrentBalance();
+            const previousbet = bot.nextbet;
+            const win = bot.lastWin;
             
-            let balance = getCurrentBalance();
-            let prevBet = bot.nextbet;
+            bot.currentstreak = win ? (bot.currentstreak > 0 ? bot.currentstreak + 1 : 1) : (bot.currentstreak < 0 ? bot.currentstreak - 1 : -1);
             
-            bot.wager += prevBet;
-            bot.stats.wagered += prevBet;
+            const currentprofit = win ? (previousbet * (100 / bot.chance) - previousbet) : -previousbet;
+            bot.pfreset = bot.pfreset + currentprofit;
             
-            if (prevBet > bot.highestBet) bot.highestBet = prevBet;
-            if (balance > bot.balhigh) bot.balhigh = balance;
-            bot.currentDrawdown = ((bot.balhigh - balance) / bot.balhigh) * 100;
-            
-            // Cek stop loss
-            if (balance <= bot.stoploss) { stopBot(); loopRunning = false; return; }
-            
-            // CEK TARGET WAGER - JIKA SUDAH TERCAPAI
-            if (!bot.targetWagerReached && bot.wager >= bot.wagtarget) {
-                bot.targetWagerReached = true;
-                sendTelegramReport("🎯 TARGET WAGER REACHED! Entering Recovery Mode");
+            if (bot.onprofit) {
+                bot.profitc = bot.profitc + currentprofit;
                 
-                // Jika masih di Phase 2 dan loss >= trigger, lanjut ke Phase 3 untuk recovery
-                if (bot.phase === 2) {
-                    let currentLossPct = ((bot.startBalance - balance) / bot.startBalance) * 100;
-                    if (currentLossPct >= bot.phase2.triggerLoss) {
-                        goToPhase3();
-                        loopRunning = false;
-                        setTimeout(() => runLoop(), 0);
-                        return;
+                if (win) {
+                    bot.nextbet = previousbet * 0.6;
+                    if (bot.profitc > 0) {
+                        bot.profitc = 0;
+                        bot.chance = (Math.floor(Math.random() * (200 - 110 + 1)) + 110) / 10;
+                        bot.nextbet = bot.bbprofit;
                     }
-                }
-                // Jika di Phase 1, tetap lanjut jalan sampai balance recover minimal trigger
-                updateUI();
-            }
-            
-            // JIKA SUDAH TARGET WAGER - MODE RECOVERY
-            if (bot.targetWagerReached) {
-                // Hanya jalanin Phase3 recovery, tidak ada reset ke Phase1
-                // Tujuan: recovery balance sampe trigger Phase1->Phase2 tercapai
-                
-                // Cek apakah sudah recover cukup untuk kembali ke Phase1
-                let currentDrawdownPct = ((bot.balhigh - balance) / bot.balhigh) * 100;
-                if (currentDrawdownPct < bot.phase1.triggerDrawdown && balance >= bot.startBalance * 0.99) {
-                    // Sudah recover! Reset flag target dan kembali ke Phase1
-                    bot.targetWagerReached = false;
-                    resetToPhase1();
-                    sendTelegramReport("✅ RECOVERY COMPLETE! Back to Phase 1");
-                    updateUI();
-                    loopRunning = false;
-                    setTimeout(() => runLoop(), 0);
-                    return;
-                }
-                
-                // Jalankan Phase3 recovery
-                let totalLoss = Math.abs(bot.startBalance - balance);
-                
-                if (bot.lastWin) {
-                    if (bot.phase3Chance > bot.phase3.minChance) {
-                        bot.phase3Chance = Math.max(bot.phase3.minChance, bot.phase3Chance - 0.5);
-                    }
-                    bot.chance = bot.phase3Chance;
-                    bot.nextbet = Math.max(bot.minbet, balance * bot.phase3.basebetMult);
                 } else {
-                    if (bot.phase3Chance < bot.phase3.maxChance) {
-                        bot.phase3Chance = Math.min(bot.phase3.maxChance, bot.phase3Chance + 0.1);
-                    }
-                    bot.chance = bot.phase3Chance;
-                    let profitPerBet = (99 / bot.chance) - 1;
-                    if (profitPerBet > 0) {
-                        bot.nextbet = Math.max(bot.minbet, (totalLoss / profitPerBet) * 0.65);
-                    } else {
-                        bot.nextbet = Math.max(bot.minbet, prevBet * 1.2);
+                    const streak = Math.abs(bot.currentstreak);
+                    const payout = 99 / bot.chance;
+                    bot.nextbet = previousbet * (1 + (bot.chance * 0.02));
+                    
+                    if (streak > Math.ceil(payout * 3)) {
+                        bot.nextbet = Math.abs(bot.profitc) / (payout - 1) * 1.02;
                     }
                 }
                 
-                // Cek loss reset - TIDAK RESET KE PHASE1, tetap di recovery
-                if (totalLoss >= bot.phase3.lossReset) {
-                    // Reset loss counter tapi tetap di Phase3 recovery
-                    // Hanya reset phase3Chance ke min
-                    bot.phase3Chance = bot.phase3.minChance;
-                    bot.chance = bot.phase3Chance;
-                    bot.nextbet = Math.max(bot.minbet, balance * bot.phase3.basebetMult);
-                    sendTelegramReport("⚠️ LOSS RESET TRIGGERED - Continuing Recovery");
+                if (bot.pfreset > bot.pfpump) {
+                    bot.pfreset = 0;
+                    bot.onprofit = false;
+                    bot.chance = bot.chwager;
+                    bot.nextbet = balance / bot.dvwager;
+                    updateConsoleLog("[SWITCH] PROFIT -> WAGER MODE");
                 }
+            } else {
+                bot.nextbet = balance / bot.dvwager;
                 
-                bot.playgame = "dice";
-                let payout = 100 / bot.chance;
-                bot.lastBetTime = Date.now();
-                let res = await API.placeBet(bot.nextbet, payout, "dice");
-                handleBetResponse(res);
-                updateBetSpeed();
-                updateUI();
-                
-                loopRunning = false;
-                if (bot.isRunning) setTimeout(() => runLoop(), 0);
+                if (bot.pfreset < -bot.pfdump) {
+                    bot.pfreset = 0;
+                    bot.onprofit = true;
+                    bot.chance = 33;
+                    bot.nextbet = bot.bbprofit;
+                    bot.profitc = 0;
+                    updateConsoleLog("[SWITCH] WAGER -> PROFIT MODE");
+                }
+            }
+            
+            bot.cprofit = bot.cprofit + currentprofit;
+            if (bot.cprofit >= 0) bot.cprofit = 0;
+            
+            bot.balhigh = Math.max(bot.balhigh, balance);
+            bot.baldrop = Math.min(bot.baldrop, bot.cprofit);
+            bot.nextbet = Math.max(bot.nextbet, bot.minbet);
+            
+            if (balance > bot.balstop) {
+                updateConsoleLog("[TARGET] Profit target " + bot.stopTargetPct + "% reached! Stopping...");
+                stopBot();
+                isProcessing = false;
                 return;
             }
             
-            // LOGIKA NORMAL (BELUM TARGET WAGER)
-            if (bot.phase === 1) {
-                bot.chance = bot.phase1.chance;
-                bot.nextbet = Math.max(bot.minbet, balance / bot.phase1.basebetDiv);
-                
-                if (bot.currentDrawdown >= bot.phase1.triggerDrawdown) {
-                    goToPhase2();
-                    loopRunning = false;
-                    setTimeout(() => runLoop(), 0);
-                    return;
-                }
-                
-                let payout = 100 / bot.chance;
-                bot.lastBetTime = Date.now();
-                let res = await API.placeBet(bot.nextbet, payout, "dice");
-                handleBetResponse(res);
-                updateBetSpeed();
-            }
-            else if (bot.phase === 2) {
-                let payout = parseFloat((Math.random() * (bot.phase2.maxPayout - bot.phase2.minPayout) + bot.phase2.minPayout).toFixed(2));
-                bot.nextbet = Math.max(bot.minbet, balance * bot.phase2.basebetMult);
-                let loss = ((bot.startBalance - balance) / bot.startBalance) * 100;
-                
-                if (loss >= bot.phase2.triggerLoss) {
-                    goToPhase3();
-                    loopRunning = false;
-                    setTimeout(() => runLoop(), 0);
-                    return;
-                }
-                if (balance >= bot.startBalance) {
-                    resetToPhase1();
-                    loopRunning = false;
-                    setTimeout(() => runLoop(), 0);
-                    return;
-                }
-                
-                bot.lastBetTime = Date.now();
-                let res = await API.placeBet(bot.nextbet, payout, "limbo");
-                handleBetResponse(res);
-                updateBetSpeed();
-            }
-            else if (bot.phase === 3) {
-                let totalLoss = Math.abs(bot.startBalance - balance);
-                
-                if (bot.lastWin) {
-                    if (balance >= bot.startBalance) {
-                        resetToPhase1();
-                        loopRunning = false;
-                        setTimeout(() => runLoop(), 0);
-                        return;
-                    } else {
-                        if (bot.phase3Chance > bot.phase3.minChance) {
-                            bot.phase3Chance = Math.max(bot.phase3.minChance, bot.phase3Chance - 0.5);
-                        }
-                        bot.chance = bot.phase3Chance;
-                        bot.nextbet = Math.max(bot.minbet, balance * bot.phase3.basebetMult);
-                    }
-                } else {
-                    if (bot.phase3Chance < bot.phase3.maxChance) {
-                        bot.phase3Chance = Math.min(bot.phase3.maxChance, bot.phase3Chance + 0.1);
-                    }
-                    bot.chance = bot.phase3Chance;
-                    let profitPerBet = (99 / bot.chance) - 1;
-                    if (profitPerBet > 0) {
-                        bot.nextbet = Math.max(bot.minbet, (totalLoss / profitPerBet) * 0.65);
-                    } else {
-                        bot.nextbet = Math.max(bot.minbet, prevBet * 1.2);
-                    }
-                }
-                
-                if (totalLoss >= bot.phase3.lossReset) {
-                    resetToPhase1();
-                    loopRunning = false;
-                    setTimeout(() => runLoop(), 0);
-                    return;
-                }
-                
-                let payout = 100 / bot.chance;
-                bot.lastBetTime = Date.now();
-                let res = await API.placeBet(bot.nextbet, payout, "dice");
-                handleBetResponse(res);
-                updateBetSpeed();
+            if (bot.stats.bets % 20 === 0 || !win) {
+                updateConsoleLog((win ? "[WIN]" : "[LOSS]") + " " + (bot.onprofit ? "PROFIT" : "WAGER") + " | Ch:" + bot.chance.toFixed(1) + "% | Bet:" + bot.nextbet.toFixed(8));
             }
             
-            loopRunning = false;
-            if (bot.isRunning) setTimeout(() => runLoop(), 0);
-        } catch(err) {
-            loopRunning = false;
-            if (bot.isRunning) setTimeout(() => runLoop(), 100);
+            const payout = 100 / bot.chance;
+            const result = await API.placeBet(bot.nextbet, payout);
+            
+            if (result.errors) {
+                updateConsoleLog("[ERROR] " + result.errors[0].message);
+                isProcessing = false;
+                if (bot.isRunning) setTimeout(runLoop, 500);
+                return;
+            }
+            
+            const bet = result?.data?.diceRoll || result?.diceBet;
+            if (bet && bot.isRunning) {
+                bot.stats.bets++;
+                bot.stats.wagered += bet.amount;
+                updateWageredUSD(bet.amount);
+                const pft = bet.payout - bet.amount;
+                bot.stats.profit += pft;
+                bot.lastWin = (pft > 0);
+                if (pft > 0) bot.stats.wins++; else bot.stats.loss++;
+                if (bot.stats.profit < bot.stats.maxDD) bot.stats.maxDD = bot.stats.profit;
+                updateGlassHUD();
+            }
+            
+            isProcessing = false;
+            if (bot.isRunning) runLoop();
+            
+        } catch (e) {
+            updateConsoleLog("[ERROR] " + e.message);
+            isProcessing = false;
+            if (bot.isRunning) setTimeout(runLoop, 500);
         }
     }
 
@@ -461,363 +556,121 @@
         async syncOnce() {
             bot.token = getAuthToken();
             try {
-                let res = await fetch(`${CONFIG.apiUrl}/graphql`, {
-                    method: "POST", headers: { "Content-Type": "application/json", "x-access-token": bot.token },
+                const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "x-access-token": bot.token },
                     body: JSON.stringify({ query: `query{user{name balances{available{amount currency}}}}` })
                 });
-                let json = await res.json();
+                const json = await res.json();
                 if (json?.data?.user) {
                     bot.stakeUser = json.data.user.name;
-                    let bals = json.data.user.balances || [];
-                    let sel = document.getElementById("orion-currency");
+                    const bals = json.data.user.balances || [];
+                    const sel = document.getElementById("orion-currency");
                     if (sel && sel.options.length === 0) {
                         bals.forEach(b => {
-                            let opt = document.createElement("option");
+                            const opt = document.createElement("option");
                             opt.value = b.available.currency;
                             opt.textContent = b.available.currency.toUpperCase();
-                            if (b.available.currency === "doge") opt.selected = true;
+                            if(b.available.currency === "doge") opt.selected = true;
                             sel.appendChild(opt);
                         });
-                        bot.selectedCurrency = sel.value || "doge";
                     }
-                    let active = bals.find(b => b.available.currency === bot.selectedCurrency);
+                    if (sel) bot.selectedCurrency = sel.value;
+                    const active = bals.find(b => b.available.currency === bot.selectedCurrency);
                     bot.stats.startBal = active ? parseFloat(active.available.amount) : 0;
-                    bot.startBalance = bot.stats.startBal;
-                    bot.balhigh = bot.startBalance;
-                    updateUI();
                 }
-            } catch(e) {}
+            } catch (e) { 
+                updateConsoleLog("[SYNC] Failed");
+            }
         },
-        async placeBet(amount, payout, game) {
-            let endpoint = game === "dice" ? `${CONFIG.apiUrl}/casino/dice/roll` : `${CONFIG.apiUrl}/casino/limbo/bet`;
-            let payload = { amount: parseFloat(amount), currency: bot.selectedCurrency, identifier: Date.now().toString(36) };
-            if (game === "dice") { payload.target = 100 - (100 / payout); payload.condition = "above"; }
-            else { payload.multiplierTarget = parseFloat(payout); }
-            return fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", "x-access-token": bot.token }, body: JSON.stringify(payload) }).then(r => r.json());
+        async placeBet(amount, payout) {
+            const payload = { 
+                amount: parseFloat(amount), 
+                currency: bot.selectedCurrency, 
+                identifier: Date.now().toString(36) + Math.random().toString(36).slice(2),
+                target: 100 - (100 / payout),
+                condition: "above"
+            };
+            const res = await fetch(`${CONFIG.apiUrl}/casino/dice/roll`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "x-access-token": bot.token },
+                body: JSON.stringify(payload)
+            });
+            return res.json();
         }
     };
 
-    function buildUI() {
-        if (document.getElementById("ORION_HUD")) return;
-        
-        let c = document.createElement("div");
-        c.id = "ORION_HUD";
-        c.style.cssText = `
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            z-index: 999999;
-            width: 380px;
-            background: linear-gradient(135deg, rgba(18, 22, 35, 0.98) 0%, rgba(12, 15, 25, 0.98) 100%);
-            backdrop-filter: blur(12px);
-            border-radius: 16px;
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            font-size: 11px;
-            border: 1px solid rgba(0, 255, 136, 0.15);
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 20px rgba(0, 255, 136, 0.05);
-            overflow: hidden;
-        `;
-        
-        // Header
-        let h = document.createElement("div");
-        h.style.cssText = `
-            background: linear-gradient(135deg, rgba(0, 255, 136, 0.12) 0%, rgba(0, 255, 136, 0.05) 100%);
-            padding: 12px 16px;
-            border-bottom: 1px solid rgba(0, 255, 136, 0.1);
-            cursor: move;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        `;
-        h.innerHTML = `
-            <div>
-                <div style="display: flex; align-items: center; gap: 8px;">
-                    <div style="width: 8px; height: 8px; background: #00ff88; border-radius: 50%; box-shadow: 0 0 8px #00ff88;"></div>
-                    <span style="color: #00ff88; font-weight: 700; font-size: 13px; letter-spacing: 0.5px;">DC WAGER BOOSTER</span>
-                </div>
-                <div style="font-size: 8px; color: #6c7293; margin-top: 6px; letter-spacing: 0.3px;">by orionlogic • v2.0</div>
-            </div>
-            <span id="ORION_BADGE" style="background: rgba(246, 71, 87, 0.15); color: #ff4757; padding: 4px 10px; border-radius: 20px; font-size: 9px; font-weight: 600; letter-spacing: 0.5px; border: 1px solid rgba(255, 71, 87, 0.2);">○ STOPPED</span>
-        `;
-        c.appendChild(h);
-        
-        // Tab Bar
-        let tabBar = document.createElement("div");
-        tabBar.style.cssText = "display: flex; border-bottom: 1px solid rgba(0, 255, 136, 0.1); background: rgba(0, 0, 0, 0.2);";
-        tabBar.innerHTML = `
-            <div id="TAB_DASH" class="orion-tab" style="flex: 1; text-align: center; padding: 10px 0; cursor: pointer; color: #00ff88; font-weight: 600; font-size: 10px; border-bottom: 2px solid #00ff88; transition: all 0.2s;">📊 DASHBOARD</div>
-            <div id="TAB_CONF" class="orion-tab" style="flex: 1; text-align: center; padding: 10px 0; cursor: pointer; color: #6c7293; font-weight: 600; font-size: 10px; border-bottom: 2px solid transparent; transition: all 0.2s;">⚙ CONFIGURATION</div>
-        `;
-        c.appendChild(tabBar);
-        
-        // Dashboard Panel
-        let dashboard = document.createElement("div");
-        dashboard.id = "PANEL_DASH";
-        dashboard.style.cssText = "padding: 16px;";
-        
-        // Top Row
-        let topRow = document.createElement("div");
-        topRow.style.cssText = "display: flex; gap: 12px; margin-bottom: 16px;";
-        topRow.innerHTML = `
-            <div style="flex: 1; background: rgba(0, 0, 0, 0.3); border-radius: 10px; padding: 8px;">
-                <div style="color: #6c7293; font-size: 9px; margin-bottom: 4px;">CURRENCY</div>
-                <select id="orion-currency" style="width: 100%; background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(0, 255, 136, 0.2); color: #00ff88; border-radius: 6px; font-size: 11px; padding: 5px 8px; font-weight: 600;"></select>
-            </div>
-            <div style="flex: 1; background: rgba(0, 0, 0, 0.3); border-radius: 10px; padding: 8px;">
-                <div style="color: #6c7293; font-size: 9px; margin-bottom: 4px;">UPTIME</div>
-                <div id="ORION_UPTIME" style="color: #ffd93d; font-family: 'Courier New', monospace; font-size: 13px; font-weight: 700;">00:00:00</div>
-            </div>
-        `;
-        dashboard.appendChild(topRow);
-        
-        // Stats Grid
-        let stats = document.createElement("div");
-        stats.style.cssText = "display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;";
-        stats.innerHTML = `
-            <div style="background: rgba(0, 0, 0, 0.3); border-radius: 10px; padding: 8px;">
-                <div style="color: #6c7293; font-size: 9px; margin-bottom: 4px;">💰 BALANCE</div>
-                <div id="HUD_BAL" style="color: #ffffff; font-size: 14px; font-weight: 700;">0.0000</div>
-            </div>
-            <div style="background: rgba(0, 0, 0, 0.3); border-radius: 10px; padding: 8px;">
-                <div style="color: #6c7293; font-size: 9px; margin-bottom: 4px;">📈 PROFIT</div>
-                <div id="HUD_PL" style="color: #00ff88; font-size: 14px; font-weight: 700;">0.0000</div>
-            </div>
-            <div style="background: rgba(0, 0, 0, 0.3); border-radius: 10px; padding: 8px;">
-                <div style="color: #6c7293; font-size: 9px; margin-bottom: 4px;">📉 DRAWDOWN</div>
-                <div id="HUD_DD" style="color: #ff4757; font-size: 14px; font-weight: 700;">0%</div>
-            </div>
-            <div style="background: rgba(0, 0, 0, 0.3); border-radius: 10px; padding: 8px;">
-                <div style="color: #6c7293; font-size: 9px; margin-bottom: 4px;">💵 MAX BET</div>
-                <div id="HUD_MAX" style="color: #ffd93d; font-size: 13px; font-weight: 600;">0.000000</div>
-            </div>
-            <div style="background: rgba(0, 0, 0, 0.3); border-radius: 10px; padding: 8px;">
-                <div style="color: #6c7293; font-size: 9px; margin-bottom: 4px;">🎲 PHASE</div>
-                <div id="HUD_PH" style="color: #00ff88; font-size: 18px; font-weight: 700;">1</div>
-            </div>
-            <div style="background: rgba(0, 0, 0, 0.3); border-radius: 10px; padding: 8px;">
-                <div style="color: #6c7293; font-size: 9px; margin-bottom: 4px;">⚡ SPEED</div>
-                <div><span id="HUD_SPD" style="color: #ffd93d; font-size: 16px; font-weight: 700;">0</span> <span style="color: #6c7293; font-size: 9px;">bet/s</span></div>
-            </div>
-            <div style="background: rgba(0, 0, 0, 0.3); border-radius: 10px; padding: 8px;">
-                <div style="color: #6c7293; font-size: 9px; margin-bottom: 4px;">📊 TOTAL BETS</div>
-                <div id="HUD_BTS" style="color: #ffffff; font-size: 14px; font-weight: 700;">0</div>
-            </div>
-            <div style="background: rgba(0, 0, 0, 0.3); border-radius: 10px; padding: 8px;">
-                <div style="color: #6c7293; font-size: 9px; margin-bottom: 4px;">⏰ ETA</div>
-                <div id="HUD_ETA" style="color: #00ff88; font-size: 11px; font-weight: 600;">Calculating...</div>
-            </div>
-        `;
-        dashboard.appendChild(stats);
-        
-        // Progress Wager
-        let prog = document.createElement("div");
-        prog.style.cssText = "background: rgba(0, 0, 0, 0.3); border-radius: 10px; padding: 10px; margin-bottom: 16px;";
-        prog.innerHTML = `
-            <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
-                <span style="color: #6c7293; font-size: 9px; font-weight: 600;">🎯 WAGER PROGRESS</span>
-                <span id="WAGER_PCT" style="color: #ffd93d; font-size: 10px; font-weight: 700;">0%</span>
-            </div>
-            <div style="background: rgba(0, 0, 0, 0.5); border-radius: 6px; height: 6px; overflow: hidden;">
-                <div id="WAGER_FILL" style="width: 0%; height: 100%; background: linear-gradient(90deg, #00ff88, #ffd93d); border-radius: 6px;"></div>
-            </div>
-            <div style="display: flex; justify-content: space-between; margin-top: 6px;">
-                <span id="WAGER_CUR" style="color: #ffffff; font-size: 9px; font-weight: 600;">0</span>
-                <span id="WAGER_TAR" style="color: #6c7293; font-size: 9px;">0</span>
-            </div>
-        `;
-        dashboard.appendChild(prog);
-        
-        // Buttons
-        let btns = document.createElement("div");
-        btns.style.cssText = "display: flex; gap: 8px;";
-        btns.innerHTML = `
-            <button id="BTN_START" style="flex: 1; background: linear-gradient(135deg, #00ff88, #00cc6a); border: none; border-radius: 8px; padding: 8px; color: #0a0e1a; font-weight: 700; font-size: 11px; cursor: pointer; transition: transform 0.1s;">▶ START</button>
-            <button id="BTN_STOP" style="flex: 1; background: rgba(255, 71, 87, 0.15); border: 1px solid rgba(255, 71, 87, 0.3); border-radius: 8px; padding: 8px; color: #ff4757; font-weight: 700; font-size: 11px; cursor: pointer;">■ STOP</button>
-            <button id="BTN_REPORT" style="flex: 1; background: rgba(255, 217, 61, 0.15); border: 1px solid rgba(255, 217, 61, 0.3); border-radius: 8px; padding: 8px; color: #ffd93d; font-weight: 700; font-size: 11px; cursor: pointer;">📋 REPORT</button>
-        `;
-        dashboard.appendChild(btns);
-        
-        // Config Panel
-        let configPanel = document.createElement("div");
-        configPanel.id = "PANEL_CONF";
-        configPanel.style.cssText = "display: none; padding: 16px; max-height: 400px; overflow-y: auto;";
-        
-        let cfgContent = document.createElement("div");
-        cfgContent.style.cssText = "background: rgba(0, 0, 0, 0.3); border-radius: 10px; padding: 12px;";
-        cfgContent.innerHTML = '<div style="font-size: 11px; font-weight: 700; color: #00ff88; margin-bottom: 12px;">⚙️ SYSTEM CONFIGURATION</div>';
-        
-        let cfgItems = [
-            ["💰 Min Bet", "CFG_MINBET", "0.0015"],
-            ["--- PHASE 1 ---", "", ""],
-            ["🎲 P1 Chance %", "CFG_P1_CH", "99.98"],
-            ["📊 P1 Basebet Div", "CFG_P1_DIV", "650"],
-            ["⚠️ P1 Trigger %", "CFG_P1_TRIG", "0.5"],
-            ["--- PHASE 2 ---", "", ""],
-            ["🎯 P2 Min Payout", "CFG_P2_MIN", "1.30"],
-            ["🎯 P2 Max Payout", "CFG_P2_MAX", "1.50"],
-            ["📈 P2 Basebet Mult", "CFG_P2_MULT", "0.001"],
-            ["⚠️ P2 Trigger Loss %", "CFG_P2_TRIG", "2"],
-            ["--- PHASE 3 ---", "", ""],
-            ["🎲 P3 Min Chance %", "CFG_P3_MIN", "60"],
-            ["🎲 P3 Max Chance %", "CFG_P3_MAX", "77"],
-            ["📈 P3 Basebet Mult", "CFG_P3_MULT", "0.0015"],
-            ["🔄 P3 Loss Reset %", "CFG_P3_RESET", "55"],
-            ["--- TARGET ---", "", ""],
-            ["🛑 Stop Loss %", "CFG_SL", "30"],
-            ["🎯 Target X (Wager)", "CFG_TX", "5"]
-        ];
-        
-        cfgItems.forEach(i => {
-            if (i[0].startsWith("---")) {
-                let divider = document.createElement("div");
-                divider.style.cssText = "border-top: 1px solid rgba(0, 255, 136, 0.2); margin: 10px 0 8px 0; text-align: center;";
-                let label = document.createElement("div");
-                label.style.cssText = "font-size: 8px; color: #00ff88; margin-top: -10px; background: rgba(0, 0, 0, 0.8); display: inline-block; padding: 0 8px; width: fit-content; margin-left: auto; margin-right: auto;";
-                label.innerText = i[0].replace(/---/g, "").trim();
-                divider.appendChild(label);
-                cfgContent.appendChild(divider);
-                return;
-            }
-            
-            let row = document.createElement("div");
-            row.style.cssText = "display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;";
-            row.innerHTML = `
-                <span style="font-size: 9px; color: #6c7293; font-weight: 500;">${i[0]}</span>
-                <input id="${i[1]}" type="number" value="${i[2]}" step="any" style="width: 100px; background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(0, 255, 136, 0.2); color: #00ff88; border-radius: 5px; font-size: 9px; padding: 6px 10px; text-align: right; font-weight: 600;">
-            `;
-            cfgContent.appendChild(row);
-        });
-        
-        let saveBtn = document.createElement("button");
-        saveBtn.innerText = "💾 SAVE CONFIGURATION";
-        saveBtn.style.cssText = "width: 100%; margin-top: 15px; padding: 8px; background: linear-gradient(135deg, #00ff88, #00cc6a); border: none; border-radius: 6px; color: #0a0e1a; font-size: 10px; font-weight: 700; cursor: pointer; transition: transform 0.1s;";
-        saveBtn.onmouseenter = () => { saveBtn.style.transform = 'translateY(-1px)'; };
-        saveBtn.onmouseleave = () => { saveBtn.style.transform = 'translateY(0)'; };
-        saveBtn.onclick = () => { loadConfig(); alert('✅ Configuration saved!'); };
-        cfgContent.appendChild(saveBtn);
-        
-        configPanel.appendChild(cfgContent);
-        
-        c.appendChild(dashboard);
-        c.appendChild(configPanel);
-        document.body.appendChild(c);
-        
-        // Tab switching
-        let tabDash = document.getElementById("TAB_DASH");
-        let tabConf = document.getElementById("TAB_CONF");
-        let panelDash = document.getElementById("PANEL_DASH");
-        let panelConf = document.getElementById("PANEL_CONF");
-        
-        tabDash.onclick = () => {
-            panelDash.style.display = "block";
-            panelConf.style.display = "none";
-            tabDash.style.color = "#00ff88";
-            tabDash.style.borderBottom = "2px solid #00ff88";
-            tabConf.style.color = "#6c7293";
-            tabConf.style.borderBottom = "2px solid transparent";
-        };
-        
-        tabConf.onclick = () => {
-            panelDash.style.display = "none";
-            panelConf.style.display = "block";
-            tabConf.style.color = "#00ff88";
-            tabConf.style.borderBottom = "2px solid #00ff88";
-            tabDash.style.color = "#6c7293";
-            tabDash.style.borderBottom = "2px solid transparent";
-        };
-        
-        // Cache DOM
-        dom = {
-            badge: document.getElementById("ORION_BADGE"),
-            uptime: document.getElementById("ORION_UPTIME"),
-            balance: document.getElementById("HUD_BAL"),
-            profit: document.getElementById("HUD_PL"),
-            drawdown: document.getElementById("HUD_DD"),
-            maxbet: document.getElementById("HUD_MAX"),
-            phase: document.getElementById("HUD_PH"),
-            speed: document.getElementById("HUD_SPD"),
-            bets: document.getElementById("HUD_BTS"),
-            eta: document.getElementById("HUD_ETA"),
-            fill: document.getElementById("WAGER_FILL"),
-            progText: document.getElementById("WAGER_PCT"),
-            wagerCur: document.getElementById("WAGER_CUR"),
-            wagerTar: document.getElementById("WAGER_TAR")
-        };
-        
-        // Config cache
-        configCache = {
-            minbet: document.getElementById("CFG_MINBET"),
-            p1chance: document.getElementById("CFG_P1_CH"),
-            p1div: document.getElementById("CFG_P1_DIV"),
-            p1trigger: document.getElementById("CFG_P1_TRIG"),
-            p2min: document.getElementById("CFG_P2_MIN"),
-            p2max: document.getElementById("CFG_P2_MAX"),
-            p2mult: document.getElementById("CFG_P2_MULT"),
-            p2trigger: document.getElementById("CFG_P2_TRIG"),
-            p3min: document.getElementById("CFG_P3_MIN"),
-            p3max: document.getElementById("CFG_P3_MAX"),
-            p3mult: document.getElementById("CFG_P3_MULT"),
-            p3reset: document.getElementById("CFG_P3_RESET"),
-            stoploss: document.getElementById("CFG_SL"),
-            targetX: document.getElementById("CFG_TX")
-        };
-        
-        // Events
-        document.getElementById("BTN_START").onclick = startBot;
-        document.getElementById("BTN_STOP").onclick = () => { if (bot.isRunning) stopBot(); };
-        document.getElementById("BTN_REPORT").onclick = () => { sendTelegramReport("📊 MANUAL"); };
-        
-        document.getElementById("orion-currency").onchange = (e) => {
-            bot.selectedCurrency = e.target.value;
-            API.syncOnce();
-        };
-        
-        // Button hover effects
-        const btnsList = ['BTN_START', 'BTN_STOP', 'BTN_REPORT'];
-        btnsList.forEach(id => {
-            const btn = document.getElementById(id);
-            if (btn) {
-                btn.onmouseenter = () => { btn.style.transform = 'translateY(-1px)'; };
-                btn.onmouseleave = () => { btn.style.transform = 'translateY(0)'; };
-            }
-        });
-        
-        // Draggable
-        let dragEl = c;
-        dragEl.addEventListener("mousedown", (e) => {
-            if (e.target.closest("button") || e.target.closest("select") || e.target.closest("input") || e.target.closest(".orion-tab")) return;
-            isDragging = true;
-            let rect = dragEl.getBoundingClientRect();
-            dragX = e.clientX - rect.left;
-            dragY = e.clientY - rect.top;
-        });
-        document.addEventListener("mousemove", (e) => {
-            if (!isDragging) return;
-            let left = e.clientX - dragX;
-            let top = e.clientY - dragY;
-            left = Math.max(5, Math.min(window.innerWidth - dragEl.offsetWidth - 5, left));
-            top = Math.max(5, Math.min(window.innerHeight - dragEl.offsetHeight - 5, top));
-            dragEl.style.left = left + "px";
-            dragEl.style.top = top + "px";
-            dragEl.style.right = "auto";
-            dragEl.style.bottom = "auto";
-        });
-        document.addEventListener("mouseup", () => { isDragging = false; });
-        
-        setInterval(() => {
-            if (dom.phase) dom.phase.innerText = bot.phase;
-            if (dom.eta && bot.isRunning) dom.eta.innerText = estimateTimeRemaining();
-        }, 500);
-    }
-
-    function init() {
-        buildUI();
-        setInterval(() => {
-            updateUptime();
-            updateUI();
-        }, 500);
-        API.syncOnce();
-    }
+    // Initialize
+    createGlassHUD();
     
-    init();
+    setInterval(() => {
+        if (bot.isRunning) updateGlassHUD();
+    }, 300);
+    
+    document.getElementById("orion-start-btn").onclick = async () => { 
+        if(!bot.isRunning){ 
+            bot.stopTargetPct = parseFloat(document.getElementById("param-stop-target")?.value) || 10.1;
+            bot.minbet = parseFloat(document.getElementById("param-minbet")?.value) || 0.0001;
+            bot.chwager = parseFloat(document.getElementById("param-chwager")?.value) || 98;
+            bot.chprofit = parseFloat(document.getElementById("param-chprofit")?.value) || 40;
+            bot.dvwager = parseFloat(document.getElementById("param-dvwager")?.value) || 300;
+            
+            const bbprofitMulti = parseFloat(document.getElementById("param-bbprofit")?.value) || 0.000003;
+            const pfpumpMulti = parseFloat(document.getElementById("param-pfpump")?.value) || 0.0015;
+            const pfdumpMulti = parseFloat(document.getElementById("param-pfdump")?.value) || 0.001;
+            
+            const currencySel = document.getElementById("orion-currency");
+            if (currencySel && currencySel.value) bot.selectedCurrency = currencySel.value;
+            
+            await API.syncOnce();
+            
+            const startBal = bot.stats.startBal;
+            
+            bot.bbprofit = startBal * bbprofitMulti;
+            bot.pfpump = startBal * pfpumpMulti;
+            bot.pfdump = startBal * pfdumpMulti;
+            bot.chance = bot.chprofit;
+            bot.nextbet = bot.bbprofit;
+            bot.profitc = 0;
+            bot.onprofit = true;
+            bot.baldrop = 1;
+            bot.balhigh = startBal;
+            bot.balstop = startBal * (1 + bot.stopTargetPct / 100);
+            bot.cprofit = 0;
+            bot.pfreset = 0;
+            bot.currentstreak = 0;
+            bot.lastWin = false;
+            
+            bot.startBalance = startBal;
+            bot.stats.profit = 0;
+            bot.stats.bets = 0;
+            bot.stats.wins = 0;
+            bot.stats.loss = 0;
+            bot.stats.wagered = 0;
+            bot.stats.wageredUSD = 0;
+            bot.stats.maxDD = 0;
+            
+            bot.isRunning = true;
+            bot.startTime = new Date();
+            
+            updateConsoleLog("[START] REAL MODE | Balance: " + startBal.toFixed(8));
+            updateConsoleLog("[SETUP] bbprofit=" + bot.bbprofit.toFixed(8) + " | pfpump=" + bot.pfpump.toFixed(8) + " | pfdump=" + bot.pfdump.toFixed(8));
+            setTimeout(() => sendTelegramReport("SYSTEM STARTED", true), 1000);
+            
+            if (reportInterval) clearInterval(reportInterval);
+            reportInterval = setInterval(() => { 
+                if (bot.isRunning) sendTelegramReport("PERIODIC REPORT (5 MIN)", false);
+            }, 300000);
+            
+            isProcessing = false;
+            runLoop();
+        } 
+    };
+    
+    document.getElementById("orion-stop-btn").onclick = () => { 
+        if(bot.isRunning) {
+            sendTelegramReport("SYSTEM STOPPED", true);
+            stopBot();
+        } 
+    };
 })();
