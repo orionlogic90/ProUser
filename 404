@@ -1,0 +1,1271 @@
+(function () {
+    const CONFIG = {
+        get apiUrl() { return window.location.origin + '/_api'; },
+        version: "404 Bot v1"
+    };
+
+    // PROXY CONFIGURATION
+    const PROXY_CONFIG = {
+        enabled: false,
+        proxyList: [],
+        currentIndex: 0,
+        rotationInterval: 300000,
+        lastRotation: 0,
+        testUrl: "https://api.ipify.org?format=json"
+    };
+
+    const bot = {
+        isRunning: false,
+        token: null,
+        startTime: null,
+        stakeUser: "",
+        stats: { profit: 0, wagered: 0, startBal: 0, bets: 0, wins: 0, loss: 0, ties: 0, maxDD: 0, peakBalance: 0 },
+        selectedCurrency: "POL",
+        currentStatus: "IDLE",
+        lastError: "None",
+        
+        currentGame: "mode1",
+        
+        baseBet: 0.001,
+        currentBet: 0.001,
+        martingaleMultiplier: 2,
+        maxMartingaleSteps: 15,
+        lossStreak: 0,
+        lastBetSide: "player",
+        lastWinner: null,
+        
+        peakBalance: 0,
+        
+        targetWager: 0,
+        targetProfit: 0,
+        stopLoss: 0,
+        stopOnWin: false,
+        stopOnWinTriggered: false,
+        
+        pfPump: 0.15,
+        pfDump: 0.05,
+        diceDivider: 400,
+        
+        configMinimized: true
+    };
+
+    // ============ PROXY FUNCTIONS with AUTH SUPPORT ============
+    function parseProxyString(proxyStr) {
+        // Format support:
+        // http://user:pass@host:port
+        // http://host:port
+        // socks5://user:pass@host:port
+        // socks5://host:port
+        try {
+            let protocol = "http";
+            let username = "";
+            let password = "";
+            let host = "";
+            let port = "";
+            
+            let str = proxyStr.trim();
+            
+            // Extract protocol
+            if (str.includes("://")) {
+                protocol = str.split("://")[0];
+                str = str.split("://")[1];
+            }
+            
+            // Extract username:password if exists
+            if (str.includes("@")) {
+                const authPart = str.split("@")[0];
+                const hostPart = str.split("@")[1];
+                
+                if (authPart.includes(":")) {
+                    username = authPart.split(":")[0];
+                    password = authPart.split(":")[1];
+                } else {
+                    username = authPart;
+                }
+                
+                str = hostPart;
+            }
+            
+            // Extract host:port
+            if (str.includes(":")) {
+                host = str.split(":")[0];
+                port = str.split(":")[1];
+            }
+            
+            if (!host || !port) return null;
+            
+            return {
+                url: `${protocol}://${host}:${port}`,
+                protocol: protocol,
+                host: host,
+                port: parseInt(port),
+                username: username,
+                password: password,
+                hasAuth: username !== ""
+            };
+        } catch(e) {
+            return null;
+        }
+    }
+
+    function getProxyHeaders(proxy) {
+        if (!proxy || !PROXY_CONFIG.enabled) return {};
+        
+        const headers = {
+            "X-Forwarded-For": proxy.host,
+            "X-Proxy-Host": proxy.host,
+            "X-Proxy-Port": proxy.port,
+            "X-Proxy-Protocol": proxy.protocol
+        };
+        
+        // Add proxy authorization headers if username/password provided
+        if (proxy.hasAuth && proxy.username) {
+            const authString = `${proxy.username}:${proxy.password}`;
+            const base64Auth = btoa(unescape(encodeURIComponent(authString)));
+            headers["Proxy-Authorization"] = `Basic ${base64Auth}`;
+            headers["X-Proxy-User"] = proxy.username;
+        }
+        
+        return headers;
+    }
+
+    async function testProxy(proxy) {
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
+            
+            // Try to test proxy by fetching IP
+            const response = await fetch(PROXY_CONFIG.testUrl, {
+                method: "GET",
+                headers: getProxyHeaders(proxy),
+                signal: controller.signal,
+                mode: "cors"
+            }).catch(() => null);
+            
+            clearTimeout(timeoutId);
+            return response !== null && response.ok;
+        } catch(e) {
+            return false;
+        }
+    }
+
+    async function rotateProxy() {
+        if (!PROXY_CONFIG.enabled || PROXY_CONFIG.proxyList.length === 0) return null;
+        
+        const now = Date.now();
+        if (now - PROXY_CONFIG.lastRotation < PROXY_CONFIG.rotationInterval && PROXY_CONFIG.currentIndex > 0) {
+            return PROXY_CONFIG.proxyList[PROXY_CONFIG.currentIndex];
+        }
+        
+        PROXY_CONFIG.currentIndex = (PROXY_CONFIG.currentIndex + 1) % PROXY_CONFIG.proxyList.length;
+        PROXY_CONFIG.lastRotation = now;
+        
+        const newProxy = PROXY_CONFIG.proxyList[PROXY_CONFIG.currentIndex];
+        bot.currentProxy = newProxy;
+        
+        // Update UI with current proxy info
+        const proxyInfoEl = document.getElementById("proxy-info");
+        if (proxyInfoEl && newProxy) {
+            const displayHost = newProxy.hasAuth ? `${newProxy.username}@${newProxy.host}:${newProxy.port}` : `${newProxy.host}:${newProxy.port}`;
+            proxyInfoEl.innerText = `Current: ${displayHost}`;
+            proxyInfoEl.style.color = "#10B981";
+        }
+        
+        return newProxy;
+    }
+
+    function getCurrentProxy() {
+        if (!PROXY_CONFIG.enabled || PROXY_CONFIG.proxyList.length === 0) return null;
+        return PROXY_CONFIG.proxyList[PROXY_CONFIG.currentIndex] || null;
+    }
+
+    async function fetchWithProxy(url, options = {}) {
+        if (!PROXY_CONFIG.enabled) {
+            return fetch(url, options);
+        }
+        
+        const proxy = getCurrentProxy();
+        const proxyHeaders = getProxyHeaders(proxy);
+        
+        const mergedOptions = { ...options };
+        mergedOptions.headers = { ...options.headers, ...proxyHeaders };
+        
+        // Rotate proxy periodically
+        await rotateProxy();
+        
+        return fetch(url, mergedOptions);
+    }
+
+    // ============ API TOKEN FUNCTIONS ============
+    function getAuthToken() {
+        const storedToken = localStorage.getItem('apitoken') || sessionStorage.getItem('apitoken');
+        if (storedToken) return storedToken;
+        
+        const cookieMatch = document.cookie.match(/session=([^;]+)/);
+        if (cookieMatch) return cookieMatch[1];
+        
+        const tokenInput = document.getElementById("p-api-token");
+        if (tokenInput && tokenInput.value) {
+            return tokenInput.value;
+        }
+        
+        return null;
+    }
+
+    function saveToken(token) {
+        if (token && token.length > 10) {
+            localStorage.setItem('apitoken', token);
+            bot.token = token;
+        }
+    }
+
+    // ============ API CALLS with TOKEN ============
+    const API = {
+        async syncOnce() {
+            bot.token = getAuthToken();
+            if (!bot.token || bot.token.length < 30) {
+                updateUILog("⚠️ Waiting for API token...");
+                return false;
+            }
+            
+            const query = `query{user{name balances{available{amount currency}}}}`;
+            try {
+                const res = await fetchWithProxy(`${CONFIG.apiUrl}/graphql`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "x-access-token": bot.token },
+                    body: JSON.stringify({ query })
+                });
+                const json = await res.json();
+                if (json?.data?.user) {
+                    bot.stakeUser = json.data.user.name;
+                    const userEl = document.getElementById("bot-user");
+                    if (userEl) userEl.innerText = bot.stakeUser;
+                    
+                    const bals = json.data.user.balances || [];
+                    const sel = document.getElementById("p-currency");
+                    if (sel && sel.options.length === 0) {
+                        bals.forEach(b => {
+                            const opt = document.createElement("option");
+                            opt.value = b.available.currency;
+                            opt.textContent = b.available.currency.toUpperCase();
+                            if(b.available.currency === "pol") opt.selected = true;
+                            sel.appendChild(opt);
+                        });
+                    }
+                    if (sel) {
+                        bot.selectedCurrency = sel.value;
+                    }
+                    const active = bals.find(b => b.available.currency === bot.selectedCurrency);
+                    bot.stats.startBal = active ? parseFloat(active.available.amount) : 0;
+                    bot.stats.peakBalance = bot.stats.startBal;
+                    
+                    const defaultBaseBet = bot.stats.startBal * 3e-5;
+                    const minBetInput = document.getElementById("p-minbet");
+                    const baseBetInput = document.getElementById("p-basebet");
+                    if (baseBetInput && (!baseBetInput.value || baseBetInput.value === "0.001")) {
+                        baseBetInput.value = defaultBaseBet.toFixed(8);
+                        bot.baseBet = defaultBaseBet;
+                        bot.currentBet = defaultBaseBet;
+                    }
+                    if (minBetInput && (!minBetInput.value || minBetInput.value === "0.00123")) {
+                        minBetInput.value = "0.00123";
+                    }
+                    updateUILog(`✅ Logged in as: ${bot.stakeUser}`);
+                    return true;
+                } else {
+                    updateUILog("❌ Invalid API Token or failed to fetch user data");
+                }
+            } catch (e) { 
+                bot.lastError = "Sync Failed";
+                updateUILog(`❌ Sync error: ${e.message}`);
+            }
+            return false;
+        },
+        
+        async placeBet(amount, payout, game, side = null) {
+            if (!bot.token) {
+                bot.token = getAuthToken();
+                if (!bot.token) {
+                    throw new Error("No API token available");
+                }
+            }
+            
+            if (game === "mode1") {
+                const endpoint = `${CONFIG.apiUrl}/casino/baccarat/bet`;
+                const payload = {
+                    currency: bot.selectedCurrency,
+                    identifier: Math.random().toString(36).slice(2) + Date.now().toString(36),
+                    player: 0,
+                    banker: 0,
+                    tie: 0
+                };
+                payload[side] = parseFloat(amount);
+                
+                return fetchWithProxy(endpoint, {
+                    method: "POST",
+                    headers: { 
+                        "Content-Type": "application/json", 
+                        "x-access-token": bot.token,
+                        "x-lockdown-token": "s5MNWtjTM5TvCMkAzxov"
+                    },
+                    body: JSON.stringify(payload)
+                }).then(r => r.json());
+            } else {
+                const endpoint = `${CONFIG.apiUrl}/casino/dice/roll`;
+                const payload = { 
+                    amount: parseFloat(amount), 
+                    currency: bot.selectedCurrency, 
+                    identifier: Math.random().toString(36).slice(2),
+                    target: 100 - (100 / payout),
+                    condition: "above"
+                };
+                return fetchWithProxy(endpoint, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "x-access-token": bot.token },
+                    body: JSON.stringify(payload)
+                }).then(r => r.json());
+            }
+        }
+    };
+
+    // ============ REST OF BOT LOGIC ============
+    function checkTargets() {
+        const currentBalance = bot.stats.startBal + bot.stats.profit;
+        
+        if (bot.targetProfit > 0 && bot.stats.profit >= bot.targetProfit) {
+            bot.isRunning = false;
+            bot.currentStatus = "TARGET PROFIT REACHED";
+            updateUILog("🎯 TARGET PROFIT REACHED! Bot stopped.");
+            return true;
+        }
+        
+        if (bot.stopLoss > 0 && bot.stats.profit <= -bot.stopLoss) {
+            bot.isRunning = false;
+            bot.currentStatus = "STOP LOSS TRIGGERED";
+            updateUILog("🛑 STOP LOSS TRIGGERED! Bot stopped.");
+            return true;
+        }
+        
+        if (bot.targetWager > 0 && bot.stats.wagered >= bot.targetWager) {
+            bot.isRunning = false;
+            bot.currentStatus = "TARGET WAGER REACHED";
+            updateUILog("🎯 TARGET WAGER REACHED! Bot stopped.");
+            return true;
+        }
+        
+        if (bot.stopOnWin && bot.stopOnWinTriggered) {
+            bot.isRunning = false;
+            bot.stopOnWinTriggered = false;
+            bot.currentStatus = "STOP ON WIN";
+            updateUILog("🛑 STOP ON WIN TRIGGERED! Bot stopped.");
+            return true;
+        }
+        
+        return false;
+    }
+
+    function updatePeakBalance() {
+        const currentBalance = bot.stats.startBal + bot.stats.profit;
+        if (currentBalance > bot.stats.peakBalance) {
+            bot.stats.peakBalance = currentBalance;
+        }
+    }
+
+    function shouldSwitchToMode2() {
+        const currentBalance = bot.stats.startBal + bot.stats.profit;
+        const dropFromPeak = ((bot.stats.peakBalance - currentBalance) / bot.stats.peakBalance) * 100;
+        return dropFromPeak >= bot.pfDump;
+    }
+
+    function shouldSwitchToMode1() {
+        const currentBalance = bot.stats.startBal + bot.stats.profit;
+        const profitFromStart = ((currentBalance - bot.stats.startBal) / bot.stats.startBal) * 100;
+        return profitFromStart >= bot.pfPump;
+    }
+
+    function getNextBetSide() {
+        if (bot.lastWinner && bot.lastWinner !== "tie" && bot.lastWinner !== bot.lastBetSide) {
+            return bot.lastBetSide === "player" ? "banker" : "player";
+        }
+        return bot.lastBetSide;
+    }
+
+    function resetMartingale() {
+        bot.currentBet = bot.baseBet;
+        bot.lossStreak = 0;
+    }
+
+    function updateMartingaleLoss() {
+        if (bot.lossStreak + 1 < bot.maxMartingaleSteps) {
+            bot.lossStreak++;
+            bot.currentBet = bot.baseBet * Math.pow(bot.martingaleMultiplier, bot.lossStreak);
+        } else {
+            bot.lossStreak++;
+            bot.currentBet = bot.baseBet * Math.pow(bot.martingaleMultiplier, bot.maxMartingaleSteps - 1);
+            if (bot.lossStreak >= bot.maxMartingaleSteps) {
+                resetMartingale();
+            }
+        }
+    }
+
+    function updateMartingaleWin() {
+        resetMartingale();
+    }
+
+    function processMode1Result(betResult, betSide, betAmount) {
+        const state = betResult.state || {};
+        const result = state.result || "unknown";
+        const payout = betResult.payout || 0;
+        const pnl = payout - betAmount;
+        
+        const isWin = (result === betSide);
+        const isTie = (result === "tie");
+        
+        bot.stats.bets++;
+        bot.stats.wagered += betAmount;
+        
+        if (isWin) {
+            bot.stats.wins++;
+            updateMartingaleWin();
+            if (bot.stopOnWin) {
+                bot.stopOnWinTriggered = true;
+            }
+        } else if (isTie) {
+            bot.stats.ties++;
+            bot.currentBet = betAmount;
+        } else {
+            bot.stats.loss++;
+            updateMartingaleLoss();
+        }
+        
+        bot.lastWinner = result;
+        bot.lastBetSide = betSide;
+        
+        bot.stats.profit += pnl;
+        
+        if (bot.stats.profit < bot.stats.maxDD) {
+            bot.stats.maxDD = bot.stats.profit;
+        }
+        
+        updatePeakBalance();
+        
+        return pnl;
+    }
+
+    function processMode2Result(betResult, betAmount) {
+        const pnl = betResult.payout - betAmount;
+        
+        bot.stats.bets++;
+        bot.stats.wagered += betAmount;
+        
+        if (pnl > 0) {
+            bot.stats.wins++;
+            if (bot.stopOnWin) {
+                bot.stopOnWinTriggered = true;
+            }
+        } else {
+            bot.stats.loss++;
+        }
+        
+        bot.stats.profit += pnl;
+        
+        if (bot.stats.profit < bot.stats.maxDD) {
+            bot.stats.maxDD = bot.stats.profit;
+        }
+        
+        updatePeakBalance();
+        
+        return pnl;
+    }
+
+    async function runLoop() {
+        if (!bot.isRunning) return;
+        
+        if (checkTargets()) return;
+        
+        const currentBalanceForBet = bot.stats.startBal + bot.stats.profit;
+        const defaultBaseBet = currentBalanceForBet * 3e-5;
+        const minBet = parseFloat(document.getElementById("p-minbet").value) || 0.00123;
+        
+        let baseBetFromUI = parseFloat(document.getElementById("p-basebet").value) || defaultBaseBet;
+        if (baseBetFromUI < minBet) baseBetFromUI = minBet;
+        
+        bot.baseBet = baseBetFromUI;
+        bot.martingaleMultiplier = parseFloat(document.getElementById("p-multiplier").value) || 2;
+        bot.maxMartingaleSteps = parseInt(document.getElementById("p-max-steps").value) || 15;
+        bot.pfPump = parseFloat(document.getElementById("p-pfpump").value) || 0.15;
+        bot.pfDump = parseFloat(document.getElementById("p-pfdump").value) || 0.05;
+        bot.diceDivider = parseFloat(document.getElementById("p-divider").value) || 400;
+        bot.targetWager = parseFloat(document.getElementById("p-target-wager").value) || 0;
+        bot.targetProfit = parseFloat(document.getElementById("p-target-profit").value) || 0;
+        bot.stopLoss = parseFloat(document.getElementById("p-stop-loss").value) || 0;
+        
+        if (bot.currentBet !== bot.baseBet && bot.lossStreak === 0) {
+            bot.currentBet = bot.baseBet;
+        }
+        
+        const currentBalance = bot.stats.startBal + bot.stats.profit;
+        const profitPct = ((currentBalance - bot.stats.startBal) / bot.stats.startBal) * 100;
+        
+        if (bot.currentGame === "mode1") {
+            if (shouldSwitchToMode1()) {
+                bot.currentGame = "mode2";
+                resetMartingale();
+                updateUILog(`🔄 SWITCH TO MODE 2 (Profit ${profitPct.toFixed(2)}% >= ${bot.pfPump}%)`);
+            }
+        } else if (bot.currentGame === "mode2") {
+            if (shouldSwitchToMode2()) {
+                bot.currentGame = "mode1";
+                resetMartingale();
+                updateUILog(`🔄 SWITCH TO MODE 1 (Drop from peak)`);
+            }
+        }
+        
+        let nextbet, gameToPlay, payout, side = null;
+        
+        if (bot.currentGame === "mode1") {
+            gameToPlay = "mode1";
+            nextbet = bot.currentBet;
+            
+            if (nextbet < minBet) nextbet = minBet;
+            
+            side = getNextBetSide();
+            
+            try {
+                const res = await API.placeBet(nextbet, null, "mode1", side);
+                
+                if (res.errors) { 
+                    bot.lastError = res.errors[0].message; 
+                    setTimeout(runLoop, 500); 
+                    return; 
+                }
+                
+                const data = res?.data || res;
+                const betResult = data.baccaratBet || data;
+                
+                if (betResult && bot.isRunning) {
+                    processMode1Result(betResult, side, nextbet);
+                }
+                
+                if (bot.isRunning) {
+                    setTimeout(runLoop, 0);
+                }
+                
+            } catch (e) { 
+                bot.lastError = "Network Error"; 
+                if (bot.isRunning) setTimeout(runLoop, 800); 
+            }
+            
+        } else {
+            gameToPlay = "mode2";
+            const chance = 99.98;
+            payout = 100 / chance;
+            
+            nextbet = currentBalance / bot.diceDivider;
+            
+            if (nextbet < minBet) nextbet = minBet;
+            
+            try {
+                const res = await API.placeBet(nextbet, payout, "mode2");
+                
+                if (res.errors) { 
+                    bot.lastError = res.errors[0].message; 
+                    setTimeout(runLoop, 500); 
+                    return; 
+                }
+                
+                const data = res?.data || res;
+                const bet = data.diceRoll || data.diceBet;
+                
+                if (bet && bot.isRunning) {
+                    processMode2Result(bet, nextbet);
+                }
+                
+                if (bot.isRunning) {
+                    setTimeout(runLoop, 0);
+                }
+                
+            } catch (e) { 
+                bot.lastError = "Network Error"; 
+                if (bot.isRunning) setTimeout(runLoop, 800); 
+            }
+        }
+    }
+
+    function updateUILog(message) {
+        const logEl = document.getElementById("bot-log");
+        if (logEl) {
+            const timestamp = new Date().toLocaleTimeString();
+            logEl.innerHTML = `[${timestamp}] ${message}<br>${logEl.innerHTML}`;
+            const lines = logEl.innerHTML.split('<br>');
+            if (lines.length > 20) {
+                logEl.innerHTML = lines.slice(0, 20).join('<br>');
+            }
+        }
+    }
+
+    function toggleConfig() {
+        bot.configMinimized = !bot.configMinimized;
+        const configSection = document.getElementById("config-section-inner");
+        const toggleIcon = document.getElementById("config-toggle-icon");
+        if (configSection) {
+            if (bot.configMinimized) {
+                configSection.style.display = "none";
+                if (toggleIcon) toggleIcon.innerHTML = "▼";
+            } else {
+                configSection.style.display = "block";
+                if (toggleIcon) toggleIcon.innerHTML = "▲";
+            }
+        }
+    }
+
+    function updateSpeed() {
+        const speedEl = document.getElementById("st-speed");
+        if (speedEl && bot.startTime && bot.isRunning) {
+            const speed = (bot.stats.bets / ((new Date() - bot.startTime) / 1000 || 1)).toFixed(2);
+            speedEl.innerText = speed;
+        } else if (speedEl) {
+            speedEl.innerText = "0";
+        }
+    }
+
+    function loadProxyList() {
+        const proxyInput = document.getElementById("p-proxy-list");
+        const proxyInfoEl = document.getElementById("proxy-info");
+        
+        if (proxyInput && proxyInput.value) {
+            const lines = proxyInput.value.split('\n');
+            const newProxyList = [];
+            let validCount = 0;
+            
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (trimmed && !trimmed.startsWith('#')) {
+                    const proxy = parseProxyString(trimmed);
+                    if (proxy) {
+                        newProxyList.push(proxy);
+                        validCount++;
+                    } else if (proxyInfoEl) {
+                        proxyInfoEl.innerText = `Invalid proxy: ${trimmed.substring(0, 30)}...`;
+                        proxyInfoEl.style.color = "#EF4444";
+                    }
+                }
+            }
+            
+            PROXY_CONFIG.proxyList = newProxyList;
+            PROXY_CONFIG.currentIndex = 0;
+            
+            const statusEl = document.getElementById("proxy-status");
+            if (statusEl) {
+                statusEl.innerText = `${validCount} proxies loaded`;
+                statusEl.style.color = "#10B981";
+            }
+            
+            if (proxyInfoEl && validCount > 0) {
+                const firstProxy = newProxyList[0];
+                const displayHost = firstProxy.hasAuth ? `${firstProxy.username}@${firstProxy.host}:${firstProxy.port}` : `${firstProxy.host}:${firstProxy.port}`;
+                proxyInfoEl.innerText = `Loaded: ${validCount} proxies (first: ${displayHost})`;
+                proxyInfoEl.style.color = "#38BDF8";
+            }
+            
+            updateUILog(`📡 Loaded ${validCount} proxies`);
+        }
+    }
+
+    function toggleProxy() {
+        const enabled = document.getElementById("p-proxy-enable").checked;
+        PROXY_CONFIG.enabled = enabled;
+        
+        if (enabled) {
+            loadProxyList();
+            rotateProxy();
+            updateUILog(`📡 Proxy mode ENABLED`);
+        } else {
+            updateUILog(`📡 Proxy mode DISABLED`);
+        }
+        
+        const statusEl = document.getElementById("proxy-status");
+        const proxyInfoEl = document.getElementById("proxy-info");
+        
+        if (statusEl) {
+            if (enabled) {
+                statusEl.innerText = PROXY_CONFIG.proxyList.length > 0 ? `Active (${PROXY_CONFIG.proxyList.length})` : "No proxies";
+                statusEl.style.color = "#38BDF8";
+            } else {
+                statusEl.innerText = "Disabled";
+                statusEl.style.color = "#64748B";
+            }
+        }
+        
+        if (proxyInfoEl && !enabled) {
+            proxyInfoEl.innerText = "Proxy disabled";
+            proxyInfoEl.style.color = "#64748B";
+        }
+    }
+
+    function saveTokenAndReload() {
+        const tokenInput = document.getElementById("p-api-token");
+        if (tokenInput && tokenInput.value) {
+            saveToken(tokenInput.value);
+            updateUILog("✅ API Token saved! Click START to begin.");
+            API.syncOnce();
+        }
+    }
+
+    function createUI() {
+        if (document.getElementById("bot-wrap")) return;
+        
+        const s = document.createElement("style");
+        s.innerHTML = `
+            #bot-wrap {
+                position: fixed;
+                top: 10px;
+                right: 10px;
+                width: min(500px, calc(100vw - 20px));
+                background: #0A0E17;
+                color: #E2E8F0;
+                padding: 16px;
+                z-index: 99999;
+                border-radius: 12px;
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+                border: 1px solid #1E293B;
+                box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+                font-size: 13px;
+            }
+            .bot-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: baseline;
+                margin-bottom: 12px;
+                padding-bottom: 8px;
+                border-bottom: 1px solid #1E293B;
+            }
+            .bot-title {
+                font-weight: 700;
+                font-size: 16px;
+                color: #38BDF8;
+                letter-spacing: 0.5px;
+            }
+            .bot-user {
+                font-size: 11px;
+                color: #64748B;
+            }
+            .bot-api-row {
+                display: flex;
+                gap: 8px;
+                margin-bottom: 16px;
+                background: #0F141F;
+                padding: 10px 12px;
+                border-radius: 8px;
+                border: 1px solid #1E293B;
+                align-items: center;
+            }
+            .bot-api-row .bot-input {
+                flex: 1;
+                font-family: monospace;
+                font-size: 10px;
+            }
+            .bot-select-row {
+                display: flex;
+                gap: 12px;
+                margin-bottom: 16px;
+                background: #0F141F;
+                padding: 10px 12px;
+                border-radius: 8px;
+                border: 1px solid #1E293B;
+                flex-wrap: wrap;
+            }
+            .bot-select-item {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            .bot-select-item label {
+                font-size: 10px;
+                color: #64748B;
+                text-transform: uppercase;
+            }
+            .bot-select-item select, .bot-select-item input {
+                background: #0A0E17;
+                border: 1px solid #1E293B;
+                color: #F1F5F9;
+                padding: 4px 8px;
+                border-radius: 6px;
+                font-size: 11px;
+                font-family: monospace;
+            }
+            .bot-buttons-row {
+                display: flex;
+                gap: 8px;
+                margin-bottom: 16px;
+            }
+            .bot-btn {
+                flex: 1;
+                padding: 8px 0;
+                border: none;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 12px;
+                cursor: pointer;
+                transition: all 0.2s;
+                text-align: center;
+            }
+            .bot-btn-start {
+                background: #10B981;
+                color: #FFFFFF;
+            }
+            .bot-btn-start:hover {
+                background: #059669;
+            }
+            .bot-btn-stop {
+                background: #EF4444;
+                color: #FFFFFF;
+            }
+            .bot-btn-stop:hover {
+                background: #DC2626;
+            }
+            .bot-btn-stopwin {
+                background: #F59E0B;
+                color: #FFFFFF;
+            }
+            .bot-btn-stopwin:hover {
+                background: #D97706;
+            }
+            .bot-btn-stopwin.active {
+                background: #D97706;
+                box-shadow: 0 0 0 2px #F59E0B;
+            }
+            .bot-btn-small {
+                background: #1E293B;
+                color: #94A3B8;
+            }
+            .bot-btn-small:hover {
+                background: #334155;
+            }
+            .bot-stats-grid {
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 12px;
+                margin-bottom: 12px;
+                background: #0F141F;
+                padding: 12px;
+                border-radius: 10px;
+                border: 1px solid #1E293B;
+            }
+            .bot-stat-card {
+                display: flex;
+                flex-direction: column;
+            }
+            .bot-stat-label {
+                font-size: 10px;
+                color: #64748B;
+                text-transform: uppercase;
+                letter-spacing: 0.3px;
+            }
+            .bot-stat-value {
+                font-size: 14px;
+                font-weight: 600;
+                color: #F1F5F9;
+                font-family: 'SF Mono', Monaco, monospace;
+                margin-top: 4px;
+            }
+            .bot-stat-value.positive {
+                color: #10B981;
+            }
+            .bot-stat-value.negative {
+                color: #EF4444;
+            }
+            .bot-section {
+                background: #0F141F;
+                border-radius: 10px;
+                margin-top: 12px;
+                border: 1px solid #1E293B;
+                overflow: hidden;
+            }
+            .bot-section-title {
+                font-size: 11px;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                color: #38BDF8;
+                padding: 10px 12px;
+                background: #131927;
+                cursor: pointer;
+                user-select: none;
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+            .bot-section-title:hover {
+                background: #1A2132;
+            }
+            .toggle-icon {
+                margin-left: auto;
+                font-size: 11px;
+            }
+            .bot-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 8px;
+                padding: 12px;
+            }
+            .bot-input-group {
+                display: flex;
+                flex-direction: column;
+                gap: 4px;
+            }
+            .bot-input-group label {
+                font-size: 9px;
+                font-weight: 500;
+                color: #64748B;
+                text-transform: uppercase;
+                letter-spacing: 0.3px;
+            }
+            .bot-input, .bot-textarea {
+                width: 100%;
+                background: #0A0E17;
+                border: 1px solid #1E293B;
+                color: #F1F5F9;
+                padding: 6px 8px;
+                border-radius: 6px;
+                font-size: 11px;
+                box-sizing: border-box;
+                font-family: 'SF Mono', Monaco, monospace;
+            }
+            .bot-textarea {
+                resize: vertical;
+                min-height: 80px;
+            }
+            .bot-input:focus, .bot-textarea:focus {
+                outline: none;
+                border-color: #38BDF8;
+            }
+            .bot-speed {
+                text-align: right;
+                font-size: 10px;
+                color: #475569;
+                margin-top: 12px;
+                padding-top: 8px;
+                border-top: 1px solid #1E293B;
+            }
+            .proxy-status {
+                font-size: 9px;
+                margin-left: 8px;
+            }
+            .proxy-info {
+                font-size: 9px;
+                margin-top: 4px;
+                color: #64748B;
+            }
+            .bot-log {
+                margin-top: 12px;
+                padding: 10px 12px;
+                background: #0F141F;
+                border-radius: 8px;
+                font-size: 10px;
+                color: #38BDF8;
+                border: 1px solid #1E293B;
+                word-break: break-word;
+                font-family: monospace;
+                max-height: 120px;
+                overflow-y: auto;
+            }
+            .bot-checkbox-item {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                margin-bottom: 8px;
+            }
+            .bot-checkbox-item input {
+                width: 14px;
+                height: 14px;
+                cursor: pointer;
+                accent-color: #38BDF8;
+            }
+            .bot-checkbox-item label {
+                font-size: 10px;
+                color: #64748B;
+                text-transform: uppercase;
+                cursor: pointer;
+            }
+        `;
+        document.head.appendChild(s);
+        
+        const d = document.createElement("div");
+        d.id = "bot-wrap";
+        d.innerHTML = `
+            <div class="bot-header">
+                <div class="bot-title">404 BOT</div>
+                <div class="bot-user" id="bot-user">Not logged in</div>
+            </div>
+            
+            <div class="bot-api-row">
+                <input type="password" id="p-api-token" class="bot-input" placeholder="Enter API Token here..." style="font-family: monospace; font-size: 10px;">
+                <button id="p-save-token" class="bot-btn bot-btn-small" style="flex: 0; padding: 6px 12px;">SAVE</button>
+            </div>
+            
+            <div class="bot-select-row">
+                <div class="bot-select-item">
+                    <label>COIN</label>
+                    <select id="p-currency" class="bot-select"></select>
+                </div>
+                <div class="bot-select-item">
+                    <label>MIN BET</label>
+                    <input id="p-minbet" class="bot-input" value="0.00123" step="any" style="width: 100px;">
+                </div>
+            </div>
+            
+            <div class="bot-buttons-row">
+                <button id="p-start" class="bot-btn bot-btn-start">START</button>
+                <button id="p-stop" class="bot-btn bot-btn-stop">STOP</button>
+                <button id="p-stopwin" class="bot-btn bot-btn-stopwin">STOP ON WIN</button>
+                <button id="p-reset" class="bot-btn bot-btn-small">RESET</button>
+            </div>
+            
+            <div class="bot-stats-grid">
+                <div class="bot-stat-card">
+                    <span class="bot-stat-label">BALANCE</span>
+                    <span class="bot-stat-value" id="st-startbal">0.00000000</span>
+                </div>
+                <div class="bot-stat-card">
+                    <span class="bot-stat-label">PROFIT</span>
+                    <span class="bot-stat-value" id="st-profit">0.00000000</span>
+                </div>
+                <div class="bot-stat-card">
+                    <span class="bot-stat-label">MAX DD</span>
+                    <span class="bot-stat-value" id="st-maxdd">0.00000000</span>
+                </div>
+                <div class="bot-stat-card">
+                    <span class="bot-stat-label">WAGERED</span>
+                    <span class="bot-stat-value" id="st-wager">0.00000000</span>
+                </div>
+            </div>
+            
+            <div class="bot-log" id="bot-log">
+                Ready. Enter API Token and click SAVE, then START.
+            </div>
+            
+            <div class="bot-section">
+                <div class="bot-section-title" onclick="window.toggleConfig()">
+                    <span>⚙️</span> CONFIGURATION
+                    <span class="toggle-icon" id="config-toggle-icon">▼</span>
+                </div>
+                <div id="config-section-inner" style="display: none;">
+                    <div class="bot-grid">
+                        <div class="bot-input-group">
+                            <label>BBPROFIT</label>
+                            <input id="p-basebet" class="bot-input" value="0.001" step="any">
+                        </div>
+                        <div class="bot-input-group">
+                            <label>MULTIPLIER</label>
+                            <input id="p-multiplier" class="bot-input" value="2" step="0.1">
+                        </div>
+                        <div class="bot-input-group">
+                            <label>MAX STEP</label>
+                            <input id="p-max-steps" class="bot-input" value="15">
+                        </div>
+                        <div class="bot-input-group">
+                            <label>PFPUMP</label>
+                            <input id="p-pfpump" class="bot-input" value="0.15" step="0.01">
+                        </div>
+                        <div class="bot-input-group">
+                            <label>PFDUMP</label>
+                            <input id="p-pfdump" class="bot-input" value="0.05" step="0.01">
+                        </div>
+                        <div class="bot-input-group">
+                            <label>DIVIDER</label>
+                            <input id="p-divider" class="bot-input" value="400" step="10">
+                        </div>
+                        <div class="bot-input-group">
+                            <label>TARGET WAGER</label>
+                            <input id="p-target-wager" class="bot-input" value="0" step="any" placeholder="0 = disabled">
+                        </div>
+                        <div class="bot-input-group">
+                            <label>TARGET PROFIT</label>
+                            <input id="p-target-profit" class="bot-input" value="0" step="any" placeholder="0 = disabled">
+                        </div>
+                        <div class="bot-input-group">
+                            <label>STOP LOSS</label>
+                            <input id="p-stop-loss" class="bot-input" value="0" step="any" placeholder="0 = disabled">
+                        </div>
+                    </div>
+                    
+                    <hr style="border-color:#1E293B; margin:8px 12px;">
+                    
+                    <div style="padding: 0 12px 12px 12px;">
+                        <div class="bot-checkbox-item">
+                            <input type="checkbox" id="p-proxy-enable">
+                            <label for="p-proxy-enable">ENABLE PROXY</label>
+                            <span id="proxy-status" class="proxy-status">Disabled</span>
+                        </div>
+                        <div class="bot-input-group">
+                            <label>PROXY LIST (one per line)</label>
+                            <textarea id="p-proxy-list" class="bot-textarea" placeholder="http://user:pass@host:port&#10;http://host:port&#10;socks5://user:pass@host:port"></textarea>
+                            <div class="proxy-info" id="proxy-info">No proxy loaded</div>
+                        </div>
+                        <button id="p-load-proxy" class="bot-btn bot-btn-small" style="margin-top: 8px; width: 100%;">LOAD PROXIES</button>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="bot-speed">
+                BET/SEC <span id="st-speed">0</span>
+            </div>
+        `;
+        
+        document.body.appendChild(d);
+        
+        window.toggleConfig = toggleConfig;
+        
+        const stopWinBtn = document.getElementById("p-stopwin");
+        
+        document.getElementById("p-save-token").onclick = () => {
+            saveTokenAndReload();
+        };
+        
+        document.getElementById("p-start").onclick = async () => { 
+            if(!bot.isRunning){ 
+                bot.stopOnWin = stopWinBtn.classList.contains("active");
+                bot.stopOnWinTriggered = false;
+                
+                const syncSuccess = await API.syncOnce();
+                if (!syncSuccess || !bot.stakeUser || bot.stakeUser === "Not logged in") {
+                    updateUILog("❌ Failed to authenticate. Please check your API Token!");
+                    return;
+                }
+                
+                bot.isRunning = true; 
+                bot.startTime = new Date(); 
+                bot.stats.bets = 0; 
+                bot.stats.profit = 0; 
+                bot.stats.wagered = 0; 
+                bot.stats.wins = 0; 
+                bot.stats.loss = 0; 
+                bot.stats.ties = 0;
+                bot.stats.maxDD = 0;
+                bot.stats.peakBalance = bot.stats.startBal;
+                bot.currentGame = "mode1";
+                bot.lossStreak = 0;
+                bot.stopOnWinTriggered = false;
+                
+                const currentBalance = bot.stats.startBal;
+                const defaultBaseBet = currentBalance * 3e-5;
+                const minBet = parseFloat(document.getElementById("p-minbet").value) || 0.00123;
+                let baseVal = defaultBaseBet;
+                if (baseVal < minBet) baseVal = minBet;
+                bot.baseBet = baseVal;
+                bot.currentBet = baseVal;
+                bot.lastBetSide = "player";
+                bot.lastWinner = null;
+                
+                const baseBetInput = document.getElementById("p-basebet");
+                if (baseBetInput) baseBetInput.value = baseVal.toFixed(8);
+                
+                updateUILog("🚀 BOT STARTED");
+                runLoop(); 
+            } 
+        };
+        
+        document.getElementById("p-stop").onclick = () => { 
+            if(bot.isRunning){ 
+                bot.isRunning = false; 
+                updateUILog("🛑 BOT STOPPED"); 
+            } 
+        };
+        
+        stopWinBtn.onclick = () => {
+            if (bot.isRunning) {
+                bot.stopOnWin = !bot.stopOnWin;
+                bot.stopOnWinTriggered = false;
+                if (bot.stopOnWin) {
+                    stopWinBtn.classList.add("active");
+                    updateUILog("🔘 STOP ON WIN enabled");
+                } else {
+                    stopWinBtn.classList.remove("active");
+                    updateUILog("🔘 STOP ON WIN disabled");
+                }
+            } else {
+                if (stopWinBtn.classList.contains("active")) {
+                    stopWinBtn.classList.remove("active");
+                } else {
+                    stopWinBtn.classList.add("active");
+                }
+            }
+        };
+        
+        document.getElementById("p-reset").onclick = async () => { 
+            if(bot.isRunning) bot.isRunning = false;
+            bot.stopOnWin = false;
+            bot.stopOnWinTriggered = false;
+            stopWinBtn.classList.remove("active");
+            await API.syncOnce();
+            bot.stats.bets = 0;
+            bot.stats.profit = 0;
+            bot.stats.wagered = 0;
+            bot.stats.wins = 0;
+            bot.stats.loss = 0;
+            bot.stats.ties = 0;
+            bot.stats.maxDD = 0;
+            bot.stats.peakBalance = bot.stats.startBal;
+            bot.currentGame = "mode1";
+            bot.lossStreak = 0;
+            bot.lastBetSide = "player";
+            bot.lastWinner = null;
+            
+            const currentBalance = bot.stats.startBal;
+            const defaultBaseBet = currentBalance * 3e-5;
+            const minBet = parseFloat(document.getElementById("p-minbet").value) || 0.00123;
+            let baseVal = defaultBaseBet;
+            if (baseVal < minBet) baseVal = minBet;
+            bot.baseBet = baseVal;
+            bot.currentBet = baseVal;
+            
+            const baseBetInput = document.getElementById("p-basebet");
+            if (baseBetInput) baseBetInput.value = baseVal.toFixed(8);
+            
+            updateUILog("🔄 Stats reset");
+        };
+        
+        document.getElementById("p-proxy-enable").onclick = toggleProxy;
+        document.getElementById("p-load-proxy").onclick = loadProxyList;
+        
+        // Try to load saved token on startup
+        const savedToken = getAuthToken();
+        if (savedToken) {
+            const tokenInput = document.getElementById("p-api-token");
+            if (tokenInput) tokenInput.value = savedToken;
+            API.syncOnce();
+        }
+    }
+
+    setInterval(() => {
+        if (!document.getElementById("st-startbal")) return;
+        
+        const currentBalance = bot.stats.startBal + bot.stats.profit;
+        
+        document.getElementById("st-startbal").innerText = currentBalance.toFixed(8);
+        
+        const profitEl = document.getElementById("st-profit");
+        profitEl.innerText = bot.stats.profit.toFixed(8);
+        if (bot.stats.profit > 0) {
+            profitEl.className = "bot-stat-value positive";
+        } else if (bot.stats.profit < 0) {
+            profitEl.className = "bot-stat-value negative";
+        } else {
+            profitEl.className = "bot-stat-value";
+        }
+        
+        document.getElementById("st-maxdd").innerText = bot.stats.maxDD.toFixed(8);
+        document.getElementById("st-wager").innerText = bot.stats.wagered.toFixed(8);
+        
+        const userEl = document.getElementById("bot-user");
+        if (userEl && bot.stakeUser && bot.stakeUser !== "Not logged in") {
+            userEl.innerText = bot.stakeUser;
+        }
+        
+        updateSpeed();
+        
+    }, 400);
+
+    createUI(); 
+})();
