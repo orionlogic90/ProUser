@@ -14,7 +14,7 @@
     
     const CONFIG = {
         get apiUrl() { return window.location.origin + '/_api'; },
-        version: "404 BOT v6.5"
+        version: "404 BOT v6.8"
     };
 
     // ==================== STATUS BOT ====================
@@ -41,22 +41,24 @@
             maxBet: 0
         },
         
-        baseBet: 0.00083333,
-        minBet: 0.00083333,
+        baseBetPct: 0.02,
+        baseBet: 0,
+        minBet: 0,
         maxBetMultiplier: 10000,
         margin: 1.01,
         stepsLimit: 100000,
         delay: 20,
-        chanceMin: 5,
-        chanceMax: 12,
+        chanceMin: 55,
+        chanceMax: 90,
         targetPercent: 10,
         stopLossPercent: 25,
         dirtyBalance: 460,
         
-        profitTargetPct: 0.015,
-        profitBackPct: 0.01,
+        profitTargetPct: 0.5,
         wagerDV: 100,
         wagerChance: 99.98,
+        wagerBetCount: 50,
+        wagerBetCounter: 0,
         
         tg: 0,
         perStep: 0,
@@ -146,12 +148,10 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
         try {
             const coin = bot.selectedCurrency.toUpperCase();
             
-            // Ambil harga coin dalam USDT
             const coinRes = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${coin}USDT`)
                 .then(r => r.json())
                 .catch(() => ({price:"0"}));
             
-            // Ambil USDT/IDR
             const idrRes = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=USDTIDR`)
                 .then(r => r.json())
                 .catch(() => ({price:"0"}));
@@ -164,11 +164,9 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
             }
             bot.fiatRates.idr = bot.fiatRates.usdt * bot.fiatRates.usdtIdr;
             
-            // Update minBet otomatis
             updateMinBet();
             
         } catch(e) {
-            // Fallback: CoinGecko
             try {
                 const coinId = getCoinGeckoId(bot.selectedCurrency);
                 const cgRes = await fetch(
@@ -185,11 +183,8 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
             } catch(e2) {}
         }
         
-        // Update UI minBet field
         const minBetEl = document.getElementById("p-minbet");
         if (minBetEl) minBetEl.value = bot.minBet.toFixed(8);
-        const baseBetEl = document.getElementById("p-basebet");
-        if (baseBetEl && !bot.isRunning) baseBetEl.value = bot.minBet.toFixed(8);
     }
     
     function updateMinBet() {
@@ -197,6 +192,13 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
             bot.minBet = bot.minBetIdr / bot.fiatRates.idr;
             if (bot.minBet < 0.00000001) bot.minBet = 0.00000001;
         }
+    }
+    
+    function updateBaseBet() {
+        bot.baseBet = bot.stats.currentBal * (bot.baseBetPct / 100);
+        if (bot.baseBet < bot.minBet) bot.baseBet = bot.minBet;
+        const baseBetEl = document.getElementById("p-basebet");
+        if (baseBetEl && !bot.isRunning) baseBetEl.value = bot.baseBet.toFixed(8);
     }
     
     function getCoinGeckoId(currency) {
@@ -430,6 +432,29 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
         bot.tg = bot.perStep;
     }
     
+    function resetProfitStats() {
+        const savedWagered = bot.stats.wagered;
+        
+        bot.stats.startBal = bot.stats.currentBal;
+        bot.stats.profit = 0;
+        bot.stats.bets = 0;
+        bot.stats.wins = 0;
+        bot.stats.loss = 0;
+        bot.stats.maxDD = 0;
+        bot.stats.maxBet = 0;
+        bot.stats.wagered = savedWagered;
+        
+        bot.targetAbs = bot.stats.startBal * (bot.targetPercent / 100);
+        bot.perStep = bot.targetAbs / bot.stepsLimit;
+        bot.wagerBetCounter = 0;
+        bot.isWagerMode = false;
+        
+        updateBaseBet();
+        setNewBaseChance();
+        
+        updateUILog("WAGER DONE! Profit reset. Back to HUNTER.");
+    }
+    
     function checkWagerMode() {
         if (bot.stats.startBal <= 0) return;
         
@@ -437,12 +462,8 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
         
         if (!bot.isWagerMode && profitPct >= bot.profitTargetPct) {
             bot.isWagerMode = true;
-            updateUILog("WAGER MODE ACTIVATED!");
-        } 
-        else if (bot.isWagerMode && profitPct <= bot.profitBackPct) {
-            bot.isWagerMode = false;
-            setNewBaseChance();
-            updateUILog("BACK TO HUNTER MODE");
+            bot.wagerBetCounter = 0;
+            updateUILog("WAGER MODE ACTIVATED! (50 bets)");
         }
     }
 
@@ -478,7 +499,7 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
                 } else {
                     bot.currentChance = Math.floor(Math.random() * 11) + (bot.baseChance + 5);
                 }
-                chanceToUse = Math.min(85, Math.max(1, bot.currentChance));
+                chanceToUse = Math.min(95, Math.max(1, bot.currentChance));
                 
                 const payout = 99 / chanceToUse;
                 nextBet = (Math.abs(bot.tg) / (payout - 1)) * bot.margin;
@@ -538,7 +559,8 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
                     if (dd > bot.stats.maxDD) bot.stats.maxDD = dd;
                 }
 
-                updateLogs(winAmount, chanceToUse, pft, win);
+                const modeTag = bot.isWagerMode ? "[W]" : "";
+                updateLogs(winAmount, chanceToUse, pft, modeTag, win);
 
                 if (win) { 
                     bot.stats.wins++;
@@ -551,7 +573,14 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
                     }
                 }
                 
-                checkWagerMode();
+                if (bot.isWagerMode) {
+                    bot.wagerBetCounter++;
+                    if (bot.wagerBetCounter >= bot.wagerBetCount) {
+                        resetProfitStats();
+                    }
+                } else {
+                    checkWagerMode();
+                }
 
                 const stopLossAbs = bot.stats.startBal * (bot.stopLossPercent / 100);
                 
@@ -572,7 +601,7 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
                     return;
                 }
                 
-                if (bot.stats.bets >= bot.stepsLimit) {
+                if (!bot.isWagerMode && bot.stats.bets >= bot.stepsLimit) {
                     updateUILog("STEPS LIMIT REACHED! Sleeping 5s...");
                     bot.isSleeping = true;
                     
@@ -580,7 +609,6 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
                         bot.stats.bets = 0;
                         bot.stats.wins = 0;
                         bot.stats.loss = 0;
-                        bot.stats.wagered = 0;
                         bot.betTimestamps = [];
                         bot.isSleeping = false;
                         bot.isRunning = true;
@@ -600,7 +628,7 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
         }
     }
 
-    function updateLogs(amt, ch, pft, isWin) {
+    function updateLogs(amt, ch, pft, mode, isWin) {
         const logBox = document.getElementById("p-logs");
         if (!logBox) return;
         const entry = document.createElement("div");
@@ -611,7 +639,7 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
         entry.style.fontSize = "12px";
         entry.style.fontFamily = "monospace";
         entry.style.borderBottom = "1px solid " + (bot.darkMode ? "#1a1a2e" : "#f0f0f0");
-        entry.textContent = `${timestamp}  ${amt.toFixed(8)} | ${ch.toFixed(1)}% | ${pft > 0 ? '+' : ''}${pft.toFixed(8)}`;
+        entry.textContent = `${timestamp} ${mode} ${amt.toFixed(8)} | ${ch.toFixed(1)}% | ${pft > 0 ? '+' : ''}${pft.toFixed(8)}`;
         logBox.insertBefore(entry, logBox.firstChild);
         while (logBox.children.length > 100) logBox.removeChild(logBox.lastChild);
     }
@@ -626,7 +654,7 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
         entry.style.fontSize = "12px";
         entry.style.fontFamily = "monospace";
         entry.style.borderBottom = "1px solid " + (bot.darkMode ? "#1a1a2e" : "#f0f0f0");
-        entry.textContent = `${timestamp}  ${message}`;
+        entry.textContent = `${timestamp} ${message}`;
         logBox.insertBefore(entry, logBox.firstChild);
         while (logBox.children.length > 100) logBox.removeChild(logBox.lastChild);
     }
@@ -636,7 +664,7 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
         const winRate = bot.stats.bets > 0 ? (bot.stats.wins / bot.stats.bets * 100) : 0;
         const runTime = getDuration();
         const rakeback = bot.stats.wagered * 0.00098;
-        const mode = bot.isWagerMode ? "WAGER" : "HUNTER";
+        const mode = bot.isWagerMode ? `WAGER (${bot.wagerBetCounter}/${bot.wagerBetCount})` : "HUNTER";
         const betSpeed = getBetSpeed();
         
         const profitInUsdt = bot.stats.profit * bot.fiatRates.usdt;
@@ -701,6 +729,8 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
         };
         bot.betTimestamps = [];
         bot.startTime = null;
+        bot.wagerBetCounter = 0;
+        bot.isWagerMode = false;
         updateUILog("Session reset!");
         updateStatsDisplay();
     }
@@ -1073,23 +1103,25 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
                     
                     <!-- TAB CONFIG -->
                     <div id="tab-config" class="tab-content">
-                        <div class="md-field"><label>BASE BET</label><input type="number" id="p-basebet" value="0.00083333" step="0.00000001"></div>
+                        <div class="md-field"><label>BASE BET % (dari Balance)</label><input type="number" id="p-basebet-pct" value="0.02" step="0.01"></div>
+                        <div class="md-field"><label>BASE BET (Auto)</label><input type="number" id="p-basebet" value="0" step="0.00000001" readonly></div>
                         <div class="md-field"><label>MIN BET (Auto Rp 2)</label><input type="number" id="p-minbet" value="0.00083333" step="0.00000001" readonly></div>
                         <div class="grid-2"><div class="md-field"><label>MAX BET MULTIPLIER</label><input type="number" id="p-maxbet-multiplier" value="10000" step="1" min="1"></div><div class="md-field"><label>MARGIN</label><input type="number" id="p-margin" value="1.01" step="0.01"></div></div>
                         <div class="grid-2"><div class="md-field"><label>STEPS LIMIT</label><input type="number" id="p-steps" value="100000"></div><div class="md-field"><label>DELAY (ms)</label><input type="number" id="p-delay" value="20"></div></div>
-                        <div class="grid-2"><div class="md-field"><label>CHANCE MIN (%)</label><input type="number" id="p-ch-min" value="5.0" step="0.1"></div><div class="md-field"><label>CHANCE MAX (%)</label><input type="number" id="p-ch-max" value="12.0" step="0.1"></div></div>
+                        <div class="grid-2"><div class="md-field"><label>CHANCE MIN (%)</label><input type="number" id="p-ch-min" value="55.0" step="0.1"></div><div class="md-field"><label>CHANCE MAX (%)</label><input type="number" id="p-ch-max" value="90.0" step="0.1"></div></div>
                         <div class="grid-2"><div class="md-field"><label>TARGET PROFIT (%)</label><input type="number" id="p-target-pct" value="10.0" step="0.1"></div><div class="md-field"><label>STOP LOSS (%)</label><input type="number" id="p-stop-pct" value="25.0" step="0.1"></div></div>
                         <div class="grid-2"><div class="md-field"><label>DIRTY BALANCE</label><input type="number" id="p-dirty-bal" value="460" step="0.1"></div><div class="md-field"><label>MIN BET IDR</label><input type="number" id="p-minbet-idr" value="2" step="1"></div></div>
                     </div>
                     
                     <!-- TAB WAGER -->
                     <div id="tab-wager" class="tab-content">
-                        <div class="grid-2"><div class="md-field"><label>PROFIT TRIGGER (%)</label><input type="number" id="p-profit-trigger" value="0.015" step="0.001"></div><div class="md-field"><label>BACK TO NORMAL (%)</label><input type="number" id="p-profit-back" value="0.01" step="0.001"></div></div>
+                        <div class="grid-2"><div class="md-field"><label>PROFIT TRIGGER (%)</label><input type="number" id="p-profit-trigger" value="0.5" step="0.01"></div><div class="md-field"><label>WAGER BET COUNT</label><input type="number" id="p-wager-count" value="50" step="1" min="1"></div></div>
                         <div class="grid-2"><div class="md-field"><label>WAGER DV</label><input type="number" id="p-wager-dv" value="100"></div><div class="md-field"><label>WAGER CHANCE (%)</label><input type="number" id="p-wager-chance" value="99.98" step="0.01"></div></div>
                         <div class="info-box">
-                            Mode WAGER aktif saat profit Profit Trigger<br>
-                            BaseBet = Balance / DV<br>
-                            Kembali ke HUNTER saat profit turun ke Back to Normal
+                            Hunter profit &ge; Trigger masuk WAGER MODE<br>
+                            Jalan sejumlah Wager Bet Count, lalu profit direset<br>
+                            Kembali ke HUNTER dari balance terbaru<br>
+                            Wagered TIDAK PERNAH direset
                         </div>
                     </div>
                     
@@ -1124,6 +1156,7 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
                 updateUILog(`Login success! Welcome ${bot.stakeUser}`);
                 document.getElementById("p-start").disabled = false;
                 await updateFiatRates();
+                updateBaseBet();
                 updateStatsDisplay();
                 await sendTelegramReport(`\`\`\`LOGIN SUCCESS\nUser: ${bot.stakeUser}\`\`\``);
             } else { updateUILog("Login failed!"); }
@@ -1133,6 +1166,7 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
             if (!accessToken) { updateUILog("Please login first!"); return; }
             await syncUserInfo();
             await updateFiatRates();
+            updateBaseBet();
             updateStatsDisplay();
             updateUILog("Refreshed!");
         };
@@ -1140,25 +1174,24 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
         document.getElementById("p-start").onclick = async () => {
             if (!bot.isDemo && !accessToken) { updateUILog("Please login first!"); return; }
             
-            bot.profitTargetPct = parseFloat(document.getElementById("p-profit-trigger").value) || 0.015;
-            bot.profitBackPct = parseFloat(document.getElementById("p-profit-back").value) || 0.01;
+            bot.baseBetPct = parseFloat(document.getElementById("p-basebet-pct").value) || 0.02;
             bot.selectedCurrency = document.getElementById("p-currency").value;
             bot.stepsLimit = parseInt(document.getElementById("p-steps").value) || 100000;
-            bot.baseBet = parseFloat(document.getElementById("p-basebet").value) || bot.minBet;
             bot.minBet = parseFloat(document.getElementById("p-minbet").value) || 0.00083333;
             bot.maxBetMultiplier = parseFloat(document.getElementById("p-maxbet-multiplier").value) || 10000;
             bot.margin = parseFloat(document.getElementById("p-margin").value) || 1.01;
             bot.delay = parseInt(document.getElementById("p-delay").value) || 20;
-            bot.chanceMin = parseFloat(document.getElementById("p-ch-min").value) || 5;
-            bot.chanceMax = parseFloat(document.getElementById("p-ch-max").value) || 12;
+            bot.chanceMin = parseFloat(document.getElementById("p-ch-min").value) || 55;
+            bot.chanceMax = parseFloat(document.getElementById("p-ch-max").value) || 90;
             bot.targetPercent = parseFloat(document.getElementById("p-target-pct").value) || 10;
             bot.stopLossPercent = parseFloat(document.getElementById("p-stop-pct").value) || 25;
             bot.dirtyBalance = parseFloat(document.getElementById("p-dirty-bal").value) || 460;
+            bot.profitTargetPct = parseFloat(document.getElementById("p-profit-trigger").value) || 0.5;
             bot.wagerDV = parseFloat(document.getElementById("p-wager-dv").value) || 100;
             bot.wagerChance = parseFloat(document.getElementById("p-wager-chance").value) || 99.98;
+            bot.wagerBetCount = parseInt(document.getElementById("p-wager-count").value) || 50;
             bot.minBetIdr = parseFloat(document.getElementById("p-minbet-idr").value) || 2;
             
-            // Update minBet terakhir kali
             updateMinBet();
             document.getElementById("p-minbet").value = bot.minBet.toFixed(8);
             
@@ -1171,18 +1204,23 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
             };
             bot.betTimestamps = [];
             bot.startTime = Date.now();
+            
+            updateBaseBet();
+            document.getElementById("p-basebet").value = bot.baseBet.toFixed(8);
+            
             bot.targetAbs = bot.stats.startBal * (bot.targetPercent / 100);
             bot.perStep = bot.targetAbs / bot.stepsLimit;
             bot.isRunning = true;
             bot.isWagerMode = false;
             bot.isSleeping = false;
+            bot.wagerBetCounter = 0;
             bot.lastTGReport = Date.now();
             bot.lastFiatUpdate = 0;
             
             setNewBaseChance();
             toggleStartStop(true);
-            updateUILog(`BOT STARTED! Target: ${bot.targetAbs.toFixed(8)}`);
-            await sendTelegramReport(`\`\`\`BOT STARTED\nBalance: ${balance.toFixed(8)}\nTarget: ${bot.targetPercent}%\`\`\``);
+            updateUILog(`BOT STARTED! BaseBet: ${bot.baseBet.toFixed(8)} (${bot.baseBetPct}%) | Chance: ${bot.chanceMin}-${bot.chanceMax}% | Wager Trigger: ${bot.profitTargetPct}% | Wager Count: ${bot.wagerBetCount}`);
+            await sendTelegramReport(`\`\`\`BOT STARTED\nBalance: ${balance.toFixed(8)}\nBaseBet: ${bot.baseBetPct}%\nChance: ${bot.chanceMin}-${bot.chanceMax}%\nWager Trigger: ${bot.profitTargetPct}%\nWager Count: ${bot.wagerBetCount}\`\`\``);
             
             runLoop();
         };
@@ -1202,7 +1240,6 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
             updateFiatRates();
         };
         
-        // Update setiap 1 detik
         setInterval(updateStatsDisplay, 1000);
         setInterval(updateFiatRates, 30000);
         updateFiatRates();
@@ -1210,5 +1247,5 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
     
     // ==================== INIT ====================
     createUI();
-    updateUILog("404 BOT v6.5 Loaded - Clean & Fast");
+    updateUILog("404 BOT v6.8 Loaded - High Chance Hunter");
 })();
