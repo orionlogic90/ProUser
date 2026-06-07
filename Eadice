@@ -16,7 +16,7 @@
         version: "ORION v4.0 EA"
     };
 
-    // ==================== VIRTUAL CHANCE (PERSIS ORION) ====================
+    // ==================== VIRTUAL CHANCE ====================
     const VIRTUAL_CHANCES = [];
     for (var c = 2; c <= 49.5; c = c + 0.5) {
         VIRTUAL_CHANCES.push(parseFloat(c.toFixed(1)));
@@ -146,20 +146,19 @@
         
         minBet: 0.0014,
         riskFactor: 0.15,
-        targetPct: 5,           // Target per sesi 5%
-        stopLossPct: 4,         // Stop loss per sesi 4%
-        sessionTotal: 8,        // 8 sesi untuk mencapai 25% harian
+        targetPct: 5,
+        stopLossPct: 4,
+        sessionTotal: 8,
         maxBetCap: 0,
         maxLs: 0,
         delay: 80,
         aiSpeed: true,
         dirtyBalance: 460,
         
-        // ==================== TRAILING GAP LADDER (DARI TURBO ENGINE) ====================
         isTrailingActive: false,
-        trailingActivationPct: 3.0,    // Aktif setelah profit 3%
-        trailingLevel: 0,               // 0=inactive, 1,2,3
-        gapPct: 0.5,                    // Gap saat ini
+        trailingActivationPct: 3.0,
+        trailingLevel: 0,
+        gapPct: 0.5,
         gapLevel1: 0.5,
         gapLevel2: 0.25,
         gapLevel3plus: 0.125,
@@ -168,18 +167,16 @@
         level2Peak: 0,
         gapHits: 0,
         gapHitProcessed: false,
-        gap1Action: "continue",         // "continue" atau "stop"
+        gap1Action: "continue",
         
-        // ==================== DAILY LIMIT ====================
-        dailyTargetPct: 25,             // Target harian 25% bersih
-        dailyStopLossPct: 15,           // Stop loss harian 15%
+        dailyTargetPct: 25,
+        dailyStopLossPct: 15,
         dailyProfit: 0,
         dailyStartBalance: 0,
-        dailyResetHour: 0,              // Reset jam 00:00
+        dailyResetHour: 0,
         lastDailyReset: 0,
         dailyTargetReached: false,
         
-        // Harvest mode
         isHarvesting: false,
         harvestChance: 0,
         harvestStreak: 0,
@@ -204,13 +201,43 @@
         
         fiatRates: { usdt: 0, idr: 0, usdtIdr: 16000 },
         lastFiatUpdate: 0,
-        minBetIdr: 2
+        minBetIdr: 2,
+        
+        // Countdown reset
+        isResetting: false,
+        resetCountdownRemaining: 0
     };
+
+    // ==================== COUNTDOWN RESET SESSION ====================
+    async function sessionResetCountdown(seconds) {
+        if (bot.isResetting) return;
+        bot.isResetting = true;
+        var wasRunning = bot.isRunning;
+        bot.isRunning = false;
+        
+        for (var i = seconds; i >= 0; i--) {
+            bot.resetCountdownRemaining = i;
+            updateUILog("⏰ Session reset in " + i + " seconds...");
+            updateStatsDisplay();
+            await new Promise(function(resolve) { setTimeout(resolve, 1000); });
+        }
+        
+        bot.resetCountdownRemaining = 0;
+        bot.isResetting = false;
+        
+        updateUILog("🔄 Resetting session...");
+        resetProfitStats();
+        
+        if (wasRunning) {
+            bot.isRunning = true;
+            updateUILog("✅ Session reset complete. Continuing...");
+            runLoop();
+        }
+    }
 
     // ==================== DAILY LIMIT FUNCTIONS ====================
     function checkDailyReset() {
         var now = new Date();
-        var currentHour = now.getHours();
         var todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), bot.dailyResetHour, 0, 0).getTime();
         
         if (bot.lastDailyReset === 0) {
@@ -239,11 +266,10 @@
     }
     
     function checkDailyLimits() {
-        if (bot.dailyTargetReached) return true; // Already stopped
+        if (bot.dailyTargetReached) return true;
         
         var dailyProfitPct = (bot.dailyProfit / bot.dailyStartBalance) * 100;
         
-        // Check target tercapai
         if (dailyProfitPct >= bot.dailyTargetPct) {
             bot.dailyTargetReached = true;
             bot.isRunning = false;
@@ -253,7 +279,6 @@
             return true;
         }
         
-        // Check stop loss harian
         if (dailyProfitPct <= -bot.dailyStopLossPct) {
             bot.isRunning = false;
             updateUILog("🛑 DAILY STOP LOSS REACHED! Loss: " + bot.dailyProfit.toFixed(8) + " (" + dailyProfitPct.toFixed(2) + "%)");
@@ -286,12 +311,10 @@
         
         var currentBalance = bot.stats.currentBal;
         
-        // Update peak balance
         if (currentBalance > bot.balancePeak) {
             bot.balancePeak = currentBalance;
         }
         
-        // Update level peaks
         if (bot.trailingLevel === 1 && currentBalance > bot.level1Peak) {
             bot.level1Peak = currentBalance;
         }
@@ -299,7 +322,6 @@
             bot.level2Peak = currentBalance;
         }
         
-        // Level escalation
         if (bot.trailingLevel === 1 && bot.balancePeak > bot.level1Peak * 1.01) {
             bot.trailingLevel = 2;
             bot.gapPct = bot.gapLevel2;
@@ -311,7 +333,6 @@
             updateUILog("⬆️ Trailing escalated to LEVEL 3+ | Gap: " + bot.gapPct + "%");
         }
         
-        // Check gap hit
         var gapThreshold = bot.balancePeak * (1 - (bot.gapPct / 100.0));
         
         if (currentBalance <= gapThreshold && !bot.gapHitProcessed) {
@@ -322,7 +343,6 @@
             
             if (bot.trailingLevel === 1) {
                 if (bot.gap1Action === "continue") {
-                    // Reset entire session back to normal mode
                     bot.isTrailingActive = false;
                     bot.trailingLevel = 0;
                     bot.gapPct = bot.gapLevel1;
@@ -330,14 +350,12 @@
                     updateUILog("🔄 Reset to NORMAL mode (Gap Level 1 hit)");
                     sendTelegramMessage("🔄 GAP LEVEL 1 HIT\nResetting to NORMAL mode\nHit #" + bot.gapHits);
                 } else {
-                    // Stop bot
                     bot.isRunning = false;
                     updateUILog("🛑 Bot stopped by Gap Level 1 (stop action)");
                     sendTelegramMessage("🛑 GAP LEVEL 1 STOP\nProfit secured: " + bot.stats.profit.toFixed(8));
                     toggleStartStop(false);
                 }
             } else {
-                // Reset to level 1 but stay in trailing mode
                 bot.trailingLevel = 1;
                 bot.gapPct = bot.gapLevel1;
                 bot.level1Peak = bot.balancePeak;
@@ -345,7 +363,6 @@
             }
         }
         
-        // Exit trailing if profit drops below 1%
         var profitPct = (bot.stats.profit / bot.stats.startBal) * 100;
         if (profitPct < 1.0) {
             bot.isTrailingActive = false;
@@ -680,11 +697,9 @@
         var now = Date.now();
         await updateFiatRates();
         
-        // Check daily reset
         checkDailyReset();
         updateDailyProfit();
         
-        // Check daily limits (target or stop loss)
         if (checkDailyLimits()) return;
         
         if (now - bot.lastTGReport >= TG_CONFIG.reportInterval && bot.stats.bets > 0) {
@@ -697,12 +712,10 @@
             var profitSoFar = bot.stats.profit;
             var overallStart = bot.stats.startBal > 0 ? bot.stats.startBal : (bot.isDemo ? bot.dirtyBalance : 100);
             
-            // Update trailing (if active)
             if (bot.isTrailingActive) {
                 updateTrailing();
             }
             
-            // Check trailing activation condition
             var profitPct = (profitSoFar / overallStart) * 100;
             if (!bot.isTrailingActive && profitPct >= bot.trailingActivationPct && !bot.isHarvesting) {
                 activateTrailing();
@@ -719,19 +732,17 @@
                 if (dd > bot.stats.maxDrawdownPct) bot.stats.maxDrawdownPct = dd;
             }
             
-            // Session target & stop loss (per sesi)
             var targetProfit = overallStart * (bot.targetPct / 100);
-            if (bot.stats.profit >= targetProfit) {
-                // Reset session but continue bot
-                updateUILog("🎯 SESSION TARGET REACHED! Resetting...");
-                resetProfitStats();
+            if (bot.stats.profit >= targetProfit && !bot.isResetting) {
+                updateUILog("🎯 SESSION TARGET REACHED! Resetting in 5 seconds...");
+                setTimeout(function() { sessionResetCountdown(5); }, 100);
                 return;
             }
             
             var stopLossAmount = overallStart * (bot.stopLossPct / 100);
-            if (bot.stats.profit <= -stopLossAmount) {
-                updateUILog("🛑 SESSION STOP LOSS REACHED! Resetting...");
-                resetProfitStats();
+            if (bot.stats.profit <= -stopLossAmount && !bot.isResetting) {
+                updateUILog("🛑 SESSION STOP LOSS REACHED! Resetting in 5 seconds...");
+                setTimeout(function() { sessionResetCountdown(5); }, 100);
                 return;
             }
             
@@ -749,7 +760,6 @@
             
             var nextBet, chanceToUse;
             
-            // HARVEST ONLY WHEN TRAILING IS NOT ACTIVE
             var triggered = (!bot.isTrailingActive) ? getBestTriggerChance() : null;
             
             if (triggered !== null && !bot.isHarvesting) {
@@ -834,12 +844,10 @@
                     if (win) {
                         updateUILog("🌾 HARVEST WIN! Profit: " + pft.toFixed(8));
                         bot.isHarvesting = false;
-                        // Reset virtual streaks
                         for (var i = 0; i < VIRTUAL_CHANCES.length; i++) {
                             virtualLs[VIRTUAL_CHANCES[i]] = 0;
                         }
                         readyChances = [];
-                        // Reset trailing after harvest win
                         if (bot.isTrailingActive) {
                             resetTrailingAfterWin();
                         }
@@ -883,14 +891,14 @@
         var timestamp = new Date().toLocaleTimeString();
         entry.style.color = win ? "#00A86B" : "#FF4757";
         entry.style.padding = "2px 6px";
-        entry.style.fontSize = "10px";
+        entry.style.fontSize = "9px";
         entry.style.fontFamily = "monospace";
         entry.style.borderBottom = "1px solid " + (bot.darkMode ? "#1a1a2e" : "#f0f0f0");
         var mode = bot.isHarvesting ? " [H]" : (bot.isTrailingActive ? " [T" + bot.trailingLevel + "]" : "");
         var rollTxt = roll !== null ? " R:" + roll.toFixed(2) : "";
         entry.textContent = timestamp + mode + " " + amt.toFixed(8) + "|" + ch.toFixed(1) + "%|" + (pft > 0 ? '+' : '') + pft.toFixed(8) + rollTxt;
         logBox.insertBefore(entry, logBox.firstChild);
-        while (logBox.children.length > 150) logBox.removeChild(logBox.lastChild);
+        while (logBox.children.length > 100) logBox.removeChild(logBox.lastChild);
     }
 
     function updateUILog(message) {
@@ -900,12 +908,12 @@
         var timestamp = new Date().toLocaleTimeString();
         entry.style.color = "#4A90D9";
         entry.style.padding = "2px 6px";
-        entry.style.fontSize = "10px";
+        entry.style.fontSize = "9px";
         entry.style.fontFamily = "monospace";
         entry.style.borderBottom = "1px solid " + (bot.darkMode ? "#1a1a2e" : "#f0f0f0");
         entry.textContent = timestamp + " " + message;
         logBox.insertBefore(entry, logBox.firstChild);
-        while (logBox.children.length > 150) logBox.removeChild(logBox.lastChild);
+        while (logBox.children.length > 100) logBox.removeChild(logBox.lastChild);
     }
 
     function updateStatsDisplay() {
@@ -929,31 +937,33 @@
         var maxBetPct = bot.stats.startBal > 0 ? (bot.stats.maxBet / bot.stats.startBal * 100) : 0;
         
         var status = "";
-        if (bot.isHarvesting) status = "🌾 HARVEST " + bot.harvestChance + "%";
-        else if (bot.isTrailingActive) status = "🔱 TRAIL L" + bot.trailingLevel + " (" + bot.gapPct + "%)";
-        else status = "⚡ NORMAL 98%";
+        if (bot.isHarvesting) status = "🌾 H" + bot.harvestChance + "%";
+        else if (bot.isTrailingActive) status = "🔱 T" + bot.trailingLevel + "/" + bot.gapPct + "%";
+        else status = "⚡ 98%";
         
         var dailyStatus = (bot.dailyProfit >= 0 ? '+' : '') + bot.dailyProfit.toFixed(8) + " (" + (dailyProfitPct >= 0 ? '+' : '') + dailyProfitPct.toFixed(2) + "%)";
+        var timerDisplay = bot.isResetting ? "⏰ " + bot.resetCountdownRemaining + "s" : "--";
         
         var elements = {
             "st-user": bot.stakeUser,
             "st-running-time": runTime,
             "st-balance": bot.stats.currentBal.toFixed(8) + " " + bot.selectedCurrency.toUpperCase(),
-            "st-balance-fiat": "Rp " + formatNumberShort(balanceInIdr) + " | " + balanceInUsdt.toFixed(2) + " USDT",
+            "st-balance-fiat": shortFiat(balanceInIdr, balanceInUsdt),
             "st-profit": (bot.stats.profit >= 0 ? '+' : '') + bot.stats.profit.toFixed(8) + " (" + (profitPct >= 0 ? '+' : '') + profitPct.toFixed(2) + "%)",
-            "st-profit-fiat": "Rp " + formatNumberShort(profitInIdr) + " | " + profitInUsdt.toFixed(2) + " USDT",
+            "st-profit-fiat": shortFiat(profitInIdr, profitInUsdt),
             "st-daily": dailyStatus,
             "st-wagered": bot.stats.wagered.toFixed(8),
-            "st-wagered-fiat": "Rp " + formatNumberShort(wageredInIdr) + " | " + wageredInUsdt.toFixed(2) + " USDT",
+            "st-wagered-fiat": shortFiat(wageredInIdr, wageredInUsdt),
             "st-rakeback": "+" + rakeback.toFixed(8),
-            "st-rakeback-fiat": "Rp " + formatNumberShort(rakebackInIdr) + " | " + rakebackInUsdt.toFixed(2) + " USDT",
-            "st-bets": bot.stats.bets + " | WR " + winRate.toFixed(1) + "%",
-            "st-speed": betSpeed.toFixed(2) + " bet/s",
-            "st-maxdd": bot.stats.maxDD.toFixed(8) + " (" + maxDDPct.toFixed(2) + "%)",
-            "st-maxbet": bot.stats.maxBet.toFixed(8) + " (" + maxBetPct.toFixed(2) + "%)",
+            "st-rakeback-fiat": shortFiat(rakebackInIdr, rakebackInUsdt),
+            "st-bets": bot.stats.bets + " | WR " + winRate.toFixed(0) + "%",
+            "st-speed": betSpeed.toFixed(1) + "b/s",
+            "st-maxdd": maxDDPct.toFixed(1) + "%",
+            "st-maxbet": maxBetPct.toFixed(1) + "%",
             "st-chance": status,
             "st-gaphits": bot.gapHits.toString(),
-            "st-rate": "1 " + bot.selectedCurrency.toUpperCase() + " = " + bot.fiatRates.usdt.toFixed(4) + " USDT"
+            "st-timer": timerDisplay,
+            "st-rate": "1 " + bot.selectedCurrency.toUpperCase() + " = " + bot.fiatRates.usdt.toFixed(2) + " USDT"
         };
         
         for (var id in elements) {
@@ -969,13 +979,12 @@
         if (dailyEl) dailyEl.style.color = bot.dailyProfit >= 0 ? "#00A86B" : "#FF4757";
     }
     
-    function formatNumberShort(num) {
-        var abs = Math.abs(num);
-        var sign = num < 0 ? "-" : "";
-        if (abs >= 1000000000) return sign + "Rp " + (abs/1000000000).toFixed(2) + "B";
-        if (abs >= 1000000) return sign + "Rp " + (abs/1000000).toFixed(1) + "M";
-        if (abs >= 1000) return sign + "Rp " + (abs/1000).toFixed(1) + "K";
-        return sign + "Rp " + abs.toFixed(0);
+    function shortFiat(idr, usdt) {
+        var abs = Math.abs(idr);
+        var sign = idr < 0 ? "-" : "";
+        if (abs >= 1000000) return sign + "Rp" + (abs/1000000).toFixed(1) + "M";
+        if (abs >= 1000) return sign + "Rp" + (abs/1000).toFixed(1) + "K";
+        return sign + "Rp" + abs.toFixed(0);
     }
     
     function resetSession() {
@@ -1008,12 +1017,12 @@
         if (starting) {
             startBtn.disabled = true;
             stopBtn.disabled = false;
-            statusEl.textContent = "RUNNING";
+            statusEl.textContent = "RUN";
             dotEl.style.background = "#00A86B";
         } else {
             startBtn.disabled = false;
             stopBtn.disabled = true;
-            statusEl.textContent = "STOPPED";
+            statusEl.textContent = "STOP";
             dotEl.style.background = "#FF4757";
         }
     }
@@ -1049,7 +1058,9 @@
 
     // ==================== UI DRAGGING ====================
     var pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
+    
     function dragMouseDown(e) {
+        if (e.target.closest && (e.target.closest('button') || e.target.closest('input') || e.target.closest('select'))) return;
         e = e || window.event;
         e.preventDefault();
         pos3 = e.clientX;
@@ -1057,6 +1068,7 @@
         document.onmouseup = closeDragElement;
         document.onmousemove = elementDrag;
     }
+    
     function elementDrag(e) {
         var elmnt = document.getElementById("BotConsole");
         e = e || window.event;
@@ -1067,21 +1079,25 @@
         pos4 = e.clientY;
         var newTop = elmnt.offsetTop - pos2;
         var newLeft = elmnt.offsetLeft - pos1;
+        var maxLeft = window.innerWidth - elmnt.offsetWidth;
+        var maxTop = window.innerHeight - elmnt.offsetHeight;
         if (newLeft < 0) newLeft = 0;
         if (newTop < 0) newTop = 0;
-        if (newLeft > (window.innerWidth - elmnt.offsetWidth)) newLeft = window.innerWidth - elmnt.offsetWidth;
-        if (newTop > (window.innerHeight - elmnt.offsetHeight)) newTop = window.innerHeight - elmnt.offsetHeight;
+        if (newLeft > maxLeft) newLeft = maxLeft;
+        if (newTop > maxTop) newTop = maxTop;
         elmnt.style.top = newTop + "px";
         elmnt.style.left = newLeft + "px";
         elmnt.style.right = "auto";
     }
+    
     function closeDragElement() { document.onmouseup = null; document.onmousemove = null; }
 
     // ==================== TAB SYSTEM ====================
     window.openTab = function(tabName) {
         var tabs = document.querySelectorAll('.tab-content');
         for (var i = 0; i < tabs.length; i++) tabs[i].classList.remove('active');
-        document.getElementById('tab-' + tabName).classList.add('active');
+        var target = document.getElementById('tab-' + tabName);
+        if (target) target.classList.add('active');
         var btns = document.querySelectorAll('.tab-btn');
         for (var j = 0; j < btns.length; j++) btns[j].classList.remove('active');
         if (event && event.currentTarget) event.currentTarget.classList.add('active');
@@ -1093,7 +1109,7 @@
         
         var style = document.createElement("style");
         style.innerHTML = `
-            #BotConsole {
+            :root {
                 --bg: #1e1f1c;
                 --bg-block: #272822;
                 --text: #f8f8f2;
@@ -1103,59 +1119,342 @@
                 --accent: #9ec07c;
                 --success: #00e5c0;
                 --danger: #ff6b81;
-                position: fixed; top: 20px; right: 20px; width: 560px;
-                background: var(--bg); border-radius: 12px; font-family: Consolas, monospace;
-                font-size: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.3); border: 1px solid var(--border);
-                z-index: 99999; overflow: hidden; color: var(--text);
             }
-            .bot-header { background: var(--accent); padding: 8px 12px; cursor: move; display: flex; justify-content: space-between; align-items: center; color: black; }
-            .bot-header .title { font-weight: 700; font-size: 14px; }
-            .header-btns { display: flex; gap: 6px; }
-            .header-btns button { background: rgba(0,0,0,0.2); border: none; color: black; width: 26px; height: 26px; border-radius: 6px; cursor: pointer; }
-            .time-running { background: rgba(0,0,0,0.2); padding: 3px 8px; border-radius: 10px; font-size: 10px; color: black; }
-            .tab-bar { display: flex; padding: 0 12px; gap: 0; border-bottom: 1px solid var(--border); background: var(--bg); }
-            .tab-btn { padding: 8px 12px; background: transparent; border: none; color: var(--text-light); font-size: 11px; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent; }
-            .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
-            .tab-content { display: none; padding: 12px; }
-            .tab-content.active { display: block; }
-            .controls-row { display: flex; gap: 8px; margin-bottom: 10px; background: var(--bg-block); padding: 8px; border-radius: 8px; border: 1px solid var(--border); }
-            .btn-group { display: flex; gap: 6px; flex: 1; }
-            select, input { background: var(--bg); border: 1px solid var(--border); padding: 6px 8px; border-radius: 6px; font-size: 11px; font-family: monospace; color: var(--text); }
-            .stats-block { background: var(--bg-block); border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; border: 1px solid var(--border); font-size: 10px; line-height: 1.5; }
-            .stats-block .line { display: flex; justify-content: space-between; padding: 2px 0; }
-            .stats-block .label { color: var(--text-light); }
-            .stats-block .value { font-weight: 600; text-align: right; color: var(--accent); }
-            .stats-block .value-sub { font-size: 9px; color: var(--text-light); text-align: right; }
-            .stats-block .divider { border-top: 1px solid var(--border); margin: 4px 0; }
-            .logs-container { background: var(--log-bg); border-radius: 8px; height: 380px; overflow-y: auto; padding: 5px 6px; font-size: 9px; border: 1px solid var(--border); }
-            .btn { padding: 6px 10px; border: none; border-radius: 6px; font-weight: 700; font-size: 11px; cursor: pointer; }
+            
+            #BotConsole {
+                position: fixed;
+                top: 10px;
+                left: 10px;
+                right: 10px;
+                width: auto;
+                max-width: 500px;
+                margin: 0 auto;
+                background: var(--bg);
+                border-radius: 16px;
+                font-family: 'Segoe UI', Consolas, monospace;
+                font-size: 12px;
+                box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+                border: 1px solid var(--border);
+                z-index: 99999;
+                overflow: hidden;
+                color: var(--text);
+            }
+            
+            @media (min-width: 768px) {
+                #BotConsole {
+                    top: 20px;
+                    right: 20px;
+                    left: auto;
+                    width: 520px;
+                }
+            }
+            
+            .bot-header {
+                background: var(--accent);
+                padding: 10px 12px;
+                cursor: move;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                color: black;
+                touch-action: none;
+            }
+            
+            .bot-header .title {
+                font-weight: 700;
+                font-size: 13px;
+            }
+            
+            .header-btns {
+                display: flex;
+                gap: 8px;
+            }
+            
+            .header-btns button {
+                background: rgba(0,0,0,0.2);
+                border: none;
+                color: black;
+                width: 32px;
+                height: 32px;
+                border-radius: 8px;
+                cursor: pointer;
+                font-size: 14px;
+            }
+            
+            .time-running {
+                background: rgba(0,0,0,0.2);
+                padding: 4px 10px;
+                border-radius: 20px;
+                font-size: 10px;
+                color: black;
+                font-weight: 600;
+            }
+            
+            .tab-bar {
+                display: flex;
+                padding: 0 12px;
+                gap: 4px;
+                border-bottom: 1px solid var(--border);
+                background: var(--bg);
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+            }
+            
+            .tab-btn {
+                padding: 10px 14px;
+                background: transparent;
+                border: none;
+                color: var(--text-light);
+                font-size: 11px;
+                font-weight: 600;
+                cursor: pointer;
+                border-bottom: 2px solid transparent;
+                white-space: nowrap;
+            }
+            
+            .tab-btn.active {
+                color: var(--accent);
+                border-bottom-color: var(--accent);
+            }
+            
+            .tab-content {
+                display: none;
+                padding: 12px;
+                max-height: 70vh;
+                overflow-y: auto;
+                -webkit-overflow-scrolling: touch;
+            }
+            
+            .tab-content.active {
+                display: block;
+            }
+            
+            .controls-row {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+                margin-bottom: 12px;
+                background: var(--bg-block);
+                padding: 10px;
+                border-radius: 12px;
+                border: 1px solid var(--border);
+            }
+            
+            .btn-group {
+                display: flex;
+                gap: 8px;
+                flex: 1;
+                min-width: 140px;
+            }
+            
+            select, input {
+                background: var(--bg);
+                border: 1px solid var(--border);
+                padding: 10px 8px;
+                border-radius: 8px;
+                font-size: 12px;
+                font-family: monospace;
+                color: var(--text);
+            }
+            
+            select {
+                min-width: 80px;
+            }
+            
+            .stats-block {
+                background: var(--bg-block);
+                border-radius: 12px;
+                padding: 10px;
+                margin-bottom: 12px;
+                border: 1px solid var(--border);
+                font-size: 10px;
+                line-height: 1.5;
+            }
+            
+            .stats-block .line {
+                display: flex;
+                justify-content: space-between;
+                padding: 3px 0;
+                flex-wrap: wrap;
+                gap: 4px;
+            }
+            
+            .stats-block .label {
+                color: var(--text-light);
+                font-size: 9px;
+            }
+            
+            .stats-block .value {
+                font-weight: 600;
+                text-align: right;
+                color: var(--accent);
+                font-size: 10px;
+                word-break: break-word;
+                max-width: 60%;
+            }
+            
+            .stats-block .value-sub {
+                font-size: 8px;
+                color: var(--text-light);
+                text-align: right;
+            }
+            
+            .stats-block .divider {
+                border-top: 1px solid var(--border);
+                margin: 6px 0;
+            }
+            
+            .logs-container {
+                background: var(--log-bg);
+                border-radius: 12px;
+                height: 350px;
+                overflow-y: auto;
+                padding: 8px;
+                font-size: 9px;
+                border: 1px solid var(--border);
+                -webkit-overflow-scrolling: touch;
+            }
+            
+            .btn {
+                padding: 10px 14px;
+                border: none;
+                border-radius: 8px;
+                font-weight: 700;
+                font-size: 12px;
+                cursor: pointer;
+                min-height: 44px;
+            }
+            
             .btn-start { background: var(--success); color: black; }
             .btn-stop { background: var(--danger); color: black; }
             .btn-reset { background: var(--text-light); color: black; }
-            .token-row { display: flex; gap: 6px; margin-bottom: 10px; }
-            .toggle-row { display: flex; justify-content: space-between; align-items: center; background: var(--bg-block); padding: 6px 10px; border-radius: 8px; margin-bottom: 8px; }
-            .md-switch { position: relative; width: 40px; height: 20px; }
-            .md-switch input { opacity: 0; width: 0; height: 0; }
-            .md-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background: var(--border); border-radius: 20px; }
-            .md-slider:before { position: absolute; content: ""; height: 16px; width: 16px; left: 2px; bottom: 2px; background: white; border-radius: 50%; transition: .3s; }
+            
+            .token-row {
+                display: flex;
+                gap: 8px;
+                margin-bottom: 12px;
+                flex-wrap: wrap;
+            }
+            
+            .token-row input {
+                flex: 1;
+                min-width: 120px;
+            }
+            
+            .toggle-row {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                background: var(--bg-block);
+                padding: 10px;
+                border-radius: 12px;
+                margin-bottom: 10px;
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+            
+            .md-switch {
+                position: relative;
+                width: 48px;
+                height: 24px;
+            }
+            
+            .md-switch input {
+                opacity: 0;
+                width: 0;
+                height: 0;
+            }
+            
+            .md-slider {
+                position: absolute;
+                cursor: pointer;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background: var(--border);
+                border-radius: 24px;
+            }
+            
+            .md-slider:before {
+                position: absolute;
+                content: "";
+                height: 18px;
+                width: 18px;
+                left: 3px;
+                bottom: 3px;
+                background: white;
+                border-radius: 50%;
+                transition: .3s;
+            }
+            
             input:checked + .md-slider { background: var(--success); }
-            input:checked + .md-slider:before { transform: translateX(20px); }
-            .md-field { margin-bottom: 8px; }
-            .md-field label { display: block; font-size: 9px; font-weight: 500; margin-bottom: 2px; color: var(--text-light); }
-            .md-field input, .md-field select { width: 100%; padding: 5px 6px; font-size: 10px; }
-            .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-            .status-inline { display: flex; align-items: center; gap: 5px; font-size: 9px; margin-bottom: 6px; }
-            .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+            input:checked + .md-slider:before { transform: translateX(24px); }
+            
+            .md-field {
+                margin-bottom: 10px;
+            }
+            
+            .md-field label {
+                display: block;
+                font-size: 9px;
+                font-weight: 500;
+                margin-bottom: 4px;
+                color: var(--text-light);
+            }
+            
+            .md-field input, .md-field select {
+                width: 100%;
+                padding: 8px 6px;
+                font-size: 11px;
+            }
+            
+            .grid-2 {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 8px;
+            }
+            
+            @media (max-width: 480px) {
+                .grid-2 {
+                    grid-template-columns: 1fr;
+                }
+                .stats-block .value {
+                    max-width: 70%;
+                    font-size: 9px;
+                }
+                .btn-group button {
+                    flex: 1;
+                }
+            }
+            
+            .status-inline {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                font-size: 10px;
+                margin-bottom: 8px;
+            }
+            
+            .dot {
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                display: inline-block;
+            }
+            
             ::-webkit-scrollbar { width: 3px; }
             ::-webkit-scrollbar-thumb { background: var(--border); }
         `;
         document.head.appendChild(style);
         
-        var html = '<div id="BotConsole"><div class="bot-header" id="botHeader"><div style="display: flex; align-items: center; gap: 8px;"><span class="title">ORION EA v4.0</span><span class="time-running" id="st-running-time">0s</span></div><div class="header-btns"><button id="btn-theme">🌓</button><button id="btn-minimize">▲</button></div></div><div id="bot-body"><div class="tab-bar"><button class="tab-btn active" onclick="openTab.call(this, \'main\')">MAIN</button><button class="tab-btn" onclick="openTab.call(this, \'config\')">CONFIG</button><button class="tab-btn" onclick="openTab.call(this, \'logs\')">LOGS</button></div><div id="tab-main" class="tab-content active"><div class="token-row"><input type="password" id="p-token" placeholder="API Token"><button id="p-login">LOGIN</button><button id="p-refresh">⟳</button></div><div class="toggle-row"><span>DIRTY MODE</span><label class="md-switch"><input type="checkbox" id="p-demo-toggle"><span class="md-slider"></span></label></div><div class="controls-row"><div class="btn-group"><button id="p-start" class="btn btn-start" disabled>START</button><button id="p-stop" class="btn btn-stop" disabled>STOP</button><button id="p-reset" class="btn btn-reset">RESET</button></div><select id="p-currency"></select></div><div class="status-inline"><span class="dot" id="statusDot" style="background:#FF4757;"></span><span id="botStatus">STOPPED</span></div><div class="stats-block" id="stats-block"><div class="line"><span class="label">User</span><span class="value" id="st-user">-</span></div><div class="line"><span class="label">Balance</span><span class="value" id="st-balance">0.00000000</span></div><div class="line"><span class="label"></span><span class="value-sub" id="st-balance-fiat">-</span></div><div class="divider"></div><div class="line"><span class="label">Profit (Session)</span><span class="value" id="st-profit" style="color:#00e5c0;">0.00000000 (0%)</span></div><div class="line"><span class="label"></span><span class="value-sub" id="st-profit-fiat" style="color:#00e5c0;">-</span></div><div class="line"><span class="label">Profit (Daily)</span><span class="value" id="st-daily" style="color:#00e5c0;">0.00000000 (0%)</span></div><div class="divider"></div><div class="line"><span class="label">Wagered</span><span class="value" id="st-wagered">0.00000000</span></div><div class="line"><span class="label"></span><span class="value-sub" id="st-wagered-fiat">-</span></div><div class="line"><span class="label">Rakeback</span><span class="value" id="st-rakeback" style="color:#00e5c0;">+0.00000000</span></div><div class="line"><span class="label"></span><span class="value-sub" id="st-rakeback-fiat" style="color:#00e5c0;">-</span></div><div class="line"><span class="label">Bets | WR</span><span class="value" id="st-bets">0 | WR 0%</span></div><div class="line"><span class="label">Speed</span><span class="value" id="st-speed">0 bet/s</span></div><div class="line"><span class="label">Max DD</span><span class="value" id="st-maxdd">0.00000000 (0%)</span></div><div class="line"><span class="label">Max Bet</span><span class="value" id="st-maxbet">0.00000000 (0%)</span></div><div class="divider"></div><div class="line"><span class="label">Status</span><span class="value" id="st-chance">NORMAL 98%</span></div><div class="line"><span class="label">Gap Hits</span><span class="value" id="st-gaphits">0</span></div><div class="line"><span class="label">Rate</span><span class="value" id="st-rate">-</span></div></div></div><div id="tab-config" class="tab-content"><div class="md-field"><label>MIN BET</label><input type="number" id="p-min-bet-custom" value="0.0014" step="0.0001"></div><div class="md-field"><label>RISK FACTOR</label><input type="number" id="p-risk-factor" value="0.15" step="0.01"></div><div class="grid-2"><div class="md-field"><label>TARGET % (Sesi)</label><input type="number" id="p-target-pct" value="5" step="0.5"></div><div class="md-field"><label>STOP LOSS % (Sesi)</label><input type="number" id="p-stop-pct" value="4" step="0.5"></div></div><div class="grid-2"><div class="md-field"><label>TARGET % (Harian)</label><input type="number" id="p-daily-target" value="25" step="1"></div><div class="md-field"><label>STOP LOSS % (Harian)</label><input type="number" id="p-daily-stoploss" value="15" step="1"></div></div><div class="grid-2"><div class="md-field"><label>SESSION TOTAL</label><input type="number" id="p-session-total" value="8" step="1"></div><div class="md-field"><label>MAX BET CAP</label><input type="number" id="p-max-cap" value="0" step="0.001"></div></div><div class="grid-2"><div class="md-field"><label>TRAIL ACTIVATION %</label><input type="number" id="p-trail-activation" value="3" step="0.5"></div><div class="md-field"><label>GAP1 ACTION</label><select id="p-gap1-action"><option value="continue">CONTINUE</option><option value="stop">STOP</option></select></div></div><div class="grid-2"><div class="md-field"><label>GAP LEVEL 1 %</label><input type="number" id="p-gap1" value="0.5" step="0.1"></div><div class="md-field"><label>GAP LEVEL 2 %</label><input type="number" id="p-gap2" value="0.25" step="0.05"></div></div><div class="grid-2"><div class="md-field"><label>GAP LEVEL 3+ %</label><input type="number" id="p-gap3" value="0.125" step="0.05"></div><div class="md-field"><label>DELAY (ms)</label><input type="number" id="p-delay" value="80"></div></div><div class="toggle-row"><span>AI SPEED</span><label class="md-switch"><input type="checkbox" id="p-ai-speed" checked><span class="md-slider"></span></label></div><div class="grid-2"><div class="md-field"><label>DIRTY BALANCE</label><input type="number" id="p-dirty-bal" value="460" step="0.1"></div><div class="md-field"><label>MIN BET IDR</label><input type="number" id="p-minbet-idr" value="2" step="1"></div></div></div><div id="tab-logs" class="tab-content"><div class="logs-container" id="p-logs"><div style="text-align:center;padding-top:160px;">ORION EA v4.0 Ready</div></div></div></div></div>';
+        var html = '<div id="BotConsole"><div class="bot-header" id="botHeader"><div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;"><span class="title">ORION EA v4.0</span><span class="time-running" id="st-running-time">0s</span></div><div class="header-btns"><button id="btn-theme">🌓</button><button id="btn-minimize">▲</button></div></div><div id="bot-body"><div class="tab-bar"><button class="tab-btn active" onclick="openTab.call(this, \'main\')">MAIN</button><button class="tab-btn" onclick="openTab.call(this, \'config\')">CFG</button><button class="tab-btn" onclick="openTab.call(this, \'logs\')">LOGS</button></div><div id="tab-main" class="tab-content active"><div class="token-row"><input type="password" id="p-token" placeholder="API Token"><button id="p-login" class="btn" style="background:var(--accent);color:black;">LOGIN</button><button id="p-refresh" class="btn" style="background:var(--text-light);color:black;">⟳</button></div><div class="toggle-row"><span>DIRTY MODE</span><label class="md-switch"><input type="checkbox" id="p-demo-toggle"><span class="md-slider"></span></label></div><div class="controls-row"><div class="btn-group"><button id="p-start" class="btn btn-start" disabled>START</button><button id="p-stop" class="btn btn-stop" disabled>STOP</button><button id="p-reset" class="btn btn-reset">RESET</button></div><select id="p-currency"></select></div><div class="status-inline"><span class="dot" id="statusDot" style="background:#FF4757;"></span><span id="botStatus">STOP</span></div><div class="stats-block"><div class="line"><span class="label">User</span><span class="value" id="st-user">-</span></div><div class="line"><span class="label">Balance</span><span class="value" id="st-balance">0</span></div><div class="line"><span class="label"></span><span class="value-sub" id="st-balance-fiat">-</span></div><div class="divider"></div><div class="line"><span class="label">Profit (Sesi)</span><span class="value" id="st-profit">0 (0%)</span></div><div class="line"><span class="label"></span><span class="value-sub" id="st-profit-fiat">-</span></div><div class="line"><span class="label">Profit (Harian)</span><span class="value" id="st-daily">0 (0%)</span></div><div class="divider"></div><div class="line"><span class="label">Wagered</span><span class="value" id="st-wagered">0</span></div><div class="line"><span class="label">Rakeback</span><span class="value" id="st-rakeback">+0</span></div><div class="line"><span class="label">Bets | WR</span><span class="value" id="st-bets">0 | 0%</span></div><div class="line"><span class="label">Speed | MaxDD</span><span class="value" id="st-speed">0 | <span id="st-maxdd">0%</span></span></div><div class="line"><span class="label">MaxBet | Gap</span><span class="value" id="st-maxbet">0% | <span id="st-gaphits">0</span></span></div><div class="divider"></div><div class="line"><span class="label">Status</span><span class="value" id="st-chance">⚡ 98%</span></div><div class="line"><span class="label">Countdown</span><span class="value" id="st-timer">--</span></div><div class="line"><span class="label">Rate</span><span class="value" id="st-rate">-</span></div></div></div><div id="tab-config" class="tab-content"><div class="md-field"><label>MIN BET</label><input type="number" id="p-min-bet-custom" value="0.0014" step="0.0001"></div><div class="md-field"><label>RISK FACTOR</label><input type="number" id="p-risk-factor" value="0.15" step="0.01"></div><div class="grid-2"><div class="md-field"><label>TARGET % (Sesi)</label><input type="number" id="p-target-pct" value="5" step="0.5"></div><div class="md-field"><label>STOP LOSS % (Sesi)</label><input type="number" id="p-stop-pct" value="4" step="0.5"></div></div><div class="grid-2"><div class="md-field"><label>TARGET % (Harian)</label><input type="number" id="p-daily-target" value="25" step="1"></div><div class="md-field"><label>STOP LOSS % (Harian)</label><input type="number" id="p-daily-stoploss" value="15" step="1"></div></div><div class="grid-2"><div class="md-field"><label>SESSION TOTAL</label><input type="number" id="p-session-total" value="8" step="1"></div><div class="md-field"><label>MAX BET CAP</label><input type="number" id="p-max-cap" value="0" step="0.001"></div></div><div class="grid-2"><div class="md-field"><label>TRAIL ACTIVATION %</label><input type="number" id="p-trail-activation" value="3" step="0.5"></div><div class="md-field"><label>GAP1 ACTION</label><select id="p-gap1-action"><option value="continue">CONTINUE</option><option value="stop">STOP</option></select></div></div><div class="grid-2"><div class="md-field"><label>GAP LVL 1 %</label><input type="number" id="p-gap1" value="0.5" step="0.1"></div><div class="md-field"><label>GAP LVL 2 %</label><input type="number" id="p-gap2" value="0.25" step="0.05"></div></div><div class="grid-2"><div class="md-field"><label>GAP LVL 3+ %</label><input type="number" id="p-gap3" value="0.125" step="0.05"></div><div class="md-field"><label>DELAY (ms)</label><input type="number" id="p-delay" value="80"></div></div><div class="toggle-row"><span>AI SPEED</span><label class="md-switch"><input type="checkbox" id="p-ai-speed" checked><span class="md-slider"></span></label></div><div class="grid-2"><div class="md-field"><label>DIRTY BALANCE</label><input type="number" id="p-dirty-bal" value="460" step="0.1"></div><div class="md-field"><label>MIN BET IDR</label><input type="number" id="p-minbet-idr" value="2" step="1"></div></div></div><div id="tab-logs" class="tab-content"><div class="logs-container" id="p-logs"><div style="text-align:center;padding:20px;">ORION EA v4.0 Ready<br>Auto-reset session</div></div></div></div></div>';
         
         document.body.insertAdjacentHTML('beforeend', html);
         
-        document.getElementById("botHeader").addEventListener('mousedown', dragMouseDown);
+        var header = document.getElementById("botHeader");
+        if (header) header.addEventListener('mousedown', dragMouseDown);
+        
         document.getElementById("btn-minimize").onclick = toggleMinimize;
         document.getElementById("btn-theme").onclick = toggleDarkMode;
         
@@ -1216,7 +1515,6 @@
             var balance = bot.isDemo ? bot.dirtyBalance : bot.realBalance;
             if (!bot.isDemo && balance === 0) { updateUILog("Failed to get balance!"); return; }
             
-            // Initialize daily start balance
             bot.dailyStartBalance = balance;
             bot.dailyProfit = 0;
             bot.dailyTargetReached = false;
@@ -1246,6 +1544,8 @@
             bot.isSleeping = false;
             bot.lastTGReport = Date.now();
             bot.lastFiatUpdate = 0;
+            bot.isResetting = false;
+            bot.resetCountdownRemaining = 0;
             
             initMemory();
             
@@ -1278,5 +1578,5 @@
     }
     
     createUI();
-    updateUILog("ORION EA v4.0 Loaded - Virtual Chance + Trailing Gap Ladder");
+    updateUILog("ORION EA v4.0 Full - Auto-reset session after target/stop loss");
 })();
