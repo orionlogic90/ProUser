@@ -1,0 +1,2047 @@
+(function () {
+    // ==================== LOAD CHART.JS ====================
+    if (!document.querySelector('script[src*="chart.js"]')) {
+        var chartScript = document.createElement('script');
+        chartScript.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js';
+        document.head.appendChild(chartScript);
+    }
+    
+    // ==================== PRECONNECT BINANCE ====================
+    let preconnect = document.createElement('link');
+    preconnect.rel = 'preconnect';
+    preconnect.href = 'https://api.binance.com';
+    document.head.appendChild(preconnect);
+    
+    // ==================== KONFIGURASI DASAR ====================
+    let accessToken = "";
+    let cur = "doge";
+    
+    const FALLBACK_CURRENCIES = ["BTC", "ETH", "LTC", "DOGE", "TRX", "USDT", "BNB", "SOL", "ADA", "XRP", "BCH", "EOS", "POL"];
+    
+    const TG_CONFIG = {
+        botToken: "8754790913:AAHYB1fxQhozY2yMl-9XZkrUvhShpTyIqjE",
+        chatId: "7915843472",
+        reportInterval: 300000
+    };
+    
+    const CONFIG = {
+        get apiUrl() { return window.location.origin + '/_api'; },
+        version: "FORGE v1.1"
+    };
+
+    // ==================== VIRTUAL CHANCE ====================
+    const VIRTUAL_CHANCES = [];
+    for (var c = 2; c <= 49.5; c = c + 0.5) {
+        VIRTUAL_CHANCES.push(parseFloat(c.toFixed(1)));
+    }
+    VIRTUAL_CHANCES.push(98.0);
+    VIRTUAL_CHANCES.sort(function(a, b) { return a - b; });
+    
+    const BASE_BET_MIN = 1e-12;
+    
+    var virtualLs = {};
+    var thresholds = {};
+    var readyChances = [];
+    var memory = {};
+    
+    function initMemory() {
+        for (var i = 0; i < VIRTUAL_CHANCES.length; i++) {
+            var c = VIRTUAL_CHANCES[i];
+            var key = Math.floor(c).toString();
+            memory[key] = {
+                wins: 0,
+                loss: 0,
+                max_ls: 0,
+                ls_now: 0,
+                target: Math.ceil(99.0 / c) * 3
+            };
+            virtualLs[c] = 0;
+            thresholds[c] = Math.ceil(99.0 / c) * 3;
+        }
+        readyChances = [];
+        updateUILog("Virtual chance initialized (" + VIRTUAL_CHANCES.length + " chances)");
+    }
+    
+    function updateMemory(chance, win) {
+        var key = Math.floor(chance).toString();
+        if (!memory[key]) {
+            memory[key] = { wins: 0, loss: 0, max_ls: 0, ls_now: 0, target: Math.ceil(99.0 / chance) * 3 };
+        }
+        var mem = memory[key];
+        if (win) {
+            mem.wins++;
+            mem.max_ls = Math.max(mem.max_ls, mem.ls_now);
+            mem.ls_now = 0;
+        } else {
+            mem.loss++;
+            mem.ls_now++;
+            mem.max_ls = Math.max(mem.max_ls, mem.ls_now);
+        }
+    }
+    
+    function virtualCheckWin(roll, chance) {
+        var number = 100 - chance;
+        return roll > number;
+    }
+    
+    function updateVirtualStreaks(roll) {
+        var changed = false;
+        
+        for (var i = 0; i < VIRTUAL_CHANCES.length; i++) {
+            var c = VIRTUAL_CHANCES[i];
+            var isWin = virtualCheckWin(roll, c);
+            
+            if (isWin) {
+                virtualLs[c] = 0;
+                var idx = readyChances.indexOf(c);
+                if (idx > -1) readyChances.splice(idx, 1);
+            } else {
+                virtualLs[c]++;
+                if (virtualLs[c] >= thresholds[c] && readyChances.indexOf(c) === -1) {
+                    readyChances.push(c);
+                    changed = true;
+                    updateUILog("Chance " + c + "% READY! (streak " + virtualLs[c] + "/" + thresholds[c] + ")");
+                }
+            }
+            updateMemory(c, isWin);
+        }
+        
+        if (changed) {
+            readyChances.sort(function(a, b) { return b - a; });
+        }
+    }
+    
+    function getBestTriggerChance() {
+        if (readyChances.length === 0) return null;
+        var best = null;
+        var bestStreak = 0;
+        for (var i = 0; i < readyChances.length; i++) {
+            var c = readyChances[i];
+            if (virtualLs[c] > bestStreak) {
+                bestStreak = virtualLs[c];
+                best = c;
+            }
+        }
+        return best;
+    }
+    
+    function expectedThresholdTrigger(chance, factor) {
+        return Math.ceil(99.0 / chance) * factor;
+    }
+    
+    // ==================== STATUS BOT ====================
+    const bot = {
+        isRunning: false,
+        isDemo: false,
+        minimized: false,
+        darkMode: false,
+        stakeUser: "Loading...",
+        selectedCurrency: "doge",
+        realBalance: 0,
+        
+        stats: {
+            profit: 0, wagered: 0, startBal: 0, currentBal: 0,
+            bets: 0, wins: 0, loss: 0, startTime: null, maxDD: 0, maxBet: 0,
+            maxDrawdownPct: 0, peakBalance: 0
+        },
+        
+        minBetIdr: 2,
+        minBet: 0.00000001,
+        lastPriceUpdate: 0,
+        priceCache: { usdt: 0, idr: 0, usdtIdr: 16000, lastSuccess: 0 },
+        
+        baseChance: 98.0,
+        baseBetPercent: 1,
+        riskFactor: 0.15,
+        targetPct: 5,
+        stopLossPct: 4,
+        sessionTotal: 8,
+        maxBetCap: 0,
+        delay: 80,
+        aiSpeed: true,
+        dirtyBalance: 460,
+        
+        isTrailingActive: false,
+        trailingActivationPct: 3.0,
+        trailingLevel: 0,
+        gapPct: 0.5,
+        gapLevel1: 0.5,
+        gapLevel2: 0.25,
+        gapLevel3plus: 0.125,
+        balancePeak: 0,
+        level1Peak: 0,
+        level2Peak: 0,
+        gapHits: 0,
+        gapHitProcessed: false,
+        gap1Action: "continue",
+        
+        dailyTargetPct: 25,
+        dailyStopLossPct: 15,
+        dailyProfit: 0,
+        dailyStartBalance: 0,
+        dailyResetHour: 0,
+        lastDailyReset: 0,
+        dailyTargetReached: false,
+        
+        isHarvesting: false,
+        harvestChance: 0,
+        harvestStreak: 0,
+        harvestBet: 0,
+        harvestMultiplier: 0,
+        harvestCount: 0,
+        harvestHoldLimit: 0,
+        harvestStartTime: 0,
+        harvestStartBalance: 0,
+        
+        recoveryMode: false,
+        maxRecoveryBet: 20,
+        maxRecoveryStep: 3,
+        maxRecoveryPercent: 50,
+        minBalanceRecovery: 10,
+        cooldownAfterLoss: 30,
+        useDrawdownFactor: true,
+        useTimeDecay: false,
+        totalHarvestLoss: 0,
+        consecutiveLoss: 0,
+        recoveryStep: 0,
+        recoveryElapsed: 0,
+        lastHarvestLossTime: 0,
+        
+        sessionProfit: 0,
+        totalWager: 0,
+        highestProfit: 0,
+        maxDrawdownVal: 0,
+        balanceStartSnapshot: 0,
+        
+        lastWinStatus: true,
+        lastBetAmount: 0,
+        lastTGReport: 0,
+        isSleeping: false,
+        startTime: null,
+        
+        betTimestamps: [],
+        fiatRates: { usdt: 0, idr: 0, usdtIdr: 16000 },
+        lastFiatUpdate: 0,
+        
+        isResetting: false,
+        resetCountdownRemaining: 0,
+        
+        balanceHistory: [],
+        harvestMarkers: [],
+        gapMarkers: [],
+        chartMaxBets: 100,
+        chartInstance: null,
+        
+        harvestHistory: [],
+        openHarvest: null,
+        
+        animationFrameId: null,
+        isTabActive: true
+    };
+
+    // ==================== LOAD/SAVE SETTINGS ====================
+    function saveSettings() {
+        try {
+            const settings = {
+                baseChance: bot.baseChance,
+                baseBetPercent: bot.baseBetPercent,
+                riskFactor: bot.riskFactor,
+                targetPct: bot.targetPct,
+                stopLossPct: bot.stopLossPct,
+                dailyTargetPct: bot.dailyTargetPct,
+                dailyStopLossPct: bot.dailyStopLossPct,
+                sessionTotal: bot.sessionTotal,
+                maxBetCap: bot.maxBetCap,
+                trailingActivationPct: bot.trailingActivationPct,
+                gap1Action: bot.gap1Action,
+                gapLevel1: bot.gapLevel1,
+                gapLevel2: bot.gapLevel2,
+                gapLevel3plus: bot.gapLevel3plus,
+                delay: bot.delay,
+                aiSpeed: bot.aiSpeed,
+                dirtyBalance: bot.dirtyBalance,
+                chartMaxBets: bot.chartMaxBets,
+                recoveryMode: bot.recoveryMode,
+                maxRecoveryBet: bot.maxRecoveryBet,
+                maxRecoveryStep: bot.maxRecoveryStep,
+                maxRecoveryPercent: bot.maxRecoveryPercent,
+                minBalanceRecovery: bot.minBalanceRecovery,
+                cooldownAfterLoss: bot.cooldownAfterLoss,
+                useDrawdownFactor: bot.useDrawdownFactor,
+                useTimeDecay: bot.useTimeDecay
+            };
+            localStorage.setItem('forge_settings', JSON.stringify(settings));
+            if (bot.selectedCurrency) localStorage.setItem('forge_currency', bot.selectedCurrency);
+            if (accessToken) localStorage.setItem('forge_token', accessToken);
+            if (bot.harvestHistory.length > 0) localStorage.setItem('forge_harvest_history', JSON.stringify(bot.harvestHistory.slice(0, 50)));
+        } catch(e) {}
+    }
+    
+    function loadSettings() {
+        try {
+            const saved = localStorage.getItem('forge_settings');
+            if (saved) {
+                const s = JSON.parse(saved);
+                if (s.baseChance !== undefined) bot.baseChance = s.baseChance;
+                if (s.baseBetPercent !== undefined) bot.baseBetPercent = s.baseBetPercent;
+                if (s.riskFactor !== undefined) bot.riskFactor = s.riskFactor;
+                if (s.targetPct !== undefined) bot.targetPct = s.targetPct;
+                if (s.stopLossPct !== undefined) bot.stopLossPct = s.stopLossPct;
+                if (s.dailyTargetPct !== undefined) bot.dailyTargetPct = s.dailyTargetPct;
+                if (s.dailyStopLossPct !== undefined) bot.dailyStopLossPct = s.dailyStopLossPct;
+                if (s.sessionTotal !== undefined) bot.sessionTotal = s.sessionTotal;
+                if (s.maxBetCap !== undefined) bot.maxBetCap = s.maxBetCap;
+                if (s.trailingActivationPct !== undefined) bot.trailingActivationPct = s.trailingActivationPct;
+                if (s.gap1Action !== undefined) bot.gap1Action = s.gap1Action;
+                if (s.gapLevel1 !== undefined) bot.gapLevel1 = s.gapLevel1;
+                if (s.gapLevel2 !== undefined) bot.gapLevel2 = s.gapLevel2;
+                if (s.gapLevel3plus !== undefined) bot.gapLevel3plus = s.gapLevel3plus;
+                if (s.delay !== undefined) bot.delay = s.delay;
+                if (s.aiSpeed !== undefined) bot.aiSpeed = s.aiSpeed;
+                if (s.dirtyBalance !== undefined) bot.dirtyBalance = s.dirtyBalance;
+                if (s.chartMaxBets !== undefined) bot.chartMaxBets = s.chartMaxBets;
+                if (s.recoveryMode !== undefined) bot.recoveryMode = s.recoveryMode;
+                if (s.maxRecoveryBet !== undefined) bot.maxRecoveryBet = s.maxRecoveryBet;
+                if (s.maxRecoveryStep !== undefined) bot.maxRecoveryStep = s.maxRecoveryStep;
+                if (s.maxRecoveryPercent !== undefined) bot.maxRecoveryPercent = s.maxRecoveryPercent;
+                if (s.minBalanceRecovery !== undefined) bot.minBalanceRecovery = s.minBalanceRecovery;
+                if (s.cooldownAfterLoss !== undefined) bot.cooldownAfterLoss = s.cooldownAfterLoss;
+                if (s.useDrawdownFactor !== undefined) bot.useDrawdownFactor = s.useDrawdownFactor;
+                if (s.useTimeDecay !== undefined) bot.useTimeDecay = s.useTimeDecay;
+            }
+            const savedCurr = localStorage.getItem('forge_currency');
+            if (savedCurr) bot.selectedCurrency = savedCurr;
+            const savedToken = localStorage.getItem('forge_token');
+            if (savedToken) accessToken = savedToken;
+            const savedHistory = localStorage.getItem('forge_harvest_history');
+            if (savedHistory) {
+                bot.harvestHistory = JSON.parse(savedHistory);
+            }
+        } catch(e) {}
+    }
+
+    // ==================== MIN BET OTOMATIS 2 IDR ====================
+    async function updateFiatRates() {
+        var now = Date.now();
+        if (now - bot.lastFiatUpdate < 30000) return;
+        bot.lastFiatUpdate = now;
+        
+        let useCache = false;
+        try {
+            var coin = bot.selectedCurrency.toUpperCase();
+            var coinRes = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=' + coin + 'USDT').then(function(r) { return r.json(); }).catch(function() { return {price:"0"}; });
+            var idrRes = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=USDTIDR').then(function(r) { return r.json(); }).catch(function() { return {price:"0"}; });
+            
+            if (coinRes && coinRes.price && parseFloat(coinRes.price) > 0) bot.fiatRates.usdt = parseFloat(coinRes.price);
+            if (idrRes && idrRes.price && parseFloat(idrRes.price) > 0) bot.fiatRates.usdtIdr = parseFloat(idrRes.price);
+            bot.fiatRates.idr = bot.fiatRates.usdt * bot.fiatRates.usdtIdr;
+            bot.priceCache = { usdt: bot.fiatRates.usdt, idr: bot.fiatRates.idr, usdtIdr: bot.fiatRates.usdtIdr, lastSuccess: now };
+            bot.lastPriceUpdate = now;
+            useCache = false;
+        } catch(e) {
+            useCache = true;
+        }
+        
+        if (useCache && bot.priceCache.lastSuccess > 0) {
+            bot.fiatRates = { usdt: bot.priceCache.usdt, idr: bot.priceCache.idr, usdtIdr: bot.priceCache.usdtIdr };
+            updateUILog("⚠️ Using cached price (Binance unavailable)");
+        }
+        
+        if (bot.fiatRates.idr > 0) {
+            bot.minBet = bot.minBetIdr / bot.fiatRates.idr;
+            if (bot.minBet < 0.00000001) bot.minBet = 0.00000001;
+        }
+        
+        let priceStatus = document.getElementById("price-status");
+        if (priceStatus) priceStatus.innerHTML = useCache ? "⚠️ CACHE" : "✅ LIVE";
+    }
+
+    // ==================== RECOVERY MODE ====================
+    function calculateRecoveryBet(baseBet, balance, harvestChance) {
+        if (!bot.recoveryMode) return baseBet;
+        if (balance < bot.minBalanceRecovery) return baseBet;
+        if (bot.recoveryStep >= bot.maxRecoveryStep) return baseBet;
+        if (bot.totalHarvestLoss <= 0) return baseBet;
+        
+        if (bot.lastHarvestLossTime > 0 && (Date.now() - bot.lastHarvestLossTime) < bot.cooldownAfterLoss * 1000) {
+            return baseBet;
+        }
+        
+        let THL = bot.totalHarvestLoss;
+        let RF = 1 + (THL / balance);
+        let CM = 99 / harvestChance;
+        let DF = bot.useDrawdownFactor ? 1 + (bot.stats.maxDrawdownPct / 100) : 1;
+        let CL = 1 + (bot.consecutiveLoss * 0.1);
+        let TD = 1;
+        if (bot.useTimeDecay && bot.recoveryElapsed > 0) {
+            TD = Math.max(0.1, 1 - (bot.recoveryElapsed / 86400));
+        }
+        
+        let recoveryBet = baseBet * RF * CM * DF * CL * TD;
+        
+        let maxBetByCap = baseBet * bot.maxRecoveryBet;
+        recoveryBet = Math.min(recoveryBet, maxBetByCap);
+        let maxPercentBet = balance * (bot.maxRecoveryPercent / 100);
+        recoveryBet = Math.min(recoveryBet, maxPercentBet);
+        
+        return Math.max(recoveryBet, baseBet);
+    }
+    
+    function resetRecovery() {
+        bot.totalHarvestLoss = 0;
+        bot.consecutiveLoss = 0;
+        bot.recoveryStep = 0;
+        bot.recoveryElapsed = 0;
+        updateUILog("🔄 Recovery mode reset");
+        renderHarvestTable();
+    }
+    
+    function updateRecoveryAfterWin(profit) {
+        if (!bot.recoveryMode || bot.totalHarvestLoss <= 0) return;
+        bot.totalHarvestLoss = Math.max(0, bot.totalHarvestLoss - profit);
+        if (bot.totalHarvestLoss <= 0) {
+            bot.consecutiveLoss = 0;
+            bot.recoveryStep = 0;
+            bot.recoveryElapsed = 0;
+            updateUILog("✅ Recovery complete! Total loss recovered.");
+        }
+        renderHarvestTable();
+    }
+    
+    function updateRecoveryAfterLoss(loss) {
+        if (!bot.recoveryMode) return;
+        bot.totalHarvestLoss += Math.abs(loss);
+        bot.consecutiveLoss++;
+        bot.recoveryStep++;
+        bot.recoveryElapsed = 0;
+        bot.lastHarvestLossTime = Date.now();
+        if (bot.recoveryStep >= bot.maxRecoveryStep) {
+            updateUILog("⚠️ Max recovery step reached. Resetting recovery.");
+            resetRecovery();
+        }
+        renderHarvestTable();
+    }
+
+    // ==================== HARVEST HISTORY ====================
+    function addHarvestToHistory(chance, totalBet, multiplier, win, profit, balanceAfter, duration, reason, isRecovery) {
+        var harvestRecord = {
+            id: bot.harvestHistory.length + 1,
+            time: new Date().toLocaleTimeString(),
+            chance: chance,
+            bet: totalBet,
+            multiplier: multiplier,
+            result: win ? "WIN" : "LOSS",
+            profit: profit,
+            balance: balanceAfter,
+            duration: duration,
+            reason: reason,
+            isRecovery: isRecovery || false
+        };
+        bot.harvestHistory.unshift(harvestRecord);
+        while (bot.harvestHistory.length > 50) bot.harvestHistory.pop();
+        saveSettings();
+        renderHarvestTable();
+    }
+    
+    function startOpenHarvest(chance, startBet, isRecovery) {
+        bot.openHarvest = {
+            startTime: Date.now(),
+            startTimeStr: new Date().toLocaleTimeString(),
+            chance: chance,
+            startBet: startBet,
+            currentBet: startBet,
+            streak: 0,
+            totalBet: startBet,
+            isRecovery: isRecovery || false
+        };
+        renderHarvestTable();
+    }
+    
+    function updateOpenHarvest(currentBet, streak, totalBet) {
+        if (bot.openHarvest) {
+            bot.openHarvest.currentBet = currentBet;
+            bot.openHarvest.streak = streak;
+            bot.openHarvest.totalBet = totalBet;
+            renderHarvestTable();
+        }
+    }
+    
+    function closeOpenHarvest(win, profit, balanceAfter, reason) {
+        if (bot.openHarvest) {
+            var duration = Math.floor((Date.now() - bot.openHarvest.startTime) / 1000);
+            addHarvestToHistory(
+                bot.openHarvest.chance,
+                bot.openHarvest.totalBet,
+                win ? (99 / bot.openHarvest.chance).toFixed(2) : 0,
+                win,
+                profit,
+                balanceAfter,
+                duration,
+                reason,
+                bot.openHarvest.isRecovery
+            );
+            if (win) updateRecoveryAfterWin(profit);
+            else updateRecoveryAfterLoss(profit);
+            bot.openHarvest = null;
+            renderHarvestTable();
+        }
+    }
+    
+    function renderHarvestTable() {
+        var container = document.getElementById("harvestTable");
+        if (!container) return;
+        
+        var totalWins = bot.harvestHistory.filter(function(h) { return h.result === "WIN"; }).length;
+        var winRate = bot.harvestHistory.length ? (totalWins / bot.harvestHistory.length * 100).toFixed(1) : 0;
+        
+        var html = '<div class="stats-block" style="margin-bottom:10px;">';
+        html += '<div class="line"><span class="label">🌾 HARVEST STATS</span><span class="value">Total: ' + bot.harvestHistory.length + ' | Win: ' + totalWins + ' | WR: ' + winRate + '%</span></div>';
+        if (bot.recoveryMode && bot.totalHarvestLoss > 0) {
+            html += '<div class="line"><span class="label">🔄 RECOVERY MODE</span><span class="value" style="color:#ffaa00;">Loss Left: ' + bot.totalHarvestLoss.toFixed(8) + ' | Step: ' + bot.recoveryStep + '/' + bot.maxRecoveryStep + '</span></div>';
+        }
+        html += '</div>';
+        
+        if (bot.openHarvest && bot.isHarvesting) {
+            html += '<div class="stats-block" style="border-left:3px solid #ffaa00;margin-bottom:10px;">';
+            html += '<div class="line"><span class="label">🔴 OPEN HARVEST ' + (bot.openHarvest.isRecovery ? '(RECOVERY)' : '') + '</span><span class="value">Chance: ' + bot.openHarvest.chance + '%</span></div>';
+            html += '<div class="line"><span class="label">Start</span><span class="value">' + bot.openHarvest.startTimeStr + '</span></div>';
+            html += '<div class="line"><span class="label">Total Bet</span><span class="value">' + bot.openHarvest.totalBet.toFixed(8) + '</span></div>';
+            html += '<div class="line"><span class="label">Current Bet</span><span class="value">' + bot.openHarvest.currentBet.toFixed(8) + '</span></div>';
+            html += '<div class="line"><span class="label">Streak</span><span class="value" style="color:#ff6b81;">' + bot.openHarvest.streak + 'x</span></div>';
+            html += '</div>';
+        }
+        
+        if (bot.harvestHistory.length > 0) {
+            html += '<div class="stats-block">';
+            html += '<div class="line"><span class="label">✅ CLOSED HARVEST</span><span class="value">Last ' + Math.min(bot.harvestHistory.length, 20) + '</span></div>';
+            html += '<div class="divider"></div>';
+            for (var i = 0; i < Math.min(bot.harvestHistory.length, 20); i++) {
+                var h = bot.harvestHistory[i];
+                var borderColor = h.result === "WIN" ? "#00e5c0" : "#ff6b81";
+                var profitColor = h.profit >= 0 ? "#00e5c0" : "#ff6b81";
+                var profitSign = h.profit >= 0 ? "+" : "";
+                html += '<div style="border-left:2px solid ' + borderColor + ';padding-left:8px;margin-bottom:8px;">';
+                html += '<div class="line"><span class="label">#' + h.id + ' ' + h.time + (h.isRecovery ? ' 🔄' : '') + '</span><span class="value">' + h.chance + '% | ' + h.bet.toFixed(8) + ' | ' + (h.multiplier ? h.multiplier + 'x' : '-') + ' | ' + (h.result === "WIN" ? "✅ WIN" : "❌ LOSS") + '</span></div>';
+                html += '<div class="line"><span class="label"></span><span class="value" style="color:' + profitColor + ';">Profit: ' + profitSign + h.profit.toFixed(8) + ' | Balance: ' + h.balance.toFixed(8) + '</span></div>';
+                html += '</div>';
+            }
+            html += '</div>';
+        } else {
+            html += '<div class="stats-block"><div style="text-align:center;padding:20px;color:var(--text-light);">No harvest yet.</div></div>';
+        }
+        container.innerHTML = html;
+    }
+
+    // ==================== CHART FUNCTIONS (STABIL - TIDAK KEDIP) ====================
+    function addBalanceToHistory(balance, isHarvest, isGapEscalate, newLevel) {
+        var betNum = bot.stats.bets;
+        bot.balanceHistory.push({
+            balance: balance,
+            betNumber: betNum,
+            timestamp: Date.now()
+        });
+        
+        if (isHarvest) {
+            bot.harvestMarkers.push({ betNumber: betNum });
+        }
+        if (isGapEscalate && newLevel) {
+            bot.gapMarkers.push({ betNumber: betNum, level: newLevel });
+        }
+        
+        while (bot.balanceHistory.length > bot.chartMaxBets) {
+            bot.balanceHistory.shift();
+        }
+        while (bot.harvestMarkers.length > 50) bot.harvestMarkers.shift();
+        while (bot.gapMarkers.length > 50) bot.gapMarkers.shift();
+        
+        drawChart();
+    }
+    
+    function drawChart() {
+        var canvas = document.getElementById("balanceChart");
+        if (!canvas) return;
+        
+        if (bot.balanceHistory.length < 2) return;
+        
+        var labels = bot.balanceHistory.map(function(d) { return d.betNumber; });
+        var data = bot.balanceHistory.map(function(d) { return d.balance; });
+        
+        var datasets = [{
+            label: 'Balance',
+            data: data,
+            borderColor: '#9ec07c',
+            backgroundColor: 'rgba(158, 192, 124, 0.1)',
+            borderWidth: 2,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            tension: 0.1,
+            fill: true
+        }];
+        
+        var harvestPoints = [];
+        for (var i = 0; i < bot.harvestMarkers.length; i++) {
+            var marker = bot.harvestMarkers[i];
+            for (var j = 0; j < bot.balanceHistory.length; j++) {
+                if (bot.balanceHistory[j].betNumber === marker.betNumber) {
+                    harvestPoints.push({ x: labels[j], y: data[j] });
+                    break;
+                }
+            }
+        }
+        
+        if (harvestPoints.length > 0) {
+            datasets.push({
+                label: 'Harvest',
+                data: harvestPoints,
+                type: 'scatter',
+                pointStyle: 'triangle',
+                pointBackgroundColor: '#ff6b81',
+                pointBorderColor: '#ff6b81',
+                pointRadius: 6,
+                pointHoverRadius: 8,
+                showLine: false
+            });
+        }
+        
+        var gapPoints = [];
+        for (var i = 0; i < bot.gapMarkers.length; i++) {
+            var marker = bot.gapMarkers[i];
+            for (var j = 0; j < bot.balanceHistory.length; j++) {
+                if (bot.balanceHistory[j].betNumber === marker.betNumber) {
+                    gapPoints.push({ x: labels[j], y: data[j] });
+                    break;
+                }
+            }
+        }
+        
+        if (gapPoints.length > 0) {
+            datasets.push({
+                label: 'Gap Escalate',
+                data: gapPoints,
+                type: 'scatter',
+                pointStyle: 'triangle',
+                pointBackgroundColor: '#00e5c0',
+                pointBorderColor: '#00e5c0',
+                pointRadius: 6,
+                pointHoverRadius: 8,
+                rotation: 180,
+                showLine: false
+            });
+        }
+        
+        var isDark = bot.darkMode;
+        
+        if (bot.chartInstance) {
+            bot.chartInstance.destroy();
+        }
+        
+        var ctx = canvas.getContext('2d');
+        bot.chartInstance = new Chart(ctx, {
+            type: 'line',
+            data: { labels: labels, datasets: datasets },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                if (context.dataset.label === 'Harvest') return '🔻 Harvest Trigger at bet ' + context.raw.x;
+                                if (context.dataset.label === 'Gap Escalate') return '🔺 Gap Escalate at bet ' + context.raw.x;
+                                return 'Balance: ' + context.raw.toFixed(8);
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        title: { display: true, text: 'Bet Number', color: isDark ? '#a0a0a0' : '#6b7280', font: { size: 9 } },
+                        ticks: { color: isDark ? '#a0a0a0' : '#6b7280', font: { size: 8 } },
+                        grid: { color: isDark ? '#2a2a4a' : '#e5e7eb' }
+                    },
+                    y: {
+                        title: { display: true, text: 'Balance', color: isDark ? '#a0a0a0' : '#6b7280', font: { size: 9 } },
+                        ticks: { color: isDark ? '#a0a0a0' : '#6b7280', font: { size: 8 }, callback: function(v) { return v.toFixed(4); } },
+                        grid: { color: isDark ? '#2a2a4a' : '#e5e7eb' }
+                    }
+                }
+            }
+        });
+    }
+    
+    function drawGapVisual() {
+        var container = document.getElementById("gapVisual");
+        if (!container) return;
+        
+        var statusText = "";
+        if (bot.trailingLevel === 1) statusText = "ACTIVE ▲";
+        else if (bot.trailingLevel >= 2) statusText = "ACTIVE ▲ (L" + bot.trailingLevel + ")";
+        else statusText = "INACTIVE";
+        
+        var html = '<div class="stats-block" style="margin-top:10px;">';
+        html += '<div class="line"><span class="label">GAP LEVEL 1</span><span class="value">' + bot.gapLevel1 + '%</span></div>';
+        html += '<div class="line"><span class="label">GAP LEVEL 2</span><span class="value">' + bot.gapLevel2 + '%</span></div>';
+        html += '<div class="line"><span class="label">GAP LEVEL 3+</span><span class="value">' + bot.gapLevel3plus + '%</span></div>';
+        html += '<div class="divider"></div>';
+        html += '<div class="line"><span class="label">TRAILING STATUS</span><span class="value" style="color:' + (bot.isTrailingActive ? '#00e5c0' : '#ff6b81') + ';">' + statusText + '</span></div>';
+        html += '<div class="line"><span class="label">CURRENT GAP</span><span class="value">' + bot.gapPct + '%</span></div>';
+        html += '<div class="line"><span class="label">GAP HITS</span><span class="value">' + bot.gapHits + '</span></div>';
+        html += '</div>';
+        
+        container.innerHTML = html;
+    }
+
+    // ==================== TRAILING GAP LADDER ====================
+    function activateTrailing() {
+        if (bot.isTrailingActive) return;
+        
+        bot.isTrailingActive = true;
+        bot.trailingLevel = 1;
+        bot.gapPct = bot.gapLevel1;
+        bot.balancePeak = bot.stats.currentBal;
+        bot.level1Peak = bot.stats.currentBal;
+        bot.level2Peak = 0;
+        bot.gapHitProcessed = false;
+        
+        updateUILog("🔱 TRAILING ACTIVATED! Level 1, Gap: " + bot.gapPct + "%");
+        sendTelegramMessage("🔱 TRAILING ACTIVATED\nLevel 1 | Gap: " + bot.gapPct + "%\nPeak: " + bot.balancePeak.toFixed(8));
+        drawGapVisual();
+    }
+    
+    function updateTrailing() {
+        if (!bot.isTrailingActive) return;
+        
+        var currentBalance = bot.stats.currentBal;
+        var escalated = false;
+        
+        if (currentBalance > bot.balancePeak) {
+            bot.balancePeak = currentBalance;
+        }
+        
+        if (bot.trailingLevel === 1 && currentBalance > bot.level1Peak) {
+            bot.level1Peak = currentBalance;
+        }
+        if (bot.trailingLevel === 2 && currentBalance > bot.level2Peak) {
+            bot.level2Peak = currentBalance;
+        }
+        
+        if (bot.trailingLevel === 1 && bot.balancePeak > bot.level1Peak * 1.01) {
+            bot.trailingLevel = 2;
+            bot.gapPct = bot.gapLevel2;
+            bot.level2Peak = bot.balancePeak;
+            escalated = true;
+            updateUILog("⬆️ Trailing escalated to LEVEL 2 | Gap: " + bot.gapPct + "%");
+            addBalanceToHistory(bot.stats.currentBal, false, true, 2);
+        } else if (bot.trailingLevel === 2 && bot.balancePeak > bot.level2Peak * 1.005) {
+            bot.trailingLevel = 3;
+            bot.gapPct = bot.gapLevel3plus;
+            escalated = true;
+            updateUILog("⬆️ Trailing escalated to LEVEL 3+ | Gap: " + bot.gapPct + "%");
+            addBalanceToHistory(bot.stats.currentBal, false, true, 3);
+        }
+        
+        if (escalated) {
+            drawGapVisual();
+        }
+        
+        var gapThreshold = bot.balancePeak * (1 - (bot.gapPct / 100.0));
+        
+        if (currentBalance <= gapThreshold && !bot.gapHitProcessed) {
+            bot.gapHits++;
+            bot.gapHitProcessed = true;
+            
+            updateUILog("⚠️ GAP HIT! Level " + bot.trailingLevel + " | Drop " + bot.gapPct + "% from peak");
+            
+            if (bot.trailingLevel === 1) {
+                if (bot.gap1Action === "continue") {
+                    bot.isTrailingActive = false;
+                    bot.trailingLevel = 0;
+                    bot.gapPct = bot.gapLevel1;
+                    bot.balancePeak = bot.stats.currentBal;
+                    if (bot.isHarvesting && bot.openHarvest) closeOpenHarvest(false, bot.stats.currentBal - bot.openHarvest.startBalance, bot.stats.currentBal, "Gap Hit");
+                    readyChances = [];
+                    for (var i = 0; i < VIRTUAL_CHANCES.length; i++) virtualLs[VIRTUAL_CHANCES[i]] = 0;
+                    updateUILog("🔄 Reset to NORMAL mode (Gap Level 1 hit)");
+                    sendTelegramMessage("🔄 GAP LEVEL 1 HIT\nResetting to NORMAL mode\nHit #" + bot.gapHits);
+                } else {
+                    bot.isRunning = false;
+                    updateUILog("🛑 Bot stopped by Gap Level 1 (stop action)");
+                    sendTelegramMessage("🛑 GAP LEVEL 1 STOP\nProfit secured: " + bot.stats.profit.toFixed(8));
+                    toggleStartStop(false);
+                }
+            } else {
+                bot.trailingLevel = 1;
+                bot.gapPct = bot.gapLevel1;
+                bot.level1Peak = bot.balancePeak;
+                updateUILog("🔄 Reset to LEVEL 1 (continuing trailing)");
+            }
+            drawGapVisual();
+        }
+        
+        var profitPct = (bot.stats.profit / bot.stats.startBal) * 100;
+        if (profitPct < 1.0) {
+            bot.isTrailingActive = false;
+            bot.trailingLevel = 0;
+            updateUILog("📉 Exited trailing mode (profit < 1%)");
+            drawGapVisual();
+        }
+    }
+    
+    function resetTrailingAfterWin() {
+        if (bot.isTrailingActive) {
+            bot.trailingLevel = 1;
+            bot.gapPct = bot.gapLevel1;
+            bot.level1Peak = bot.balancePeak;
+            bot.gapHitProcessed = false;
+            updateUILog("🔄 Trailing reset to Level 1 after win");
+            drawGapVisual();
+        }
+    }
+
+    // ==================== COUNTDOWN RESET SESSION ====================
+    async function sessionResetCountdown(seconds) {
+        if (bot.isResetting) return;
+        bot.isResetting = true;
+        var wasRunning = bot.isRunning;
+        bot.isRunning = false;
+        
+        for (var i = seconds; i >= 0; i--) {
+            bot.resetCountdownRemaining = i;
+            updateUILog("⏰ Session reset in " + i + " seconds...");
+            updateStatsDisplay();
+            await new Promise(function(resolve) { setTimeout(resolve, 1000); });
+        }
+        
+        bot.resetCountdownRemaining = 0;
+        bot.isResetting = false;
+        
+        updateUILog("🔄 Resetting session...");
+        resetProfitStats();
+        
+        if (wasRunning) {
+            bot.isRunning = true;
+            updateUILog("✅ Session reset complete. Continuing...");
+            runLoop();
+        }
+    }
+
+    // ==================== DAILY LIMITS ====================
+    function checkDailyReset() {
+        var now = new Date();
+        var todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), bot.dailyResetHour, 0, 0).getTime();
+        
+        if (bot.lastDailyReset === 0) {
+            bot.lastDailyReset = todayStart;
+            bot.dailyStartBalance = bot.stats.currentBal;
+            bot.dailyProfit = 0;
+            bot.dailyTargetReached = false;
+            updateUILog("Daily counter reset. Start balance: " + (bot.dailyStartBalance || 0).toFixed(8));
+            return;
+        }
+        
+        if (todayStart > bot.lastDailyReset && now.getTime() >= todayStart) {
+            bot.lastDailyReset = todayStart;
+            bot.dailyStartBalance = bot.stats.currentBal;
+            bot.dailyProfit = 0;
+            bot.dailyTargetReached = false;
+            updateUILog("DAILY RESET! New start balance: " + (bot.dailyStartBalance || 0).toFixed(8));
+            sendTelegramMessage("🔄 DAILY RESET\nStart balance: " + (bot.dailyStartBalance || 0).toFixed(8) + " " + bot.selectedCurrency.toUpperCase());
+        }
+    }
+    
+    function updateDailyProfit() { 
+        if (bot.dailyStartBalance > 0) bot.dailyProfit = (bot.stats.currentBal || 0) - bot.dailyStartBalance; 
+    }
+    
+    function checkDailyLimits() {
+        if (bot.dailyTargetReached) return true;
+        var dailyProfitPct = bot.dailyStartBalance > 0 ? ((bot.dailyProfit || 0) / bot.dailyStartBalance * 100) : 0;
+        
+        if (dailyProfitPct >= bot.dailyTargetPct) {
+            bot.dailyTargetReached = true;
+            bot.isRunning = false;
+            updateUILog("🎯 DAILY TARGET REACHED! Profit: " + (bot.dailyProfit || 0).toFixed(8) + " (" + dailyProfitPct.toFixed(2) + "%)");
+            sendTelegramMessage("🎯 DAILY TARGET REACHED!\nProfit: " + (bot.dailyProfit || 0).toFixed(8) + " (" + dailyProfitPct.toFixed(2) + "%)\nFinal balance: " + (bot.stats.currentBal || 0).toFixed(8));
+            toggleStartStop(false);
+            return true;
+        }
+        
+        if (dailyProfitPct <= -bot.dailyStopLossPct) {
+            bot.isRunning = false;
+            updateUILog("🛑 DAILY STOP LOSS REACHED! Loss: " + (bot.dailyProfit || 0).toFixed(8) + " (" + dailyProfitPct.toFixed(2) + "%)");
+            sendTelegramMessage("🛑 DAILY STOP LOSS REACHED!\nLoss: " + (bot.dailyProfit || 0).toFixed(8) + " (" + dailyProfitPct.toFixed(2) + "%)\nFinal balance: " + (bot.stats.currentBal || 0).toFixed(8));
+            toggleStartStop(false);
+            return true;
+        }
+        
+        return false;
+    }
+
+    // ==================== TELEGRAM ====================
+    async function sendTelegramMessage(message) {
+        if (!TG_CONFIG.botToken || !TG_CONFIG.chatId) return;
+        try {
+            await fetch(`https://api.telegram.org/bot${TG_CONFIG.botToken}/sendMessage`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_id: TG_CONFIG.chatId, text: "```\n" + message + "\n```", parse_mode: 'Markdown' })
+            });
+        } catch(e) {}
+    }
+    
+    function getDuration() {
+        if (!bot.startTime) return "0s";
+        var seconds = Math.floor((Date.now() - bot.startTime) / 1000);
+        var hours = Math.floor(seconds / 3600), minutes = Math.floor((seconds % 3600) / 60), secs = seconds % 60;
+        if (hours > 0) return hours + "h " + minutes + "m " + secs + "s";
+        if (minutes > 0) return minutes + "m " + secs + "s";
+        return secs + "s";
+    }
+    
+    function getBetSpeed() {
+        var now = Date.now();
+        bot.betTimestamps = (bot.betTimestamps || []).filter(function(t) { return now - t < 10000; });
+        if (bot.betTimestamps.length < 2) return 0;
+        var duration = (bot.betTimestamps[bot.betTimestamps.length - 1] - bot.betTimestamps[0]) / 1000;
+        return duration <= 0 ? 0 : bot.betTimestamps.length / duration;
+    }
+    
+    function getApiToken() { 
+        return accessToken || localStorage.getItem('apitoken') || (document.getElementById("p-token")?.value) || "Not set"; 
+    }
+    
+    async function sendSessionReport() {
+        var profitPct = bot.stats.startBal > 0 ? ((bot.stats.profit || 0) / bot.stats.startBal * 100) : 0;
+        var dailyProfitPct = bot.dailyStartBalance > 0 ? ((bot.dailyProfit || 0) / bot.dailyStartBalance * 100) : 0;
+        var winRate = bot.stats.bets > 0 ? ((bot.stats.wins || 0) / bot.stats.bets * 100) : 0;
+        var runTime = getDuration();
+        var status = bot.isHarvesting ? "HARVEST " + (bot.harvestChance || 0) + "%" : (bot.isTrailingActive ? "TRAIL L" + (bot.trailingLevel || 0) : "NORMAL " + (bot.baseChance || 98) + "%");
+        var message = "📊 FORGE REPORT\nUser: " + bot.stakeUser + "\nTime: " + runTime + "\nBalance: " + (bot.stats.currentBal || 0).toFixed(8) + " " + (bot.selectedCurrency || "doge").toUpperCase() + "\nProfit: " + ((bot.stats.profit || 0) >= 0 ? '+' : '') + (bot.stats.profit || 0).toFixed(8) + " (" + profitPct.toFixed(2) + "%)\nDaily: " + ((bot.dailyProfit || 0) >= 0 ? '+' : '') + (bot.dailyProfit || 0).toFixed(8) + " (" + dailyProfitPct.toFixed(2) + "%)\nBets: " + (bot.stats.bets || 0) + " | W:" + (bot.stats.wins || 0) + " L:" + (bot.stats.loss || 0) + " WR:" + winRate.toFixed(1) + "%\nStatus: " + status + "\nHarvest: " + (bot.harvestCount || 0) + "\nGap Hits: " + (bot.gapHits || 0);
+        await sendTelegramMessage(message);
+    }
+
+    // ==================== API CALLS ====================
+    function getAuthToken() { 
+        return localStorage.getItem('apitoken') || (document.getElementById("p-token")?.value) || null; 
+    }
+    
+    function saveToken(token) { 
+        if (token && token.length > 10) { 
+            localStorage.setItem('apitoken', token); 
+            accessToken = token; 
+            saveSettings(); 
+        } 
+    }
+    
+    async function syncUserInfo() {
+        accessToken = getAuthToken();
+        if (!accessToken || accessToken.length < 30) { 
+            updateUILog("Waiting for API token..."); 
+            return false; 
+        }
+        
+        try {
+            var res = await fetch(CONFIG.apiUrl + '/graphql', {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "x-access-token": accessToken },
+                body: JSON.stringify({ query: 'query{user{name balances{available{amount currency}}}}' })
+            });
+            var json = await res.json();
+            if (json?.data?.user) {
+                bot.stakeUser = json.data.user.name;
+                var bals = json.data.user.balances || [];
+                var sel = document.getElementById("p-currency");
+                if (sel && sel.options.length === 0) {
+                    for (var i = 0; i < bals.length; i++) {
+                        var opt = document.createElement("option");
+                        opt.value = bals[i].available.currency;
+                        opt.textContent = bals[i].available.currency.toUpperCase();
+                        if(bals[i].available.currency.toLowerCase() === cur) opt.selected = true;
+                        sel.appendChild(opt);
+                    }
+                    if (sel.options.length === 0) {
+                        for (var j = 0; j < FALLBACK_CURRENCIES.length; j++) {
+                            var opt2 = document.createElement("option");
+                            opt2.value = FALLBACK_CURRENCIES[j].toLowerCase();
+                            opt2.textContent = FALLBACK_CURRENCIES[j];
+                            sel.appendChild(opt2);
+                        }
+                        sel.value = cur;
+                    }
+                }
+                if (sel) bot.selectedCurrency = sel.value;
+                var active = bals.find(b => b.available.currency.toLowerCase() === (bot.selectedCurrency || "doge").toLowerCase());
+                if (active) bot.realBalance = parseFloat(active.available.amount);
+                updateUILog("Logged in as: " + bot.stakeUser);
+                return true;
+            }
+        } catch (e) { 
+            updateUILog("Sync error: " + e.message); 
+        }
+        return false;
+    }
+
+    // ==================== PLACE BET ====================
+    async function placeBet(amount, chance) {
+        var target = 100 - chance;
+        
+        if (bot.isDemo) {
+            try {
+                var response = await fetch(CONFIG.apiUrl + '/casino/dice/roll', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'x-access-token': accessToken, 'x-lockdown-token': 's5MNWtjTM5TvCMkAzxov' },
+                    body: JSON.stringify({ amount: 0, currency: bot.selectedCurrency, target: target, condition: "above", identifier: Math.random().toString(36).slice(2) })
+                });
+                var result = await response.json();
+                if (!result?.diceRoll) {
+                    var fallbackWin = Math.random() * 100 < chance;
+                    var fallbackMultiplier = fallbackWin ? (99 / chance) : 1;
+                    return { diceRoll: { amount: parseFloat(amount) || 0, payout: fallbackWin ? (parseFloat(amount) || 0) * fallbackMultiplier : 0, payoutMultiplier: fallbackMultiplier } };
+                }
+                var diceRoll = result.diceRoll;
+                var safeAmount = parseFloat(amount) || 0;
+                var win = diceRoll.payoutMultiplier > 1;
+                var multiplier = win ? (99 / chance) : 1;
+                var winAmount = win ? safeAmount * multiplier : 0;
+                return { diceRoll: { amount: safeAmount, payout: winAmount, payoutMultiplier: multiplier, win: win, user: { wallets: [{ balance: (bot.stats.currentBal || 0) + (winAmount - safeAmount) }] } } };
+            } catch(e) {
+                var fallbackWin = Math.random() * 100 < chance;
+                var fallbackMultiplier = fallbackWin ? (99 / chance) : 1;
+                return { diceRoll: { amount: parseFloat(amount) || 0, payout: fallbackWin ? (parseFloat(amount) || 0) * fallbackMultiplier : 0, payoutMultiplier: fallbackMultiplier, win: fallbackWin, user: { wallets: [{ balance: (bot.stats.currentBal || 0) + (fallbackWin ? (parseFloat(amount) || 0) * fallbackMultiplier - (parseFloat(amount) || 0) : -(parseFloat(amount) || 0)) }] } } };
+            }
+        }
+        
+        try {
+            var res = await fetch(CONFIG.apiUrl + '/casino/dice/roll', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'x-access-token': accessToken, 'x-lockdown-token': 's5MNWtjTM5TvCMkAzxov' },
+                body: JSON.stringify({ amount: parseFloat(amount.toFixed(8)), currency: bot.selectedCurrency, target: target, condition: "above", identifier: Math.random().toString(36).slice(2) })
+            });
+            var json = await res.json();
+            if (json.error) { 
+                updateUILog("API Error: " + json.error); 
+                return null; 
+            }
+            return json;
+        } catch(e) { 
+            updateUILog("Network Error: " + e.message); 
+            return null; 
+        }
+    }
+
+    // ==================== DOBET LOGIC ====================
+    function resetProfitStats() {
+        var savedWagered = bot.stats.wagered || 0;
+        bot.stats = { 
+            profit: 0, 
+            wagered: savedWagered, 
+            startBal: bot.stats.currentBal || 0, 
+            currentBal: bot.stats.currentBal || 0, 
+            bets: 0, 
+            wins: 0, 
+            loss: 0, 
+            startTime: Date.now(), 
+            maxDD: 0, 
+            maxBet: 0, 
+            maxDrawdownPct: 0, 
+            peakBalance: bot.stats.currentBal || 0 
+        };
+        
+        if (bot.isHarvesting && bot.openHarvest) {
+            closeOpenHarvest(false, (bot.stats.currentBal || 0) - (bot.openHarvest.startBalance || 0), bot.stats.currentBal || 0, "Session Reset");
+        }
+        
+        bot.isHarvesting = false;
+        bot.isTrailingActive = false;
+        bot.trailingLevel = 0;
+        bot.harvestChance = 0;
+        bot.harvestBet = 0;
+        bot.harvestCount = 0;
+        bot.lastBetAmount = 0;
+        bot.sessionProfit = 0;
+        bot.totalWager = 0;
+        bot.highestProfit = 0;
+        bot.maxDrawdownVal = 0;
+        bot.balanceStartSnapshot = bot.stats.currentBal || 0;
+        bot.gapHits = 0;
+        bot.harvestMarkers = [];
+        bot.gapMarkers = [];
+        bot.openHarvest = null;
+        
+        resetRecovery();
+        initMemory();
+        updateUILog("Stats reset!");
+        drawGapVisual();
+        renderHarvestTable();
+    }
+
+    async function runLoop() {
+        if (!bot.isRunning || bot.isSleeping) return;
+        
+        await updateFiatRates();
+        checkDailyReset();
+        updateDailyProfit();
+        if (checkDailyLimits()) return;
+        
+        var now = Date.now();
+        if (now - bot.lastTGReport >= TG_CONFIG.reportInterval && (bot.stats.bets || 0) > 0) {
+            bot.lastTGReport = now;
+            await sendSessionReport();
+        }
+        
+        try {
+            var currentBalance = bot.stats.currentBal || 0;
+            var profitSoFar = bot.stats.profit || 0;
+            var overallStart = bot.stats.startBal > 0 ? bot.stats.startBal : (bot.isDemo ? bot.dirtyBalance : 100);
+            
+            if (bot.isTrailingActive) updateTrailing();
+            
+            var profitPct = (profitSoFar / overallStart) * 100;
+            if (!bot.isTrailingActive && profitPct >= bot.trailingActivationPct && !bot.isHarvesting) {
+                activateTrailing();
+            }
+            
+            if (currentBalance > (bot.stats.peakBalance || 0)) {
+                bot.stats.peakBalance = currentBalance;
+                if (bot.isTrailingActive) bot.balancePeak = currentBalance;
+            }
+            
+            if ((bot.stats.peakBalance || 0) > 0) {
+                var dd = ((bot.stats.peakBalance || 0) - currentBalance) / (bot.stats.peakBalance || 1) * 100;
+                if (dd > (bot.stats.maxDrawdownPct || 0)) bot.stats.maxDrawdownPct = dd;
+            }
+            
+            var targetProfit = overallStart * (bot.targetPct / 100);
+            if (profitSoFar >= targetProfit && !bot.isResetting) {
+                updateUILog("🎯 SESSION TARGET REACHED! Resetting in 5 seconds...");
+                setTimeout(() => sessionResetCountdown(5), 100);
+                return;
+            }
+            
+            var stopLossAmount = overallStart * (bot.stopLossPct / 100);
+            if (profitSoFar <= -stopLossAmount && !bot.isResetting) {
+                updateUILog("🛑 SESSION STOP LOSS REACHED! Resetting in 5 seconds...");
+                setTimeout(() => sessionResetCountdown(5), 100);
+                return;
+            }
+            
+            if (currentBalance <= 0) {
+                updateUILog("Balance is zero. Stopping bot.");
+                bot.isRunning = false;
+                toggleStartStop(false);
+                return;
+            }
+            
+            var baseBet = currentBalance * (bot.baseBetPercent / 100);
+            baseBet = Math.max(baseBet, bot.minBet || 0.00000001);
+            
+            var nextBet, chanceToUse;
+            var isHarvestTriggerNow = false;
+            var triggered = getBestTriggerChance();
+            let isRecoveryHarvest = false;
+            
+            if (triggered !== null && !bot.isHarvesting) {
+                isHarvestTriggerNow = true;
+                var streak = virtualLs[triggered];
+                bot.isHarvesting = true;
+                bot.harvestChance = triggered;
+                bot.harvestStreak = streak;
+                bot.harvestCount = (bot.harvestCount || 0) + 1;
+                var r = 99.0 / triggered;
+                bot.harvestMultiplier = r / (r - 1);
+                bot.harvestBet = Math.max(baseBet, bot.minBet || 0.00000001);
+                
+                if (bot.recoveryMode && bot.totalHarvestLoss > 0 && bot.recoveryStep < bot.maxRecoveryStep) {
+                    isRecoveryHarvest = true;
+                    bot.harvestBet = calculateRecoveryBet(bot.harvestBet, currentBalance, triggered);
+                }
+                
+                bot.harvestHoldLimit = expectedThresholdTrigger(triggered, 7);
+                bot.harvestStartTime = Date.now();
+                bot.harvestStartBalance = currentBalance;
+                startOpenHarvest(triggered, bot.harvestBet, isRecoveryHarvest);
+                updateUILog("🌾 HARVEST TRIGGER: chance " + triggered + "%, streak " + streak + (isRecoveryHarvest ? " (RECOVERY)" : ""));
+                sendTelegramMessage("🌾 HARVEST #" + bot.harvestCount + "\nChance: " + triggered + "%\nStreak: " + streak + (isRecoveryHarvest ? "\n🔄 RECOVERY MODE ACTIVE" : ""));
+            }
+            
+            if (bot.isHarvesting) {
+                chanceToUse = bot.harvestChance;
+                nextBet = bot.harvestBet;
+                updateOpenHarvest(nextBet, bot.harvestStreak, bot.harvestBet);
+            } else {
+                chanceToUse = bot.baseChance || 98;
+                nextBet = baseBet;
+            }
+            
+            if (bot.maxBetCap > 0 && nextBet > bot.maxBetCap) nextBet = bot.maxBetCap;
+            nextBet = Math.max(nextBet, bot.minBet || 0.00000001);
+            if (nextBet > currentBalance) nextBet = currentBalance;
+            if (nextBet < 0.00000001) nextBet = 0.00000001;
+            
+            var placeResult = await placeBet(nextBet, chanceToUse);
+            
+            if (placeResult?.diceRoll) {
+                var d = placeResult.diceRoll;
+                var win = d.win !== undefined ? d.win : (d.payoutMultiplier > 1);
+                var winAmount = parseFloat(d.amount) || 0;
+                var pft = win ? (parseFloat(d.payout) - winAmount) : -winAmount;
+                
+                if (d.user?.wallets?.[0]) {
+                    bot.stats.currentBal = parseFloat(d.user.wallets[0].balance);
+                }
+                
+                if ((bot.stats.profit || 0) > (bot.highestProfit || 0)) bot.highestProfit = bot.stats.profit;
+                if (winAmount > (bot.stats.maxBet || 0)) bot.stats.maxBet = winAmount;
+                
+                if (isHarvestTriggerNow) {
+                    addBalanceToHistory(bot.stats.currentBal || 0, true, false, 0);
+                } else {
+                    addBalanceToHistory(bot.stats.currentBal || 0, false, false, 0);
+                }
+                
+                bot.stats.bets = (bot.stats.bets || 0) + 1;
+                bot.stats.wagered = (bot.stats.wagered || 0) + winAmount;
+                bot.stats.profit = (bot.stats.currentBal || 0) - (bot.stats.startBal || 0);
+                bot.lastWinStatus = win;
+                bot.lastBetAmount = nextBet;
+                bot.betTimestamps.push(Date.now());
+                if (bot.betTimestamps.length > 100) bot.betTimestamps.shift();
+                
+                if (win) {
+                    bot.stats.wins = (bot.stats.wins || 0) + 1;
+                } else {
+                    bot.stats.loss = (bot.stats.loss || 0) + 1;
+                }
+                
+                var rollResult = d.state?.result;
+                if (rollResult !== undefined) updateVirtualStreaks(rollResult);
+                
+                if (bot.isHarvesting) {
+                    if (win) {
+                        var harvestProfit = (bot.stats.currentBal || 0) - (bot.harvestStartBalance || 0);
+                        updateUILog("🌾 HARVEST WIN! Profit: " + harvestProfit.toFixed(8));
+                        closeOpenHarvest(true, harvestProfit, bot.stats.currentBal || 0, "Win");
+                        bot.isHarvesting = false;
+                        for (var i = 0; i < VIRTUAL_CHANCES.length; i++) virtualLs[VIRTUAL_CHANCES[i]] = 0;
+                        readyChances = [];
+                        if (bot.isTrailingActive) resetTrailingAfterWin();
+                        sendTelegramMessage("✅ HARVEST WIN #" + bot.harvestCount + "\nProfit: " + harvestProfit.toFixed(8) + "\nBalance: " + (bot.stats.currentBal || 0).toFixed(8));
+                    } else {
+                        bot.harvestBet = (bot.harvestBet || 0) * (bot.harvestMultiplier || 1);
+                        bot.harvestStreak = (bot.harvestStreak || 0) + 1;
+                        if (bot.maxBetCap > 0 && bot.harvestBet > bot.maxBetCap) bot.harvestBet = bot.maxBetCap;
+                        updateOpenHarvest(bot.harvestBet, bot.harvestStreak, bot.harvestBet);
+                        
+                        if (virtualLs[bot.harvestChance] >= (bot.harvestHoldLimit || 999)) {
+                            var harvestLoss = (bot.stats.currentBal || 0) - (bot.harvestStartBalance || 0);
+                            updateUILog("Hold limit reached for " + bot.harvestChance + "%, abort harvest");
+                            closeOpenHarvest(false, harvestLoss, bot.stats.currentBal || 0, "Hold Limit");
+                            bot.isHarvesting = false;
+                        }
+                    }
+                }
+                
+                updateLogs(winAmount, chanceToUse, pft, win, rollResult);
+            }
+            
+            if (bot.aiSpeed && bot.isRunning) {
+                bot.delay = bot.lastWinStatus ? Math.max(20, (bot.delay || 80) - 5) : Math.min(200, (bot.delay || 80) + 10);
+            }
+            
+            if (bot.isRunning && !bot.isSleeping) {
+                setTimeout(runLoop, Math.max(20, Math.min(200, bot.delay || 80)));
+            }
+        } catch (e) {
+            updateUILog("Error: " + e.message);
+            setTimeout(runLoop, 1000);
+        }
+    }
+
+    function updateLogs(amt, ch, pft, win, roll) {
+        var logBox = document.getElementById("p-logs");
+        if (!logBox) return;
+        var entry = document.createElement("div");
+        entry.style.color = win ? "#00A86B" : "#FF4757";
+        entry.style.padding = "2px 6px";
+        entry.style.fontSize = "9px";
+        entry.style.fontFamily = "monospace";
+        entry.style.borderBottom = "1px solid " + (bot.darkMode ? "#1a1a2e" : "#f0f0f0");
+        var mode = bot.isHarvesting ? " [H]" : (bot.isTrailingActive ? " [T" + (bot.trailingLevel || 0) + "]" : "");
+        var rollTxt = (roll !== null && roll !== undefined) ? " R:" + roll.toFixed(2) : "";
+        entry.textContent = new Date().toLocaleTimeString() + mode + " " + (amt || 0).toFixed(8) + "|" + (ch || 0).toFixed(1) + "%|" + (pft > 0 ? '+' : '') + (pft || 0).toFixed(8) + rollTxt;
+        logBox.insertBefore(entry, logBox.firstChild);
+        while (logBox.children.length > 100) logBox.removeChild(logBox.lastChild);
+    }
+    
+    function updateUILog(message) {
+        var logBox = document.getElementById("p-logs");
+        if (!logBox) return;
+        var entry = document.createElement("div");
+        entry.style.color = "#4A90D9";
+        entry.style.padding = "2px 6px";
+        entry.style.fontSize = "9px";
+        entry.style.fontFamily = "monospace";
+        entry.style.borderBottom = "1px solid " + (bot.darkMode ? "#1a1a2e" : "#f0f0f0");
+        entry.textContent = new Date().toLocaleTimeString() + " " + message;
+        logBox.insertBefore(entry, logBox.firstChild);
+        while (logBox.children.length > 100) logBox.removeChild(logBox.lastChild);
+    }
+
+    // ==================== UI UPDATE (STABIL) ====================
+    function updateStatsDisplay() {
+        if (!bot.stats || typeof bot.stats.currentBal === 'undefined') return;
+        if (!bot.fiatRates || typeof bot.fiatRates.idr === 'undefined') return;
+        if (!bot.dailyStartBalance) bot.dailyStartBalance = bot.stats.currentBal || 0;
+        
+        var profitPct = bot.stats.startBal > 0 ? ((bot.stats.profit || 0) / bot.stats.startBal * 100) : 0;
+        var dailyProfitPct = bot.dailyStartBalance > 0 ? ((bot.dailyProfit || 0) / bot.dailyStartBalance * 100) : 0;
+        var winRate = (bot.stats.bets || 0) > 0 ? ((bot.stats.wins || 0) / (bot.stats.bets || 1) * 100) : 0;
+        var runTime = getDuration();
+        var rakeback = (bot.stats.wagered || 0) * 0.00098;
+        var betSpeed = getBetSpeed();
+        
+        var balanceInIdr = (bot.stats.currentBal || 0) * (bot.fiatRates.idr || 0);
+        var balanceInUsdt = (bot.stats.currentBal || 0) * (bot.fiatRates.usdt || 0);
+        var profitInIdr = (bot.stats.profit || 0) * (bot.fiatRates.idr || 0);
+        var profitInUsdt = (bot.stats.profit || 0) * (bot.fiatRates.usdt || 0);
+        
+        var status = bot.isHarvesting ? "🌾 H" + (bot.harvestChance || 0) + "%" : (bot.isTrailingActive ? "🔱 T" + (bot.trailingLevel || 0) + "/" + (bot.gapPct || 0) + "%" : "⚡ " + (bot.baseChance || 98) + "%");
+        var dailyStatus = ((bot.dailyProfit || 0) >= 0 ? '+' : '') + (bot.dailyProfit || 0).toFixed(8) + " (" + (dailyProfitPct >= 0 ? '+' : '') + dailyProfitPct.toFixed(2) + "%)";
+        var timerDisplay = bot.isResetting ? "⏰ " + (bot.resetCountdownRemaining || 0) + "s" : "--";
+        
+        var elements = {
+            "st-user": bot.stakeUser || "-",
+            "st-running-time": runTime,
+            "st-balance": (bot.stats.currentBal || 0).toFixed(8) + " " + (bot.selectedCurrency || "doge").toUpperCase(),
+            "st-balance-fiat": "Rp " + shortFiat(balanceInIdr) + " | " + balanceInUsdt.toFixed(2) + " USDT",
+            "st-profit": ((bot.stats.profit || 0) >= 0 ? '+' : '') + (bot.stats.profit || 0).toFixed(8) + " (" + (profitPct >= 0 ? '+' : '') + profitPct.toFixed(2) + "%)",
+            "st-profit-fiat": "Rp " + shortFiat(profitInIdr) + " | " + profitInUsdt.toFixed(2) + " USDT",
+            "st-daily": dailyStatus,
+            "st-wagered": (bot.stats.wagered || 0).toFixed(8),
+            "st-wagered-fiat": "Rp " + shortFiat((bot.stats.wagered || 0) * (bot.fiatRates.idr || 0)) + " | " + ((bot.stats.wagered || 0) * (bot.fiatRates.usdt || 0)).toFixed(2) + " USDT",
+            "st-rakeback": "+" + rakeback.toFixed(8),
+            "st-rakeback-fiat": "Rp " + shortFiat(rakeback * (bot.fiatRates.idr || 0)) + " | " + (rakeback * (bot.fiatRates.usdt || 0)).toFixed(2) + " USDT",
+            "st-bets": (bot.stats.bets || 0) + " | WR " + winRate.toFixed(0) + "%",
+            "st-speed": betSpeed.toFixed(1) + "b/s",
+            "st-maxdd": (bot.stats.maxDrawdownPct || 0).toFixed(1) + "%",
+            "st-maxbet": (bot.stats.startBal > 0 ? (((bot.stats.maxBet || 0) / bot.stats.startBal) * 100) : 0).toFixed(1) + "%",
+            "st-chance": status,
+            "st-gaphits": (bot.gapHits || 0).toString(),
+            "st-timer": timerDisplay,
+            "st-rate": "1 " + (bot.selectedCurrency || "doge").toUpperCase() + " = " + (bot.fiatRates.usdt || 0).toFixed(2) + " USDT"
+        };
+        
+        for (var id in elements) {
+            var el = document.getElementById(id);
+            if (el) el.textContent = elements[id];
+        }
+        
+        var profitEl = document.getElementById("st-profit");
+        if (profitEl) profitEl.style.color = (bot.stats.profit || 0) >= 0 ? "#00A86B" : "#FF4757";
+        
+        drawGapVisual();
+    }
+    
+    function shortFiat(num) {
+        if (isNaN(num) || typeof num !== 'number') num = 0;
+        var abs = Math.abs(num);
+        var sign = num < 0 ? "-" : "";
+        if (abs >= 1000000) return sign + "Rp" + (abs/1000000).toFixed(1) + "M";
+        if (abs >= 1000) return sign + "Rp" + (abs/1000).toFixed(1) + "K";
+        return sign + "Rp" + abs.toFixed(0);
+    }
+    
+    function resetSession() { 
+        if (bot.isRunning) { 
+            updateUILog("Stop bot first!"); 
+            return; 
+        } 
+        resetProfitStats(); 
+        if (bot.chartInstance) { 
+            bot.chartInstance.destroy(); 
+            bot.chartInstance = null; 
+        } 
+        renderHarvestTable(); 
+    }
+    
+    function toggleStartStop(starting) { 
+        var startBtn = document.getElementById("p-start");
+        var stopBtn = document.getElementById("p-stop");
+        var statusEl = document.getElementById("botStatus");
+        var dotEl = document.getElementById("statusDot");
+        if (starting) {
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            statusEl.textContent = "RUN";
+            dotEl.style.background = "#00A86B";
+        } else {
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            statusEl.textContent = "STOP";
+            dotEl.style.background = "#FF4757";
+        }
+    }
+    
+    function toggleMinimize() { 
+        bot.minimized = !bot.minimized; 
+        document.getElementById("bot-body").style.display = bot.minimized ? "none" : "block"; 
+        document.getElementById("btn-minimize").textContent = bot.minimized ? "▼" : "▲"; 
+    }
+    
+    function toggleDarkMode() { 
+        bot.darkMode = !bot.darkMode; 
+        var root = document.getElementById("BotConsole"); 
+        if (!root) return; 
+        if (bot.darkMode) { 
+            root.style.setProperty('--bg', '#1a1a2e'); 
+            root.style.setProperty('--bg-block', '#16213e'); 
+            root.style.setProperty('--text', '#e0e0e0'); 
+            root.style.setProperty('--text-light', '#a0a0a0'); 
+            root.style.setProperty('--border', '#2a2a4a'); 
+            root.style.setProperty('--log-bg', '#0f0f1a'); 
+        } else { 
+            root.style.setProperty('--bg', '#ffffff'); 
+            root.style.setProperty('--bg-block', '#f8f9fa'); 
+            root.style.setProperty('--text', '#1a1a1a'); 
+            root.style.setProperty('--text-light', '#6b7280'); 
+            root.style.setProperty('--border', '#e5e7eb'); 
+            root.style.setProperty('--log-bg', '#f8f9fa'); 
+        } 
+        drawChart(); 
+        drawGapVisual(); 
+        renderHarvestTable(); 
+    }
+    
+    // ==================== DRAG & DROP ====================
+    var pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
+    
+    function dragMouseDown(e) { 
+        if (e.target.closest && (e.target.closest('button, input, select'))) return; 
+        e = e || window.event; 
+        e.preventDefault(); 
+        pos3 = e.clientX; 
+        pos4 = e.clientY; 
+        document.onmouseup = closeDragElement; 
+        document.onmousemove = elementDrag; 
+    }
+    
+    function elementDrag(e) { 
+        var elmnt = document.getElementById("BotConsole"); 
+        e = e || window.event; 
+        e.preventDefault(); 
+        pos1 = pos3 - e.clientX; 
+        pos2 = pos4 - e.clientY; 
+        pos3 = e.clientX; 
+        pos4 = e.clientY; 
+        var newTop = elmnt.offsetTop - pos2; 
+        var newLeft = elmnt.offsetLeft - pos1; 
+        var maxLeft = window.innerWidth - elmnt.offsetWidth; 
+        var maxTop = window.innerHeight - elmnt.offsetHeight; 
+        if (newLeft < 0) newLeft = 0; 
+        if (newTop < 0) newTop = 0; 
+        if (newLeft > maxLeft) newLeft = maxLeft; 
+        if (newTop > maxTop) newTop = maxTop; 
+        elmnt.style.top = newTop + "px"; 
+        elmnt.style.left = newLeft + "px"; 
+        elmnt.style.right = "auto"; 
+    }
+    
+    function closeDragElement() { 
+        document.onmouseup = null; 
+        document.onmousemove = null; 
+    }
+    
+    // ==================== TAB SYSTEM ====================
+    window.openTab = function(tabName) { 
+        var tabs = document.querySelectorAll('.tab-content'); 
+        for (var i = 0; i < tabs.length; i++) tabs[i].classList.remove('active'); 
+        var target = document.getElementById('tab-' + tabName); 
+        if (target) target.classList.add('active'); 
+        var btns = document.querySelectorAll('.tab-btn'); 
+        for (var j = 0; j < btns.length; j++) btns[j].classList.remove('active'); 
+        if (event && event.currentTarget) event.currentTarget.classList.add('active'); 
+        if (tabName === 'chart') { 
+            setTimeout(function() { 
+                drawChart(); 
+                renderHarvestTable(); 
+            }, 100); 
+        } 
+    };
+    
+    // ==================== CLOSE TAB WARNING ====================
+    window.addEventListener("beforeunload", function(e) { 
+        if (bot.isRunning) { 
+            e.preventDefault(); 
+            e.returnValue = "Bot masih running! Yakin ingin keluar?"; 
+            return "Bot masih running! Yakin ingin keluar?"; 
+        } 
+    });
+    
+    document.addEventListener("visibilitychange", function() { 
+        bot.isTabActive = !document.hidden; 
+    });
+    
+    // ==================== CREATE UI ====================
+    function createUI() {
+        if (document.getElementById("BotConsole")) document.getElementById("BotConsole").remove();
+        loadSettings();
+        
+        var style = document.createElement("style");
+        style.innerHTML = `
+            :root {
+                --bg: #1e1f1c;
+                --bg-block: #272822;
+                --text: #f8f8f2;
+                --text-light: #a0a0a0;
+                --border: #3a3a3a;
+                --log-bg: #0f0f0a;
+                --accent: #9ec07c;
+                --success: #00e5c0;
+                --danger: #ff6b81;
+            }
+            
+            #BotConsole {
+                position: fixed;
+                top: 10px;
+                left: 10px;
+                right: 10px;
+                width: auto;
+                max-width: 600px;
+                margin: 0 auto;
+                background: var(--bg);
+                border-radius: 16px;
+                font-family: 'Segoe UI', Consolas, monospace;
+                font-size: 12px;
+                box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+                border: 1px solid var(--border);
+                z-index: 99999;
+                overflow: hidden;
+                color: var(--text);
+            }
+            
+            @media (min-width: 768px) {
+                #BotConsole {
+                    top: 20px;
+                    right: 20px;
+                    left: auto;
+                    width: 600px;
+                }
+            }
+            
+            .bot-header {
+                background: var(--accent);
+                padding: 8px 12px;
+                cursor: move;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                color: black;
+                touch-action: none;
+            }
+            
+            .bot-header .title {
+                font-weight: 700;
+                font-size: 13px;
+            }
+            
+            .header-btns {
+                display: flex;
+                gap: 8px;
+            }
+            
+            .header-btns button {
+                background: rgba(0,0,0,0.2);
+                border: none;
+                color: black;
+                width: 30px;
+                height: 30px;
+                border-radius: 8px;
+                cursor: pointer;
+                font-size: 14px;
+            }
+            
+            .time-running {
+                background: rgba(0,0,0,0.2);
+                padding: 3px 10px;
+                border-radius: 20px;
+                font-size: 10px;
+                color: black;
+                font-weight: 600;
+            }
+            
+            .tab-bar {
+                display: flex;
+                padding: 0 12px;
+                gap: 4px;
+                border-bottom: 1px solid var(--border);
+                background: var(--bg);
+                overflow-x: auto;
+            }
+            
+            .tab-btn {
+                padding: 8px 12px;
+                background: transparent;
+                border: none;
+                color: var(--text-light);
+                font-size: 11px;
+                font-weight: 600;
+                cursor: pointer;
+                border-bottom: 2px solid transparent;
+                white-space: nowrap;
+            }
+            
+            .tab-btn.active {
+                color: var(--accent);
+                border-bottom-color: var(--accent);
+            }
+            
+            .tab-content {
+                display: none;
+                padding: 12px;
+                max-height: 70vh;
+                overflow-y: auto;
+            }
+            
+            .tab-content.active {
+                display: block;
+            }
+            
+            .controls-row {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+                margin-bottom: 12px;
+                background: var(--bg-block);
+                padding: 8px;
+                border-radius: 12px;
+                border: 1px solid var(--border);
+            }
+            
+            .btn-group {
+                display: flex;
+                gap: 8px;
+                flex: 1;
+                min-width: 140px;
+            }
+            
+            select, input {
+                background: var(--bg);
+                border: 1px solid var(--border);
+                padding: 8px;
+                border-radius: 8px;
+                font-size: 11px;
+                font-family: monospace;
+                color: var(--text);
+            }
+            
+            .stats-block {
+                background: var(--bg-block);
+                border-radius: 12px;
+                padding: 8px 10px;
+                margin-bottom: 10px;
+                border: 1px solid var(--border);
+                font-size: 10px;
+                line-height: 1.5;
+            }
+            
+            .stats-block .line {
+                display: flex;
+                justify-content: space-between;
+                padding: 3px 0;
+                flex-wrap: wrap;
+                gap: 4px;
+            }
+            
+            .stats-block .label {
+                color: var(--text-light);
+                font-size: 9px;
+            }
+            
+            .stats-block .value {
+                font-weight: 600;
+                text-align: right;
+                color: var(--accent);
+                font-size: 10px;
+                word-break: break-word;
+                max-width: 60%;
+            }
+            
+            .stats-block .divider {
+                border-top: 1px solid var(--border);
+                margin: 5px 0;
+            }
+            
+            .logs-container {
+                background: var(--log-bg);
+                border-radius: 12px;
+                height: 350px;
+                overflow-y: auto;
+                padding: 8px;
+                font-size: 9px;
+                border: 1px solid var(--border);
+            }
+            
+            .btn {
+                padding: 8px 12px;
+                border: none;
+                border-radius: 8px;
+                font-weight: 700;
+                font-size: 11px;
+                cursor: pointer;
+                min-height: 38px;
+            }
+            
+            .btn-start { background: var(--success); color: black; }
+            .btn-stop { background: var(--danger); color: black; }
+            .btn-reset { background: var(--text-light); color: black; }
+            
+            .token-row {
+                display: flex;
+                gap: 8px;
+                margin-bottom: 10px;
+                flex-wrap: wrap;
+            }
+            
+            .toggle-row {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                background: var(--bg-block);
+                padding: 8px 10px;
+                border-radius: 12px;
+                margin-bottom: 10px;
+            }
+            
+            .md-switch {
+                position: relative;
+                width: 46px;
+                height: 22px;
+            }
+            
+            .md-switch input {
+                opacity: 0;
+                width: 0;
+                height: 0;
+            }
+            
+            .md-slider {
+                position: absolute;
+                cursor: pointer;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background: var(--border);
+                border-radius: 22px;
+            }
+            
+            .md-slider:before {
+                position: absolute;
+                content: "";
+                height: 16px;
+                width: 16px;
+                left: 3px;
+                bottom: 3px;
+                background: white;
+                border-radius: 50%;
+                transition: .3s;
+            }
+            
+            input:checked + .md-slider { background: var(--success); }
+            input:checked + .md-slider:before { transform: translateX(24px); }
+            
+            .md-field {
+                margin-bottom: 8px;
+            }
+            
+            .md-field label {
+                display: block;
+                font-size: 9px;
+                font-weight: 500;
+                margin-bottom: 3px;
+                color: var(--text-light);
+            }
+            
+            .md-field input, .md-field select {
+                width: 100%;
+                padding: 6px;
+                font-size: 10px;
+            }
+            
+            .grid-2 {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 8px;
+            }
+            
+            @media (max-width: 480px) {
+                .grid-2 {
+                    grid-template-columns: 1fr;
+                }
+                .stats-block .value {
+                    max-width: 70%;
+                }
+                .btn-group button {
+                    flex: 1;
+                }
+            }
+            
+            .status-inline {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                font-size: 10px;
+                margin-bottom: 8px;
+            }
+            
+            .dot {
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                display: inline-block;
+            }
+            
+            .chart-container {
+                background: var(--bg-block);
+                border-radius: 12px;
+                padding: 10px;
+                margin-bottom: 10px;
+                border: 1px solid var(--border);
+            }
+            
+            canvas {
+                width: 100%;
+                height: 240px;
+                background: var(--bg);
+                border-radius: 8px;
+            }
+            
+            ::-webkit-scrollbar { width: 3px; }
+            ::-webkit-scrollbar-thumb { background: var(--border); }
+        `;
+        document.head.appendChild(style);
+        
+        var html = '<div id="BotConsole"><div class="bot-header" id="botHeader"><div><span class="title">⚡ FORGE v1.1</span><span class="time-running" id="st-running-time">0s</span></div><div class="header-btns"><button id="btn-theme">🌓</button><button id="btn-minimize">▲</button></div></div><div id="bot-body"><div class="tab-bar"><button class="tab-btn active" onclick="openTab.call(this, \'main\')">MAIN</button><button class="tab-btn" onclick="openTab.call(this, \'chart\')">CHART</button><button class="tab-btn" onclick="openTab.call(this, \'config\')">CFG</button><button class="tab-btn" onclick="openTab.call(this, \'logs\')">LOGS</button></div>
+        <div id="tab-main" class="tab-content active"><div class="token-row"><input type="password" id="p-token" placeholder="API Token"><button id="p-login" class="btn" style="background:var(--accent);color:black;">LOGIN</button><button id="p-refresh" class="btn" style="background:var(--text-light);color:black;">⟳</button></div>
+        <div class="toggle-row"><span>⚡ FLASH MODE</span><label class="md-switch"><input type="checkbox" id="p-demo-toggle"><span class="md-slider"></span></label></div>
+        <div class="controls-row"><div class="btn-group"><button id="p-start" class="btn btn-start" disabled>START</button><button id="p-stop" class="btn btn-stop" disabled>STOP</button><button id="p-reset" class="btn btn-reset">RESET</button></div><select id="p-currency"></select></div>
+        <div class="status-inline"><span class="dot" id="statusDot" style="background:#FF4757;"></span><span id="botStatus">STOP</span><span id="price-status" style="font-size:8px;margin-left:auto;">--</span></div>
+        <div class="stats-block"><div class="line"><span class="label">User</span><span class="value" id="st-user">-</span></div><div class="line"><span class="label">Balance</span><span class="value" id="st-balance">0</span></div><div class="line"><span class="label"></span><span class="value-sub" id="st-balance-fiat">-</span></div><div class="divider"></div><div class="line"><span class="label">Profit (Sesi)</span><span class="value" id="st-profit">0 (0%)</span></div><div class="line"><span class="label"></span><span class="value-sub" id="st-profit-fiat">-</span></div><div class="line"><span class="label">Profit (Harian)</span><span class="value" id="st-daily">0 (0%)</span></div><div class="divider"></div><div class="line"><span class="label">Wagered</span><span class="value" id="st-wagered">0</span></div><div class="line"><span class="label">Rakeback</span><span class="value" id="st-rakeback">+0</span></div><div class="line"><span class="label">Bets | WR</span><span class="value" id="st-bets">0 | 0%</span></div><div class="line"><span class="label">Speed</span><span class="value" id="st-speed">0 b/s</span></div><div class="line"><span class="label">Max DD</span><span class="value" id="st-maxdd">0%</span></div><div class="line"><span class="label">Max Bet %</span><span class="value" id="st-maxbet">0%</span></div><div class="divider"></div><div class="line"><span class="label">Status</span><span class="value" id="st-chance">⚡ 98%</span></div><div class="line"><span class="label">Gap Hits</span><span class="value" id="st-gaphits">0</span></div><div class="line"><span class="label">Countdown</span><span class="value" id="st-timer">--</span></div><div class="line"><span class="label">Rate</span><span class="value" id="st-rate">-</span></div></div>
+        <div id="gapVisual" style="margin-top:10px;"></div></div>
+        <div id="tab-chart" class="tab-content"><div class="chart-container"><canvas id="balanceChart" width="550" height="240" style="width:100%;height:240px;"></canvas><div style="margin-top:8px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;"><div><span style="font-size:8px;">🔻 H = Harvest</span><span style="font-size:8px;margin-left:8px;">🔺 L = Gap Escalate</span></div><div><label style="font-size:8px;">Max Bets:</label><input type="number" id="p-chart-bets" value="100" min="10" max="500" step="10" style="width:55px;padding:3px;"></div></div></div><div id="harvestTable" style="margin-top:8px;"></div></div>
+        <div id="tab-config" class="tab-content"><div class="md-field"><label>⚡ BASE CHANCE %</label><input type="number" id="p-base-chance" value="98" step="0.5"></div><div class="md-field"><label>💰 BASE BET %</label><input type="number" id="p-base-bet-pct" value="1" step="0.1"></div><div class="md-field"><label>📊 RISK FACTOR</label><input type="number" id="p-risk-factor" value="0.15" step="0.01"></div><div class="grid-2"><div class="md-field"><label>🎯 TARGET % (Sesi)</label><input type="number" id="p-target-pct" value="5" step="0.5"></div><div class="md-field"><label>🛑 STOP LOSS % (Sesi)</label><input type="number" id="p-stop-pct" value="4" step="0.5"></div></div><div class="grid-2"><div class="md-field"><label>📅 TARGET % (Harian)</label><input type="number" id="p-daily-target" value="25" step="1"></div><div class="md-field"><label>📅 STOP LOSS % (Harian)</label><input type="number" id="p-daily-stoploss" value="15" step="1"></div></div><div class="grid-2"><div class="md-field"><label>🔄 SESSION TOTAL</label><input type="number" id="p-session-total" value="8" step="1"></div><div class="md-field"><label>💎 MAX BET CAP</label><input type="number" id="p-max-cap" value="0" step="0.001"></div></div><div class="grid-2"><div class="md-field"><label>🔱 TRAIL ACTIVATION %</label><input type="number" id="p-trail-activation" value="3" step="0.5"></div><div class="md-field"><label>⚙️ GAP1 ACTION</label><select id="p-gap1-action"><option value="continue">CONTINUE</option><option value="stop">STOP</option></select></div></div><div class="grid-2"><div class="md-field"><label>📏 GAP LVL 1 %</label><input type="number" id="p-gap1" value="0.5" step="0.1"></div><div class="md-field"><label>📏 GAP LVL 2 %</label><input type="number" id="p-gap2" value="0.25" step="0.05"></div></div><div class="grid-2"><div class="md-field"><label>📏 GAP LVL 3+ %</label><input type="number" id="p-gap3" value="0.125" step="0.05"></div><div class="md-field"><label>⏱️ DELAY (ms)</label><input type="number" id="p-delay" value="80"></div></div><div class="toggle-row"><span>🤖 AI SPEED</span><label class="md-switch"><input type="checkbox" id="p-ai-speed" checked><span class="md-slider"></span></label></div><div class="grid-2"><div class="md-field"><label>💣 DIRTY BALANCE</label><input type="number" id="p-dirty-bal" value="460" step="0.1"></div></div>
+        <div class="stats-block" style="margin-top:10px;"><div class="line"><span class="label">🔄 RECOVERY MODE</span><span class="value"><label class="md-switch"><input type="checkbox" id="p-recovery-mode"><span class="md-slider"></span></label></span></div></div>
+        <div class="grid-2"><div class="md-field"><label>MAX RECOVERY BET (x base)</label><input type="number" id="p-max-recovery-bet" value="20" step="1"></div><div class="md-field"><label>MAX RECOVERY STEP</label><input type="number" id="p-max-recovery-step" value="3" step="1"></div></div>
+        <div class="grid-2"><div class="md-field"><label>MAX RECOVERY %</label><input type="number" id="p-max-recovery-percent" value="50" step="5"></div><div class="md-field"><label>MIN BALANCE RECOVERY</label><input type="number" id="p-min-balance-recovery" value="10" step="5"></div></div>
+        <div class="grid-2"><div class="md-field"><label>COOLDOWN AFTER LOSS (s)</label><input type="number" id="p-cooldown-loss" value="30" step="5"></div><div class="toggle-row"><span>USE DRAWDOWN FACTOR</span><label class="md-switch"><input type="checkbox" id="p-use-dd-factor" checked><span class="md-slider"></span></label></div></div>
+        <div class="toggle-row"><span>USE TIME DECAY</span><label class="md-switch"><input type="checkbox" id="p-use-time-decay"><span class="md-slider"></span></label></div>
+        <div class="md-field"><label style="font-size:8px;">💰 MIN BET OTOMATIS 2 IDR (auto konversi)</label></div></div>
+        <div id="tab-logs" class="tab-content"><div class="logs-container" id="p-logs"><div style="text-align:center;padding:20px;">⚡ FORGE v1.1<br>MT5 Style | Recovery Mode</div></div></div></div></div>';
+        
+        document.body.insertAdjacentHTML('beforeend', html);
+        
+        document.getElementById("botHeader").addEventListener('mousedown', dragMouseDown);
+        document.getElementById("btn-minimize").onclick = toggleMinimize;
+        document.getElementById("btn-theme").onclick = toggleDarkMode;
+        
+        var savedToken = getAuthToken();
+        if (savedToken) document.getElementById("p-token").value = savedToken;
+        
+        document.getElementById("p-demo-toggle").onchange = function(e) { 
+            bot.isDemo = e.target.checked; 
+            updateUILog(bot.isDemo ? "FLASH MODE ON" : "REAL MODE ON"); 
+        };
+        
+        document.getElementById("p-ai-speed").onchange = function(e) { 
+            bot.aiSpeed = e.target.checked; 
+            updateUILog(bot.aiSpeed ? "AI SPEED ON" : "AI SPEED OFF"); 
+        };
+        
+        document.getElementById("p-recovery-mode").onchange = function(e) { 
+            bot.recoveryMode = e.target.checked; 
+            if (!bot.recoveryMode) resetRecovery(); 
+            updateUILog(bot.recoveryMode ? "RECOVERY MODE ACTIVE" : "RECOVERY MODE OFF"); 
+            saveSettings(); 
+        };
+        
+        document.getElementById("p-login").onclick = async function() { 
+            var token = document.getElementById("p-token").value.trim(); 
+            if (!token || token.length < 30) { 
+                updateUILog("Invalid API Token!"); 
+                return; 
+            } 
+            saveToken(token); 
+            if (await syncUserInfo()) { 
+                updateUILog("Welcome " + bot.stakeUser); 
+                document.getElementById("p-start").disabled = false; 
+                await updateFiatRates(); 
+                updateStatsDisplay(); 
+                sendTelegramMessage("✅ LOGIN SUCCESS\nUser: " + bot.stakeUser + "\nFORGE v1.1"); 
+            } else { 
+                updateUILog("Login failed!"); 
+            } 
+        };
+        
+        document.getElementById("p-refresh").onclick = async function() { 
+            if (!accessToken) { 
+                updateUILog("Login first!"); 
+                return; 
+            } 
+            await syncUserInfo(); 
+            await updateFiatRates(); 
+            updateStatsDisplay(); 
+            updateUILog("Refreshed"); 
+        };
+        
+        document.getElementById("p-start").onclick = async function() {
+            if (!bot.isDemo && !accessToken) { 
+                updateUILog("Login first!"); 
+                return; 
+            }
+            
+            bot.baseChance = parseFloat(document.getElementById("p-base-chance").value) || 98;
+            bot.baseBetPercent = parseFloat(document.getElementById("p-base-bet-pct").value) || 1;
+            bot.riskFactor = parseFloat(document.getElementById("p-risk-factor").value) || 0.15;
+            bot.targetPct = parseFloat(document.getElementById("p-target-pct").value) || 5;
+            bot.stopLossPct = parseFloat(document.getElementById("p-stop-pct").value) || 4;
+            bot.dailyTargetPct = parseFloat(document.getElementById("p-daily-target").value) || 25;
+            bot.dailyStopLossPct = parseFloat(document.getElementById("p-daily-stoploss").value) || 15;
+            bot.sessionTotal = parseInt(document.getElementById("p-session-total").value) || 8;
+            bot.maxBetCap = parseFloat(document.getElementById("p-max-cap").value) || 0;
+            bot.trailingActivationPct = parseFloat(document.getElementById("p-trail-activation").value) || 3;
+            bot.gap1Action = document.getElementById("p-gap1-action").value;
+            bot.gapLevel1 = parseFloat(document.getElementById("p-gap1").value) || 0.5;
+            bot.gapLevel2 = parseFloat(document.getElementById("p-gap2").value) || 0.25;
+            bot.gapLevel3plus = parseFloat(document.getElementById("p-gap3").value) || 0.125;
+            bot.delay = parseInt(document.getElementById("p-delay").value) || 80;
+            bot.aiSpeed = document.getElementById("p-ai-speed").checked;
+            bot.dirtyBalance = parseFloat(document.getElementById("p-dirty-bal").value) || 460;
+            bot.chartMaxBets = parseInt(document.getElementById("p-chart-bets").value) || 100;
+            bot.recoveryMode = document.getElementById("p-recovery-mode").checked;
+            bot.maxRecoveryBet = parseFloat(document.getElementById("p-max-recovery-bet").value) || 20;
+            bot.maxRecoveryStep = parseInt(document.getElementById("p-max-recovery-step").value) || 3;
+            bot.maxRecoveryPercent = parseFloat(document.getElementById("p-max-recovery-percent").value) || 50;
+            bot.minBalanceRecovery = parseFloat(document.getElementById("p-min-balance-recovery").value) || 10;
+            bot.cooldownAfterLoss = parseInt(document.getElementById("p-cooldown-loss").value) || 30;
+            bot.useDrawdownFactor = document.getElementById("p-use-dd-factor").checked;
+            bot.useTimeDecay = document.getElementById("p-use-time-decay").checked;
+            
+            saveSettings();
+            await updateFiatRates();
+            
+            var balance = bot.isDemo ? bot.dirtyBalance : bot.realBalance;
+            if (!bot.isDemo && balance === 0) { 
+                updateUILog("Failed to get balance!"); 
+                return; 
+            }
+            
+            bot.dailyStartBalance = balance;
+            bot.dailyProfit = 0;
+            bot.dailyTargetReached = false;
+            bot.lastDailyReset = new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate(), 0, 0, 0).getTime();
+            
+            bot.stats = { 
+                profit: 0, wagered: 0, startBal: balance, currentBal: balance, 
+                bets: 0, wins: 0, loss: 0, startTime: Date.now(), maxDD: 0, maxBet: 0, 
+                maxDrawdownPct: 0, peakBalance: balance 
+            };
+            
+            bot.betTimestamps = [];
+            bot.startTime = Date.now();
+            bot.isHarvesting = false;
+            bot.isTrailingActive = false;
+            bot.trailingLevel = 0;
+            bot.gapPct = bot.gapLevel1;
+            bot.balancePeak = balance;
+            bot.level1Peak = balance;
+            bot.level2Peak = 0;
+            bot.gapHits = 0;
+            bot.gapHitProcessed = false;
+            bot.harvestCount = 0;
+            bot.harvestBet = 0;
+            bot.lastBetAmount = 0;
+            bot.sessionProfit = 0;
+            bot.totalWager = 0;
+            bot.highestProfit = 0;
+            bot.maxDrawdownVal = 0;
+            bot.balanceStartSnapshot = balance;
+            bot.isRunning = true;
+            bot.isSleeping = false;
+            bot.lastTGReport = Date.now();
+            bot.lastFiatUpdate = 0;
+            bot.isResetting = false;
+            bot.resetCountdownRemaining = 0;
+            bot.balanceHistory = [];
+            bot.harvestMarkers = [];
+            bot.gapMarkers = [];
+            bot.harvestHistory = [];
+            bot.openHarvest = null;
+            
+            resetRecovery();
+            
+            if (bot.chartInstance) {
+                bot.chartInstance.destroy();
+                bot.chartInstance = null;
+            }
+            
+            initMemory();
+            toggleStartStop(true);
+            updateUILog("🚀 FORGE v1.1 STARTED | Balance: " + balance.toFixed(8) + " | Base Chance: " + bot.baseChance + "% | Recovery: " + (bot.recoveryMode ? "ON" : "OFF"));
+            sendTelegramMessage("🚀 FORGE v1.1 STARTED\nBalance: " + balance.toFixed(8) + "\nBase Chance: " + bot.baseChance + "%\nRecovery Mode: " + (bot.recoveryMode ? "ON" : "OFF"));
+            
+            renderHarvestTable();
+            runLoop();
+        };
+        
+        document.getElementById("p-stop").onclick = async function() { 
+            bot.isRunning = false; 
+            toggleStartStop(false); 
+            updateUILog("STOPPED"); 
+            await sendSessionReport(); 
+        };
+        
+        document.getElementById("p-reset").onclick = resetSession;
+        
+        document.getElementById("p-currency").onchange = function() { 
+            bot.selectedCurrency = document.getElementById("p-currency").value; 
+            bot.lastFiatUpdate = 0; 
+            updateFiatRates(); 
+        };
+        
+        document.getElementById("p-chart-bets").onchange = function() { 
+            var newMax = parseInt(this.value); 
+            if (newMax > 0 && newMax !== bot.chartMaxBets) { 
+                bot.chartMaxBets = newMax; 
+                while (bot.balanceHistory.length > bot.chartMaxBets) bot.balanceHistory.shift(); 
+                drawChart(); 
+            } 
+        };
+        
+        setInterval(function() { 
+            updateStatsDisplay(); 
+        }, 1000);
+        
+        setInterval(function() { 
+            updateFiatRates(); 
+        }, 30000);
+        
+        updateFiatRates();
+    }
+    
+    var waitForChart = setInterval(function() { 
+        if (typeof Chart !== 'undefined') { 
+            clearInterval(waitForChart); 
+            createUI(); 
+            updateUILog("⚡ FORGE v1.1 Final - Chart stabil | Recovery Mode | Gap di MAIN"); 
+        } 
+    }, 500);
+    
+    setTimeout(function() { 
+        if (typeof Chart === 'undefined') { 
+            clearInterval(waitForChart); 
+            createUI(); 
+            updateUILog("⚡ FORGE v1.1 - Fallback mode"); 
+        } 
+    }, 5000);
+})();
