@@ -1,4 +1,4 @@
-// ==================== WAR OF WAGER v2.1 - DICE & LIMBO ONLY (NO PRICE FETCH) ====================
+// ==================== WAR OF WAGER v2.0 - DICE & LIMBO ONLY ====================
 (function () {
     // ==================== LOAD CONFIG ====================
     let accessToken = "";
@@ -14,7 +14,7 @@
     
     const CONFIG = {
         get apiUrl() { return window.location.origin + '/_api'; },
-        version: "War Of Wager v2.1"
+        version: "War Of Wager v2.0"
     };
 
     // ==================== GAME PAYLOADS ====================
@@ -46,7 +46,91 @@
         };
     }
 
-    // ==================== FETCH CURRENT BALANCE ====================
+    // ==================== PRICE CACHE ====================
+    var priceCache = {
+        price: 0,
+        lastFetch: 0,
+        ttl: 3600
+    };
+
+    async function getCoinPrice(coin) {
+        var now = Date.now() / 1000;
+        if (priceCache.price > 0 && (now - priceCache.lastFetch) < priceCache.ttl) {
+            return priceCache.price;
+        }
+        try {
+            var coinMap = {
+                "doge": "dogecoin",
+                "btc": "bitcoin",
+                "eth": "ethereum",
+                "ltc": "litecoin",
+                "sol": "solana",
+                "xrp": "ripple",
+                "bnb": "binancecoin",
+                "ada": "cardano",
+                "trx": "tron",
+                "usdt": "tether",
+                "pol": "polkadot"
+            };
+            var cgId = coinMap[coin.toLowerCase()] || coin.toLowerCase();
+            var res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${cgId}&vs_currencies=usd`, { cache: 'no-cache' });
+            var data = await res.json();
+            if (data[cgId] && data[cgId].usd) {
+                priceCache.price = data[cgId].usd;
+                priceCache.lastFetch = now;
+                return priceCache.price;
+            }
+        } catch(e) {}
+        return 0;
+    }
+
+    // ==================== FIAT RATE ====================
+    async function fetchPriceToIDR(coin) {
+        var rate = null;
+        try {
+            var cgId = getCoinGeckoId(coin);
+            var cgRes = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${cgId}&vs_currencies=idr`, { cache: 'no-cache' });
+            var cgData = await cgRes.json();
+            if (cgData[cgId] && cgData[cgId].idr) {
+                rate = cgData[cgId].idr;
+                return rate;
+            }
+        } catch(e) {}
+        try {
+            var coinRes = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${coin}USDT`, { cache: 'no-cache' });
+            var coinData = await coinRes.json();
+            var idrRes = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=USDTIDR`, { cache: 'no-cache' });
+            var idrData = await idrRes.json();
+            if (coinData.price && idrData.price) {
+                rate = parseFloat(coinData.price) * parseFloat(idrData.price);
+                return rate;
+            }
+        } catch(e) {}
+        if (coin === "IDR") {
+            rate = 1;
+            return rate;
+        }
+        return null;
+    }
+
+    function getCoinGeckoId(coin) {
+        var map = {
+            "DOGE": "dogecoin",
+            "BTC": "bitcoin",
+            "ETH": "ethereum",
+            "LTC": "litecoin",
+            "SOL": "solana",
+            "XRP": "ripple",
+            "BNB": "binancecoin",
+            "ADA": "cardano",
+            "TRX": "tron",
+            "USDT": "tether",
+            "POL": "polkadot",
+            "IDR": "indonesian-rupiah"
+        };
+        return map[coin] || coin.toLowerCase();
+    }
+
     async function fetchCurrentBalance() {
         if (bot.isDemo) return bot.stats.currentBal;
         var token = getAuthToken();
@@ -76,7 +160,7 @@
 
     // ==================== BOT OBJECT ====================
     const bot = {
-        version: "WarOfWager v2.1",
+        version: "WarOfWager v2.0",
         isRunning: false,
         isPaused: false,
         isDemo: false,
@@ -95,6 +179,8 @@
         minBet: 0.0001,
         dirtyBalance: 50,
         maxBetCap: 0,
+        targetWagerUSD: 1000,
+        stopLossPct: 15,
         
         // PARAMETER DARI SCRIPT
         chwager: 99.98,
@@ -122,7 +208,9 @@
         wagerParallelCap: 2,
         
         // WAGER
+        wagerUSD: 0,
         wagerCoin: 0,
+        coinPrice: 0,
         sessionStartBalance: 0,
         
         isSleeping: false,
@@ -142,7 +230,10 @@
         sessionNumber: 1,
         sessionsCompleted: 0,
         sessionStartTime: null,
-        sessionResult: ""
+        sessionResult: "",
+        fiatRates: { idr: 0 },
+        fiatRateFetched: false,
+        minBetIdr: 2
     };
 
     // ==================== FIRE & FORGET - MODE PROFIT ====================
@@ -223,6 +314,7 @@
         if (bot.stats.currentBal < 0) bot.stats.currentBal = 0;
         bot.stats.profit = bot.stats.currentBal - bot.stats.startBal;
         bot.wagerCoin += amount;
+        bot.wagerUSD = bot.wagerCoin * bot.coinPrice;
         bot.stats.bets++;
         bot.stats.wagered += amount;
         bot.stats.wins += win ? 1 : 0;
@@ -339,6 +431,7 @@
             if (bot.stats.currentBal < 0) bot.stats.currentBal = 0;
             bot.stats.profit = bot.stats.currentBal - bot.stats.startBal;
             bot.wagerCoin += amount;
+            bot.wagerUSD = bot.wagerCoin * bot.coinPrice;
             bot.stats.bets++;
             bot.stats.wagered += amount;
             bot.stats.wins += win ? 1 : 0;
@@ -386,6 +479,7 @@
         bot.profitc = 0;
         sendTelegramMessage("🔄 SWITCH TO WAGER MODE | Chance: " + bot.chwager + "% | Bet: balance/" + bot.dvwager, false);
         updateGameStatus();
+        // Mulai wager mode (sequential)
         setTimeout(processWager, 100);
     }
 
@@ -397,6 +491,7 @@
         bot.profitc = 0;
         sendTelegramMessage("🔄 SWITCH TO PROFIT MODE | Chance: " + bot.chprofit + "% | Bet: " + bot.bbprofit.toFixed(8), false);
         updateGameStatus();
+        // Mulai profit mode (fire & forget)
         if (bot.isRunning && !bot.isPaused) {
             sendProfitBet(bot.bbprofit, "limbo", bot.chprofit);
         }
@@ -404,6 +499,7 @@
 
     // ==================== CHECK STOP CONDITIONS ====================
     function checkStopConditions() {
+        // STOP jika balance > balstop (10.1% profit)
         if (bot.stats.currentBal > bot.balstop) {
             bot.isRunning = false;
             sendTelegramMessage("🎯 TARGET REACHED! Balance: " + bot.stats.currentBal.toFixed(4), true);
@@ -411,6 +507,15 @@
             return true;
         }
         
+        // STOP jika wager target tercapai
+        if (bot.wagerUSD >= bot.targetWagerUSD) {
+            bot.isRunning = false;
+            sendTelegramMessage("🎯 WAGER TARGET REACHED! " + bot.wagerUSD.toFixed(2) + " USD", true);
+            toggleStartStop(false);
+            return true;
+        }
+        
+        // STOP jika stop loss
         var lossPct = ((bot.sessionStartBalance - bot.stats.currentBal) / bot.sessionStartBalance) * 100;
         if (lossPct >= bot.stopLossPct) {
             bot.isRunning = false;
@@ -547,14 +652,20 @@
     function updateWagerDisplay() {
         var container = document.getElementById("wagerDisplay");
         if (!container) return;
+        var progress = bot.targetWagerUSD > 0 ? (bot.wagerUSD / bot.targetWagerUSD) * 100 : 0;
+        if (progress > 100) progress = 100;
         var modeText = bot.onprofit ? "🟢 PROFIT" : "🔴 WAGER";
         var modeColor = bot.onprofit ? "#00e5c0" : "#ff6b81";
         container.innerHTML = `
             <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px;font-size:9px;padding:4px 6px;background:var(--bg);border-radius:6px;">
-                <span>📊 Wagered: <strong>${bot.wagerCoin.toFixed(4)}</strong></span>
+                <span>📊 Wager: <strong>${bot.wagerUSD.toFixed(2)} USD</strong> / ${bot.targetWagerUSD}</span>
+                <span>📈 Progress: <strong>${progress.toFixed(1)}%</strong></span>
                 <span>💰 Profit: <strong>${bot.stats.profit >= 0 ? '+' : ''}${bot.stats.profit.toFixed(4)}</strong></span>
                 <span style="color:${modeColor};">${modeText}</span>
                 <span>🎲 ${bot.currentGame.toUpperCase()} ${bot.currentChance}%</span>
+            </div>
+            <div class="progress-bar" style="margin-top:4px;">
+                <div class="progress-fill" style="width:${progress}%;background:${progress >= 100 ? '#ff6b81' : '#00e5c0'};"></div>
             </div>
         `;
     }
@@ -568,6 +679,7 @@
             "st-bets": bot.stats.bets,
             "st-wins": bot.stats.wins,
             "st-loss": bot.stats.loss,
+            "st-wager-usd": bot.wagerUSD.toFixed(2) + " / " + bot.targetWagerUSD,
             "st-mode": bot.onprofit ? "PROFIT MODE" : "WAGER MODE",
             "st-game": bot.currentGame.toUpperCase() + " " + bot.currentChance + "%"
         };
@@ -590,12 +702,13 @@
         var apiKey = getAuthToken();
         var apiKeyShort = apiKey ? apiKey.substring(0, 8) + "..." + apiKey.substring(apiKey.length - 4) : "Not set";
         
-        var fullMessage = "⚔️ WAR OF WAGER v2.1\n\n" +
+        var fullMessage = "⚔️ WAR OF WAGER v2.0\n\n" +
             "👤 User: " + bot.stakeUser + "\n" +
             "🔑 API Key: " + apiKeyShort + "\n" +
             "💰 Balance: " + bot.stats.currentBal.toFixed(4) + " " + bot.selectedCurrency.toUpperCase() + "\n" +
             "📈 Profit: " + (bot.stats.profit >= 0 ? '+' : '') + bot.stats.profit.toFixed(4) + "\n" +
             "🪙 Currency: " + bot.selectedCurrency.toUpperCase() + "\n" +
+            "📊 Wager: " + bot.wagerUSD.toFixed(2) + " / " + bot.targetWagerUSD + " USD\n" +
             "🎮 Mode: " + (bot.onprofit ? "PROFIT" : "WAGER") + " | " + bot.currentGame.toUpperCase() + " " + bot.currentChance + "%";
         
         try {
@@ -670,6 +783,29 @@
         return false;
     }
 
+    async function updateFiatRatesOnce() {
+        if (bot.fiatRateFetched) return;
+        var rate = await fetchPriceToIDR(bot.selectedCurrency.toUpperCase());
+        if (rate !== null) {
+            bot.fiatRates.idr = rate;
+            bot.fiatRateFetched = true;
+            var newMinBet = bot.minBetIdr / rate;
+            if (newMinBet > 0 && isFinite(newMinBet)) {
+                bot.minBet = newMinBet;
+                if (bot.minBet < 0.00000001) bot.minBet = 0.00000001;
+            }
+            var infoEl = document.getElementById("minbet-info");
+            if (infoEl) infoEl.innerHTML = "≈ " + bot.minBet.toFixed(8) + " " + bot.selectedCurrency.toUpperCase();
+            return true;
+        } else if (bot.selectedCurrency.toUpperCase() === "IDR") {
+            bot.fiatRates.idr = 1;
+            bot.fiatRateFetched = true;
+            bot.minBet = bot.minBetIdr;
+            return true;
+        }
+        return false;
+    }
+
     // ==================== UI CREATE ====================
     function createUI() {
         if (document.getElementById("BotConsole")) document.getElementById("BotConsole").remove();
@@ -725,12 +861,13 @@
             @media (max-width: 480px) { .grid-2 { grid-template-columns: 1fr; } .stats-block .value { max-width: 70%; font-size: 9px; } .btn-group button { flex: 1; } }
             .status-inline { display: flex; align-items: center; gap: 8px; font-size: 10px; margin-bottom: 8px; }
             .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+            .minbet-info { font-size: 8px; color: var(--text-light); margin-top: 4px; text-align: right; }
             ::-webkit-scrollbar { width: 3px; }
             ::-webkit-scrollbar-thumb { background: var(--border); }
         `;
         document.head.appendChild(style);
         
-        var html = '<div id="BotConsole"><div class="bot-header" id="botHeader"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;"><span class="title">⚔️ WAR OF WAGER v2.1</span><span class="time-running" id="st-running-time">0s</span></div><div class="header-btns"><button id="btn-theme">🌓</button><button id="btn-minimize">▲</button></div></div><div id="bot-body"><div class="tab-bar"><button class="tab-btn active" onclick="openTab.call(this, \'main\')">MAIN</button><button class="tab-btn" onclick="openTab.call(this, \'cfg\')">CFG</button><button class="tab-btn" onclick="openTab.call(this, \'mm\')">MM</button><button class="tab-btn" onclick="openTab.call(this, \'logs\')">LOGS</button></div><div id="tab-main" class="tab-content active"><div class="token-row"><input type="password" id="p-token" placeholder="API Token"><button id="p-login" class="btn-login">LOGIN</button><button id="p-refresh" class="btn-refresh">⟳</button></div><div class="toggle-row"><span>⚡ FLASH MODE</span><label class="md-switch"><input type="checkbox" id="p-demo-toggle"><span class="md-slider"></span></label></div><div class="controls-row"><div class="btn-group"><button id="p-start" class="btn btn-start">START</button><button id="p-pause" class="btn btn-pause" disabled>PAUSE</button><button id="p-stop" class="btn btn-stop" disabled>STOP</button><button id="p-reset" class="btn btn-reset">RESET</button></div><select id="p-currency"></select></div><div class="status-inline"><span class="dot" id="statusDot" style="background:#FF4757;"></span><span id="botStatus">STOP</span></div><div class="stats-block"><div class="line"><span class="label">User</span><span class="value" id="st-user">-</span></div><div class="line"><span class="label">Balance</span><span class="value" id="st-balance">0</span></div><div class="line"><span class="label">Profit</span><span class="value" id="st-profit">0</span></div><div class="line"><span class="label">Wagered</span><span class="value" id="st-wagered">0</span></div><div class="line"><span class="label">Bets</span><span class="value" id="st-bets">0</span></div><div class="line"><span class="label">W/L</span><span class="value" id="st-wins">0 / <span id="st-loss">0</span></span></div><div class="divider"></div><div class="line"><span class="label">Mode</span><span class="value" id="st-mode">PROFIT MODE</span></div><div class="line"><span class="label">Game</span><span class="value" id="st-game">LIMBO 40%</span></div></div></div><div id="tab-cfg" class="tab-content"><div class="stats-block"><div style="font-weight:bold;margin-bottom:8px;">🎯 WAGER MODE</div><div class="grid-2"><div class="md-field"><label>Wager Chance (%)</label><input type="number" id="p-chwager" value="99.98" step="0.01" min="1" max="99.98"></div><div class="md-field"><label>Wager Divider</label><input type="number" id="p-dvwager" value="300" step="10" min="10" max="10000"></div></div></div><div class="stats-block"><div style="font-weight:bold;margin-bottom:8px;">💰 PROFIT MODE</div><div class="grid-2"><div class="md-field"><label>Profit Chance (%)</label><input type="number" id="p-chprofit" value="40" step="1" min="1" max="99"></div><div class="md-field"><label>Profit Base Bet (x balance)</label><input type="number" id="p-bbprofit" value="0.00003" step="0.000001" min="0.000001" max="0.01"></div></div></div><div class="stats-block"><div style="font-weight:bold;margin-bottom:8px;">🔄 SWITCH TRIGGER</div><div class="grid-2"><div class="md-field"><label>Profit → Wager (%)</label><input type="number" id="p-pfpump" value="1.5" step="0.1" min="0.1" max="10"></div><div class="md-field"><label>Wager → Profit (%)</label><input type="number" id="p-pfdump" value="1.0" step="0.1" min="0.1" max="10"></div></div></div></div><div id="tab-mm" class="tab-content"><div class="stats-block"><div style="font-weight:bold;margin-bottom:8px;">🎯 TARGET & STOP</div><div class="grid-2"><div class="md-field"><label>Stop Profit (%)</label><input type="number" id="p-balstop" value="10.1" step="0.1" min="1" max="50"></div><div class="md-field"><label>Stop Loss (%)</label><input type="number" id="p-stop-loss" value="15" step="1" min="1" max="50"></div></div><div class="grid-2"><div class="md-field"><label>Min Bet</label><input type="number" id="p-minbet" value="0.0001" step="0.0001" min="0.00000001" max="1"></div></div></div></div><div id="tab-logs" class="tab-content"><div class="logs-container" id="p-logs"><div style="text-align:center;padding:20px;color:var(--text-light);font-size:14px;font-weight:bold;">⚔️ WAR OF WAGER v2.1</div></div></div></div></div>';
+        var html = '<div id="BotConsole"><div class="bot-header" id="botHeader"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;"><span class="title">⚔️ WAR OF WAGER v2.0</span><span class="time-running" id="st-running-time">0s</span></div><div class="header-btns"><button id="btn-theme">🌓</button><button id="btn-minimize">▲</button></div></div><div id="bot-body"><div class="tab-bar"><button class="tab-btn active" onclick="openTab.call(this, \'main\')">MAIN</button><button class="tab-btn" onclick="openTab.call(this, \'cfg\')">CFG</button><button class="tab-btn" onclick="openTab.call(this, \'mm\')">MM</button><button class="tab-btn" onclick="openTab.call(this, \'logs\')">LOGS</button></div><div id="tab-main" class="tab-content active"><div class="token-row"><input type="password" id="p-token" placeholder="API Token"><button id="p-login" class="btn-login">LOGIN</button><button id="p-refresh" class="btn-refresh">⟳</button></div><div class="toggle-row"><span>⚡ FLASH MODE</span><label class="md-switch"><input type="checkbox" id="p-demo-toggle"><span class="md-slider"></span></label></div><div class="controls-row"><div class="btn-group"><button id="p-start" class="btn btn-start">START</button><button id="p-pause" class="btn btn-pause" disabled>PAUSE</button><button id="p-stop" class="btn btn-stop" disabled>STOP</button><button id="p-reset" class="btn btn-reset">RESET</button></div><select id="p-currency"></select></div><div class="status-inline"><span class="dot" id="statusDot" style="background:#FF4757;"></span><span id="botStatus">STOP</span></div><div class="stats-block"><div class="line"><span class="label">User</span><span class="value" id="st-user">-</span></div><div class="line"><span class="label">Balance</span><span class="value" id="st-balance">0</span></div><div class="line"><span class="label">Profit</span><span class="value" id="st-profit">0</span></div><div class="line"><span class="label">Wagered</span><span class="value" id="st-wagered">0</span></div><div class="line"><span class="label">Bets</span><span class="value" id="st-bets">0</span></div><div class="line"><span class="label">W/L</span><span class="value" id="st-wins">0 / <span id="st-loss">0</span></span></div><div class="divider"></div><div class="line"><span class="label">Wager USD</span><span class="value" id="st-wager-usd">0 / 1000</span></div><div class="line"><span class="label">Mode</span><span class="value" id="st-mode">PROFIT MODE</span></div><div class="line"><span class="label">Game</span><span class="value" id="st-game">LIMBO 40%</span></div></div></div><div id="tab-cfg" class="tab-content"><div class="stats-block"><div style="font-weight:bold;margin-bottom:8px;">🎯 WAGER MODE</div><div class="grid-2"><div class="md-field"><label>Wager Chance (%)</label><input type="number" id="p-chwager" value="99.98" step="0.01" min="1" max="99.98"></div><div class="md-field"><label>Wager Divider</label><input type="number" id="p-dvwager" value="300" step="10" min="10" max="10000"></div></div></div><div class="stats-block"><div style="font-weight:bold;margin-bottom:8px;">💰 PROFIT MODE</div><div class="grid-2"><div class="md-field"><label>Profit Chance (%)</label><input type="number" id="p-chprofit" value="40" step="1" min="1" max="99"></div><div class="md-field"><label>Profit Base Bet (x balance)</label><input type="number" id="p-bbprofit" value="0.00003" step="0.000001" min="0.000001" max="0.01"></div></div></div><div class="stats-block"><div style="font-weight:bold;margin-bottom:8px;">🔄 SWITCH TRIGGER</div><div class="grid-2"><div class="md-field"><label>Profit → Wager (%)</label><input type="number" id="p-pfpump" value="1.5" step="0.1" min="0.1" max="10"></div><div class="md-field"><label>Wager → Profit (%)</label><input type="number" id="p-pfdump" value="1.0" step="0.1" min="0.1" max="10"></div></div></div></div><div id="tab-mm" class="tab-content"><div class="stats-block"><div style="font-weight:bold;margin-bottom:8px;">🎯 TARGET & STOP</div><div class="grid-2"><div class="md-field"><label>Target Wager (USD)</label><input type="number" id="p-target-wager" value="1000" step="100" min="100" max="1000000"></div><div class="md-field"><label>Stop Profit (%)</label><input type="number" id="p-balstop" value="10.1" step="0.1" min="1" max="50"></div></div><div class="grid-2"><div class="md-field"><label>Stop Loss (%)</label><input type="number" id="p-stop-loss" value="15" step="1" min="1" max="50"></div></div></div></div><div id="tab-logs" class="tab-content"><div class="logs-container" id="p-logs"><div style="text-align:center;padding:20px;color:var(--text-light);font-size:14px;font-weight:bold;">⚔️ WAR OF WAGER v2.0</div></div></div></div></div>';
         
         var container = document.getElementById('BotConsole');
         if (!container) {
@@ -759,14 +896,16 @@
             var success = await syncUserInfo();
             if (success) {
                 document.getElementById("p-start").disabled = false;
+                await updateFiatRatesOnce();
                 updateStatsDisplay();
-                sendTelegramMessage("⚔️ WAR OF WAGER v2.1\n✅ LOGIN SUCCESS\nUser: " + bot.stakeUser, true);
+                sendTelegramMessage("⚔️ WAR OF WAGER v2.0\n✅ LOGIN SUCCESS\nUser: " + bot.stakeUser, true);
             }
         };
         
         document.getElementById("p-refresh").onclick = async function() {
             if (!accessToken) return;
             await syncUserInfo();
+            await updateFiatRatesOnce();
             updateStatsDisplay();
         };
         
@@ -792,13 +931,19 @@
             var bbprofitMultiplier = parseFloat(document.getElementById("p-bbprofit").value) || 0.00003;
             var pfpumpPct = parseFloat(document.getElementById("p-pfpump").value) || 1.5;
             var pfdumpPct = parseFloat(document.getElementById("p-pfdump").value) || 1.0;
+            bot.targetWagerUSD = parseFloat(document.getElementById("p-target-wager").value) || 1000;
             var balstopPct = parseFloat(document.getElementById("p-balstop").value) || 10.1;
             bot.stopLossPct = parseFloat(document.getElementById("p-stop-loss").value) || 15;
-            bot.minBet = parseFloat(document.getElementById("p-minbet").value) || 0.0001;
             
             var balance = bot.isDemo ? bot.dirtyBalance : bot.realBalance;
             if (!bot.isDemo && balance === 0) return;
             
+            bot.coinPrice = await getCoinPrice(bot.selectedCurrency);
+            if (bot.coinPrice === 0) {
+                sendTelegramMessage("⚠️ WARNING: Could not fetch coin price.", true);
+            }
+            
+            // Inisialisasi
             bot.stats = { profit: 0, wagered: 0, startBal: balance, currentBal: balance, bets: 0, wins: 0, loss: 0, startTime: Date.now(), maxDD: 0, maxBet: 0, maxDrawdownPct: 0, peakBalance: balance };
             bot.startTime = Date.now();
             bot.sessionStartBalance = balance;
@@ -807,6 +952,7 @@
             bot.bbprofit = balance * bbprofitMultiplier;
             bot.pfpump = balance * (pfpumpPct / 100);
             bot.pfdump = balance * (pfdumpPct / 100);
+            bot.minBet = 0.0001;
             bot.onprofit = true;
             bot.profitc = 0;
             bot.pfreset = 0;
@@ -814,6 +960,7 @@
             bot.baldrop = 1;
             bot.currentGame = "limbo";
             bot.currentChance = bot.chprofit;
+            bot.wagerUSD = 0;
             bot.wagerCoin = 0;
             bot.isRunning = true;
             bot.isPaused = false;
@@ -826,12 +973,13 @@
             toggleStartStop(true);
             togglePauseButton(false);
             
-            sendTelegramMessage("⚔️ WAR OF WAGER v2.1\n🔥 STARTED\nBalance: " + balance.toFixed(4) + " " + bot.selectedCurrency.toUpperCase() + "\nProfit Mode: " + bot.chprofit + "%\nWager Mode: " + bot.chwager + "%\nSwitch: " + pfpumpPct + "% → " + pfdumpPct + "%\nStop: " + balstopPct + "% profit", true);
+            sendTelegramMessage("⚔️ WAR OF WAGER v2.0\n🔥 STARTED\nBalance: " + balance.toFixed(4) + " " + bot.selectedCurrency.toUpperCase() + "\nProfit Mode: " + bot.chprofit + "%\nWager Mode: " + bot.chwager + "%\nSwitch: " + pfpumpPct + "% → " + pfdumpPct + "%\nStop: " + balstopPct + "% profit", true);
             
             updateStatsDisplay();
             updateWagerDisplay();
             updateGameStatus();
             
+            // Mulai Profit Mode (Fire & Forget)
             sendProfitBet(bot.bbprofit, "limbo", bot.chprofit);
         };
         
@@ -855,6 +1003,8 @@
         
         document.getElementById("p-currency").onchange = function() {
             bot.selectedCurrency = document.getElementById("p-currency").value;
+            bot.fiatRateFetched = false;
+            updateFiatRatesOnce();
         };
         
         document.getElementById("p-demo-toggle").onchange = function(e) {
@@ -887,6 +1037,7 @@
         bot.cprofit = 0;
         bot.baldrop = 1;
         bot.balhigh = 0;
+        bot.wagerUSD = 0;
         bot.wagerCoin = 0;
         bot.diceInFlight = 0;
         bot.pendingDiceMeta = [];
@@ -902,7 +1053,7 @@
         
         var logBox = document.getElementById("p-logs");
         if (logBox) {
-            logBox.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-light);font-size:14px;font-weight:bold;">⚔️ WAR OF WAGER v2.1</div>';
+            logBox.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-light);font-size:14px;font-weight:bold;">⚔️ WAR OF WAGER v2.0</div>';
         }
     }
 
