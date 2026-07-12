@@ -1,1333 +1,745 @@
 // ============================================================
-// DICEY DUAL ENGINE v6.0 - FIXED CHAT DETECTION
-// Copy paste ke console browser di https://dicey.com
+// DICEY RAIN CATCHER v3.2 - UI PERMANEN TIDAK PERNAH TUTUP
+// Loop 30 Menit + UI Tetap Terlihat
 // ============================================================
 
 (function() {
     'use strict';
 
-    console.log('🔥 DiceY Dual Engine v6.0 - Fixed Chat Detection');
+    const CONFIG = {
+        CHECK_INTERVAL: 30000,      // 30 detik
+        LOOP_INTERVAL: 1800000,     // 30 menit
+        MAX_RETRY: 3,
+        DEBUG: true
+    };
 
-    if (document.getElementById('dicey-bot-ui')) {
-        console.log('⚠️ UI already exists');
-        document.getElementById('dicey-bot-ui').style.display = 'block';
-        return;
-    }
-
-    // ============================================================
-    // VARIABLES
-    // ============================================================
-    var isWhitelisted = false;
-    var currentUsername = '';
-    var hasChromeRuntime = (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage);
-
-    // ============================================================
-    // TOGGLE STATE
-    // ============================================================
-    var toggleRain = true;
-    var toggleWager = true;
-    var toggleBonus = true;
-
-    // ============================================================
-    // RAIN CATCHER STATE
-    // ============================================================
-    var rainIsRunning = false;
-    var rainIntervalId = null;
-    var rainSuccessCount = 0;
-    var rainFailCount = 0;
-    var rainLastLog = '';
-    var rainLastLogTime = 0;
-    var rainIsProcessing = false;
-
-    // ============================================================
-    // BONUS STATE
-    // ============================================================
-    var bonusState = {
+    const state = {
         isRunning: false,
-        totalClaimed: 0,
-        lastClaim: null,
-        intervalId: null,
-        isProcessing: false
+        successCount: 0,
+        failCount: 0,
+        interval: null,
+        loopInterval: null,
+        username: '',
+        status: 'idle',
+        isMobile: false,
+        lastJoinAttempt: 0,
+        loopCount: 0,
+        isJoining: false
     };
 
     // ============================================================
-    // WAGER STATE
+    // LOGGER
     // ============================================================
-    var wagerState = {
-        isRunning: false,
-        isPaused: false,
-        totalBets: 0,
-        totalWins: 0,
-        totalLosses: 0,
-        currentStreak: 0,
-        currentLayer: 1,
-        startBalance: 0,
-        currentBalance: 0,
-        currentBet: 0,
-        wagered: 0,
-        username: '-',
-        startTime: null,
-        timerInterval: null,
-        layer1Bets: 0,
-        layer2Bets: 0,
-        layer1Wins: 0,
-        layer2Wins: 0,
-        layer1OriginalBet: 0,
-        layer2OriginalBet: 0,
-        entryBalance: 0,
-        lossRecovery: 0,
-        totalLossInL2: 0,
-        isLooping: false,
-        targetWager: 300,
-        stopLossPercent: 90
-    };
-
-    // ============================================================
-    // UI CONTAINER
-    // ============================================================
-    var container = document.createElement('div');
-    container.id = 'dicey-bot-ui';
-    container.style.cssText = `
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        width: 100%;
-        height: 100%;
-        background: #0a0a0a;
-        color: #f8f8f2;
-        font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
-        z-index: 999999;
-        overflow: hidden;
-        user-select: none;
-        font-size: 13px;
-        display: flex;
-        flex-direction: column;
-    `;
-
-    container.innerHTML = `
-        <!-- HEADER -->
-        <div style="background: linear-gradient(135deg, #ff6b35, #e85d2c); padding: 12px 16px; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; min-height: 56px;">
-            <div style="display: flex; align-items: center; gap: 10px;">
-                <span style="font-weight: 800; font-size: 17px; color: #fff;">🎲 CheapCheatX</span>
-                <span style="background: rgba(0,0,0,0.25); padding: 2px 12px; border-radius: 20px; font-size: 10px; font-weight: 700; color: #fff;">v6.0</span>
-            </div>
-            <div style="display: flex; gap: 8px;">
-                <button id="dicey-minimize" style="background: rgba(0,0,0,0.2); border: none; color: #fff; width: 36px; height: 36px; border-radius: 10px; cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center;">▼</button>
-                <button id="dicey-close" style="background: rgba(0,0,0,0.2); border: none; color: #fff; width: 36px; height: 36px; border-radius: 10px; cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center;">✕</button>
-            </div>
-        </div>
-
-        <!-- SCROLLABLE CONTENT -->
-        <div id="dicey-content" style="flex: 1; overflow-y: auto; padding: 12px 14px 20px;">
-
-            <!-- WHITELIST STATUS -->
-            <div id="dicey-whitelist-status" style="margin-bottom:8px;padding:8px 12px;background:#151515;border-radius:8px;border:1px solid #2a2a2a;font-size:11px;color:#888;text-align:center;">
-                ⏳ Enter username to activate bots
-            </div>
-
-            <!-- USERNAME INPUT -->
-            <div style="display:flex;gap:8px;margin-bottom:10px;">
-                <input id="dicey-username" type="text" placeholder="Username..." style="flex:1;padding:10px 14px;border-radius:10px;border:1px solid #2a2a2a;background:#151515;color:#f8f8f2;font-size:13px;box-sizing:border-box;outline:none;">
-                <button id="dicey-check-whitelist" style="padding:10px 18px;border:none;border-radius:10px;background:#ff6b35;color:#fff;font-weight:700;font-size:12px;cursor:pointer;">CHECK</button>
-            </div>
-
-            <!-- ===== MASTER CONTROL ===== -->
-            <div style="margin-bottom:10px;padding:8px 0;border-top:1px solid #2a2a2a;border-bottom:1px solid #2a2a2a;">
-                <button id="dicey-master" style="width:100%;padding:12px 0;border:none;border-radius:10px;background:#ff6b35;color:#fff;font-weight:800;font-size:15px;cursor:pointer;transition:all 0.3s;">
-                    🚀 START ALL
-                </button>
-                <div style="display:flex;justify-content:center;gap:12px;margin-top:6px;font-size:10px;color:#666;">
-                    <span id="dicey-master-status">⏸️ All Stopped</span>
-                </div>
-            </div>
-
-            <!-- TOGGLES -->
-            <div style="display:flex;gap:12px;margin-bottom:10px;padding:6px 0;border-bottom:1px solid #2a2a2a;flex-wrap:wrap;">
-                <label style="font-size:12px;color:#a0a0a0;display:flex;align-items:center;gap:6px;cursor:pointer;padding:4px 10px;background:#151515;border-radius:6px;border:1px solid #2a2a2a;">
-                    <input type="checkbox" id="toggle-rain" checked style="width:18px;height:18px;accent-color:#ff922b;"> 🌧️ RAIN
-                </label>
-                <label style="font-size:12px;color:#a0a0a0;display:flex;align-items:center;gap:6px;cursor:pointer;padding:4px 10px;background:#151515;border-radius:6px;border:1px solid #2a2a2a;">
-                    <input type="checkbox" id="toggle-wager" checked style="width:18px;height:18px;accent-color:#00e5c0;"> 🎲 WAGER
-                </label>
-                <label style="font-size:12px;color:#a0a0a0;display:flex;align-items:center;gap:6px;cursor:pointer;padding:4px 10px;background:#151515;border-radius:6px;border:1px solid #2a2a2a;">
-                    <input type="checkbox" id="toggle-bonus" checked style="width:18px;height:18px;accent-color:#ff6b9d;"> 🎁 BONUS
-                </label>
-            </div>
-
-            <!-- ===== RAIN CATCHER ===== -->
-            <div id="rain-section" style="border:1px solid #2a2a2a;border-radius:10px;padding:10px 12px;margin-bottom:8px;background:#111;">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-                    <span style="font-size:12px;font-weight:700;color:#ff922b;">🌧️ RAIN CATCHER</span>
-                    <span id="dicey-rain-whitelist-status" style="font-size:10px;color:#ff6b81;">🔒 Locked</span>
-                </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 6px;">
-                    <button id="dicey-rain-toggle" style="padding: 8px 0; border: none; border-radius: 8px; background: #555; color: #000; font-weight: 700; font-size: 12px; cursor: pointer; opacity:0.3; transition:all 0.3s;">▶ START</button>
-                    <button id="dicey-rain-status-btn" style="padding: 8px 0; border: none; border-radius: 8px; background: #1a1a1a; color: #888; font-weight: 700; font-size: 10px; cursor: default;">⏸️ IDLE</button>
-                </div>
-                <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;padding:4px 0;border-top:1px solid #2a2a2a;border-bottom:1px solid #2a2a2a;">
-                    <span id="dicey-rain-dot" style="width:10px;height:10px;border-radius:50%;background:#888;display:inline-block;"></span>
-                    <span id="dicey-rain-status" style="font-size:11px;color:#888;">STOPPED</span>
-                    <span style="margin-left:auto;font-size:12px;">
-                        <span style="color:#4ade80;">✓ <span id="dicey-rain-success" style="font-weight:700;">0</span></span>
-                        <span style="color:#ff6b81;margin-left:10px;">✗ <span id="dicey-rain-fail" style="font-weight:700;">0</span></span>
-                    </span>
-                </div>
-                <div id="dicey-rain-log" style="background:#0a0a0a;border-radius:6px;padding:4px 8px;max-height:50px;overflow-y:auto;font-family:monospace;font-size:9px;color:#888;border:1px solid #2a2a2a;"></div>
-            </div>
-
-            <!-- ===== WAGER BOT ===== -->
-            <div id="wager-section" style="border:1px solid #2a2a2a;border-radius:10px;padding:10px 12px;margin-bottom:8px;background:#111;">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-                    <span style="font-size:12px;font-weight:700;color:#00e5c0;">🎲 WAGER BOT</span>
-                    <span id="dicey-wager-whitelist-status" style="font-size:10px;color:#ff6b81;">🔒 Locked</span>
-                </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin-bottom: 6px;">
-                    <button id="dicey-wager-toggle" style="padding: 8px 0; border: none; border-radius: 8px; background: #555; color: #000; font-weight: 700; font-size: 12px; cursor: pointer; opacity:0.3; transition:all 0.3s;">▶ START</button>
-                    <button id="dicey-wager-pause" style="padding: 8px 0; border: none; border-radius: 8px; background: #333; color: #fff; font-weight: 700; font-size: 12px; cursor: pointer; opacity:0.3;">⏸ PAUSE</button>
-                    <button id="dicey-wager-reset" style="padding: 8px 0; border: none; border-radius: 8px; background: #333; color: #fff; font-weight: 700; font-size: 12px; cursor: pointer;">🔄 RESET</button>
-                </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; background: #0a0a0a; border-radius: 6px; padding: 6px 8px; font-size: 10px;">
-                    <span>💰 <strong id="dicey-balance" style="color:#4ade80;">0.00</strong></span>
-                    <span>📊 <strong id="dicey-profit" style="color:#ffd700;">+0.00</strong></span>
-                    <span>🎯 <strong id="dicey-bets">0</strong></span>
-                    <span>Layer <strong id="dicey-layer" style="color:#00e5c0;">1</strong></span>
-                    <span>Wins <strong id="dicey-wins" style="color:#4ade80;">0</strong></span>
-                    <span id="dicey-wager-status-text" style="color:#ff4757;font-weight:700;">STOP</span>
-                </div>
-            </div>
-
-            <!-- ===== AUTO-CLAIM BONUS ===== -->
-            <div id="bonus-section" style="border:1px solid #2a2a2a;border-radius:10px;padding:10px 12px;margin-bottom:8px;background:#111;">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-                    <span style="font-size:12px;font-weight:700;color:#ff6b9d;">🎁 AUTO-CLAIM BONUS</span>
-                    <span id="dicey-bonus-whitelist-status" style="font-size:10px;color:#ff6b81;">🔒 Locked</span>
-                </div>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px;">
-                    <button id="dicey-bonus-toggle" style="padding:8px 0;border:none;border-radius:8px;background:#555;color:#000;font-weight:700;font-size:12px;cursor:pointer;opacity:0.3;transition:all 0.3s;">▶ AUTO</button>
-                    <button id="dicey-bonus-claim" style="padding:8px 0;border:none;border-radius:8px;background:#333;color:#fff;font-weight:700;font-size:12px;cursor:pointer;opacity:0.3;">⚡ CLAIM NOW</button>
-                </div>
-                <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:10px;padding:4px 0;border-top:1px solid #2a2a2a;border-bottom:1px solid #2a2a2a;">
-                    <span style="color:#a0a0a0;">📊 Claimed: <strong id="dicey-bonus-count" style="color:#ff6b9d;">0</strong></span>
-                    <span style="color:#a0a0a0;">⏱️ Last: <strong id="dicey-bonus-last" style="color:#888;">Never</strong></span>
-                </div>
-            </div>
-
-            <!-- ===== LOGS ===== -->
-            <div style="border:1px solid #2a2a2a;border-radius:10px;padding:8px 12px;background:#111;">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-                    <span style="font-size:12px;font-weight:600;color:#a0a0a0;">📋 LOGS</span>
-                    <button id="dicey-clear-logs" style="padding:2px 12px;border:none;border-radius:4px;background:#2a2a2a;color:#888;font-size:10px;cursor:pointer;">Clear</button>
-                </div>
-                <div id="dicey-log" style="background:#0a0a0a;border-radius:6px;padding:4px 8px;max-height:80px;overflow-y:auto;font-family:monospace;font-size:9px;color:#888;border:1px solid #2a2a2a;"></div>
-            </div>
-
-        </div>
-    `;
-
-    document.body.appendChild(container);
-
-    // ============================================================
-    // FUNCTIONS
-    // ============================================================
-    function $(id) { return document.getElementById(id); }
-    function sleep(ms) { return new Promise(function(resolve) { setTimeout(resolve, ms); }); }
-    function generateUUID() {
-        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-            var r = Math.random() * 16 | 0;
-            var v = c === 'x' ? r : (r & 0x3 | 0x8);
-            return v.toString(16);
-        });
-    }
-
-    function log(msg, color) {
-        color = color || '#a0a0a0';
-        var logEl = document.getElementById('dicey-log');
-        if (!logEl) return;
-        var time = new Date().toLocaleTimeString();
-        logEl.innerHTML += '<div style="color:' + color + ';padding:2px 0;border-bottom:1px solid rgba(255,255,255,0.02);font-size:9px;">[' + time + '] ' + msg + '</div>';
+    function log(msg, color = '#888') {
+        const logEl = document.getElementById('dicey-log');
+        if (!logEl) {
+            console.log(`[${new Date().toLocaleTimeString()}] ${msg}`);
+            return;
+        }
+        
+        const time = new Date().toLocaleTimeString();
+        logEl.innerHTML += `<div style="color:${color};padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.05);font-size:11px;font-family:monospace;">${time} ${msg}</div>`;
         logEl.scrollTop = logEl.scrollHeight;
-        if (logEl.children.length > 200) {
+        
+        if (logEl.children.length > 100) {
             logEl.removeChild(logEl.firstChild);
         }
     }
 
-    // ============================================================
-    // WHITELIST
-    // ============================================================
-    var WHITELIST_URL = 'https://raw.githubusercontent.com/orionlogic90/ProUser/refs/heads/main/whitelist.json';
-    var whitelistCache = null;
-    var cacheExpiry = 0;
-
-    async function fetchWhitelist() {
-        if (whitelistCache && Date.now() < cacheExpiry) return whitelistCache;
-        try {
-            var response = await fetch(WHITELIST_URL);
-            if (!response.ok) throw new Error('HTTP ' + response.status);
-            var data = await response.json();
-            whitelistCache = data;
-            cacheExpiry = Date.now() + 300000;
-            try { localStorage.setItem('dicey_whitelist', JSON.stringify(data)); } catch(e) {}
-            return data;
-        } catch (error) {
-            try {
-                var cached = localStorage.getItem('dicey_whitelist');
-                if (cached) {
-                    whitelistCache = JSON.parse(cached);
-                    return whitelistCache;
-                }
-            } catch(e) {}
-            return { users: { 'dengkodice': '2026-12-31', 'crotcrit666': '2026-08-10', 'admin': 'permanent', 'cheapcheatx': 'permanent' } };
-        }
-    }
-
-    async function checkWhitelist(username) {
-        var data = await fetchWhitelist();
-        var users = data.users || {};
-        username = username.toLowerCase().trim();
-        if (!username) return { valid: false, reason: 'Enter username' };
-        if (!users[username]) return { valid: false, reason: 'User not in whitelist' };
-        var expiry = users[username];
-        if (expiry === 'permanent') return { valid: true, username: username, remaining: '∞' };
-        var expiryDate = new Date(expiry);
-        if (new Date() > expiryDate) return { valid: false, reason: 'License expired (' + expiry + ')' };
-        var remaining = Math.ceil((expiryDate - new Date()) / (1000 * 60 * 60 * 24));
-        return { valid: true, username: username, remaining: remaining + ' days' };
-    }
-
-    function updateWhitelistStatus() {
-        var usernameInput = $('dicey-username');
-        var statusEl = $('dicey-whitelist-status');
-        var wagerStatusEl = $('dicey-wager-whitelist-status');
-        var rainStatusEl = $('dicey-rain-whitelist-status');
-        var bonusStatusEl = $('dicey-bonus-whitelist-status');
-
-        if (!usernameInput || !statusEl) return;
-
-        var username = usernameInput.value.trim();
-        currentUsername = username;
-
-        if (!username) {
-            statusEl.textContent = '⏳ Enter username to activate bots';
-            statusEl.style.color = '#888';
-            if (wagerStatusEl) { wagerStatusEl.textContent = '🔒 Locked'; wagerStatusEl.style.color = '#ff6b81'; }
-            if (rainStatusEl) { rainStatusEl.textContent = '🔒 Locked'; rainStatusEl.style.color = '#ff6b81'; }
-            if (bonusStatusEl) { bonusStatusEl.textContent = '🔒 Locked'; bonusStatusEl.style.color = '#ff6b81'; }
-            isWhitelisted = false;
-            updateButtons();
-            return;
-        }
-
-        checkWhitelist(username).then(function(check) {
-            if (check.valid) {
-                statusEl.textContent = '✅ ' + check.username + ' - ' + check.remaining;
-                statusEl.style.color = '#4ade80';
-                if (wagerStatusEl) { wagerStatusEl.textContent = '✅ Unlocked'; wagerStatusEl.style.color = '#4ade80'; }
-                if (rainStatusEl) { rainStatusEl.textContent = '✅ Unlocked'; rainStatusEl.style.color = '#4ade80'; }
-                if (bonusStatusEl) { bonusStatusEl.textContent = '✅ Unlocked'; bonusStatusEl.style.color = '#4ade80'; }
-                isWhitelisted = true;
-                localStorage.setItem('dicey_username', username);
-            } else {
-                statusEl.textContent = '❌ ' + check.reason;
-                statusEl.style.color = '#f87171';
-                if (wagerStatusEl) { wagerStatusEl.textContent = '🔒 Locked'; wagerStatusEl.style.color = '#ff6b81'; }
-                if (rainStatusEl) { rainStatusEl.textContent = '🔒 Locked'; rainStatusEl.style.color = '#ff6b81'; }
-                if (bonusStatusEl) { bonusStatusEl.textContent = '🔒 Locked'; bonusStatusEl.style.color = '#ff6b81'; }
-                isWhitelisted = false;
-            }
-            updateButtons();
-            updateMasterUI();
-        });
-    }
-
-    function updateButtons() {
-        var btns = ['dicey-rain-toggle', 'dicey-wager-toggle', 'dicey-wager-pause', 'dicey-bonus-toggle', 'dicey-bonus-claim', 'dicey-master'];
-        btns.forEach(function(id) {
-            var el = $(id);
-            if (el) {
-                el.style.opacity = isWhitelisted ? '1' : '0.3';
-                el.style.cursor = isWhitelisted ? 'pointer' : 'not-allowed';
-            }
-        });
+    function logLoop(msg, color = '#a78bfa') {
+        log(`🔄 [LOOP ${state.loopCount}] ${msg}`, color);
     }
 
     // ============================================================
-    // TOGGLE FUNCTIONS
+    // SLEEP
     // ============================================================
-    function updateToggleVisibility() {
-        var rainSection = document.getElementById('rain-section');
-        var wagerSection = document.getElementById('wager-section');
-        var bonusSection = document.getElementById('bonus-section');
-        var rainToggle = document.getElementById('toggle-rain');
-        var wagerToggle = document.getElementById('toggle-wager');
-        var bonusToggle = document.getElementById('toggle-bonus');
-
-        if (rainToggle) {
-            toggleRain = rainToggle.checked;
-            if (rainSection) rainSection.style.display = rainToggle.checked ? 'block' : 'none';
-        }
-        if (wagerToggle) {
-            toggleWager = wagerToggle.checked;
-            if (wagerSection) wagerSection.style.display = wagerToggle.checked ? 'block' : 'none';
-        }
-        if (bonusToggle) {
-            toggleBonus = bonusToggle.checked;
-            if (bonusSection) bonusSection.style.display = bonusToggle.checked ? 'block' : 'none';
-            if (!bonusToggle.checked && bonusState.isRunning) {
-                stopBonusAuto();
-                updateMasterUI();
-            }
-        }
+    function sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
 
     // ============================================================
-    // MASTER CONTROL
-    // ============================================================
-    function getMasterStatus() {
-        var rainRunning = rainIsRunning;
-        var wagerRunning = wagerState.isRunning;
-        var bonusRunning = bonusState.isRunning;
-        if (!rainRunning && !wagerRunning && !bonusRunning) return 'stopped';
-        if (rainRunning && wagerRunning && bonusRunning) return 'running';
-        return 'partial';
-    }
-
-    function updateMasterUI() {
-        var masterBtn = $('dicey-master');
-        var masterStatus = $('dicey-master-status');
-        var status = getMasterStatus();
-        if (!masterBtn) return;
-
-        if (status === 'stopped') {
-            masterBtn.textContent = '🚀 START ALL';
-            masterBtn.style.background = '#ff6b35';
-            if (masterStatus) masterStatus.textContent = '⏸️ All Stopped';
-        } else if (status === 'running') {
-            masterBtn.textContent = '■ STOP ALL';
-            masterBtn.style.background = '#ff4757';
-            if (masterStatus) masterStatus.textContent = '▶️ All Running';
-        } else {
-            masterBtn.textContent = '⚠️ RESUME ALL';
-            masterBtn.style.background = '#ff922b';
-            if (masterStatus) masterStatus.textContent = '⏳ Partial';
-        }
-        updateRainToggleUI();
-        updateWagerToggleUI();
-        updateBonusToggleUI();
-    }
-
-    function startAll() {
-        if (!isWhitelisted) { log('⚠️ Whitelist required!', '#f87171'); return; }
-        log('🚀 STARTING ALL...', '#ff6b35');
-        if (toggleBonus && !bonusState.isRunning) { startBonusAuto(); log('✅ BONUS started', '#4ade80'); }
-        setTimeout(function() {
-            if (toggleWager && !wagerState.isRunning) { startWagerBot(); log('✅ WAGER started', '#4ade80'); }
-        }, 500);
-        setTimeout(function() {
-            if (toggleRain && !rainIsRunning) { startRain(); log('✅ RAIN started', '#4ade80'); }
-            updateMasterUI();
-            log('🎯 ALL SYSTEMS RUNNING!', '#00e5c0');
-        }, 1000);
-    }
-
-    function stopAll() {
-        log('🛑 STOPPING ALL...', '#ff4757');
-        if (rainIsRunning) { stopRain(); log('⏹️ RAIN stopped', '#f87171'); }
-        setTimeout(function() {
-            if (wagerState.isRunning) { stopWagerBot(); log('⏹️ WAGER stopped', '#f87171'); }
-        }, 300);
-        setTimeout(function() {
-            if (bonusState.isRunning) { stopBonusAuto(); log('⏹️ BONUS stopped', '#f87171'); }
-            updateMasterUI();
-            log('⏹️ ALL SYSTEMS STOPPED', '#ffd700');
-        }, 600);
-    }
-
-    function toggleMaster() {
-        var status = getMasterStatus();
-        if (status === 'stopped' || status === 'partial') startAll();
-        else stopAll();
-    }
-
-    // ============================================================
-    // ===== RAIN CATCHER - FIXED CHAT DETECTION =====
+    // DOM UTILITIES
     // ============================================================
     
-    // ====== IMPROVED: FIND CHAT TAB ======
+    function isVisible(el) {
+        if (!el) return false;
+        const rect = el.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
+        return (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.display !== 'none' &&
+            style.visibility !== 'hidden' &&
+            style.opacity !== '0' &&
+            el.offsetParent !== null
+        );
+    }
+
+    function isMobileViewport() {
+        return window.innerWidth < 768 || window.innerHeight < 600;
+    }
+
+    // ============================================================
+    // FIND CHAT TAB
+    // ============================================================
     function findChatTab() {
-        console.log('🔍 Looking for Chat tab...');
+        state.isMobile = isMobileViewport();
         
-        // 1. Cari di mobile bottom navigation
-        var nav = document.querySelector('[data-test-id="mobile-bottom-nav"]');
-        if (nav) {
-            var links = nav.querySelectorAll('a, button, [role="tab"]');
-            for (var i = 0; i < links.length; i++) {
-                var link = links[i];
-                var text = link.textContent ? link.textContent.trim() : '';
-                var aria = link.getAttribute('aria-label') || '';
-                console.log('📱 Nav item: "' + text + '" aria: "' + aria + '"');
-                if (text === 'Chat' || text.includes('Chat') || text === '💬' || aria === 'Chat' || aria.includes('Chat')) {
-                    var rect = link.getBoundingClientRect();
-                    if (rect.width > 0 && rect.height > 0) {
-                        console.log('✅ Found Chat tab in nav:', link);
-                        return link;
-                    }
-                }
+        if (state.isMobile) {
+            const mobileSelectors = [
+                '[data-test-id="mobile-bottom-nav"] a:nth-of-type(4)',
+                '[data-test-id="mobile-bottom-nav"] a[aria-label*="Chat"]',
+                '[data-test-id="mobile-bottom-nav"] a[aria-label*="chat"]',
+                '[data-test-id="mobile-bottom-nav"] div a:nth-child(4)'
+            ];
+            
+            for (const selector of mobileSelectors) {
+                try {
+                    const el = document.querySelector(selector);
+                    if (el && isVisible(el)) return el;
+                } catch (e) {}
             }
         }
-
-        // 2. Cari semua link dengan href="/chat"
-        var chatLinks = document.querySelectorAll('a[href="/chat"], a[href*="chat"]');
-        for (var j = 0; j < chatLinks.length; j++) {
-            var link = chatLinks[j];
-            var rect = link.getBoundingClientRect();
-            if (rect.width > 0 && rect.height > 0) {
-                console.log('✅ Found Chat link:', link);
-                return link;
+        
+        const desktopSelectors = [
+            '[role="tab"][aria-label*="Chat"]',
+            '[role="tab"][aria-label*="chat"]',
+            '.chat-tab',
+            '.tab-chat',
+            '[class*="chat"][class*="tab"]',
+            'button[aria-label*="Chat"]',
+            '.str-chat__channel-list',
+            '[data-testid="chat-tab"]'
+        ];
+        
+        for (const selector of desktopSelectors) {
+            try {
+                const el = document.querySelector(selector);
+                if (el && isVisible(el)) return el;
+            } catch (e) {}
+        }
+        
+        const allButtons = document.querySelectorAll('button, a, [role="tab"]');
+        for (const el of allButtons) {
+            const text = (el.textContent || '').trim();
+            if (text === 'Chat' || text === 'CHAT') {
+                if (isVisible(el)) return el;
             }
         }
-
-        // 3. Cari semua elemen dengan teks "Chat" atau "💬 Chat"
-        var allEls = document.querySelectorAll('a, button, [role="tab"], span, div');
-        for (var k = 0; k < allEls.length; k++) {
-            var el = allEls[k];
-            var text = el.textContent ? el.textContent.trim() : '';
-            var aria = el.getAttribute('aria-label') || '';
-            if (text === 'Chat' || text.includes('Chat') || text === '💬' || aria === 'Chat') {
-                var rect = el.getBoundingClientRect();
-                if (rect.width > 0 && rect.height > 0) {
-                    var clickable = el.closest('a, button, [role="tab"]');
-                    if (clickable) {
-                        console.log('✅ Found Chat tab (fallback):', clickable);
-                        return clickable;
-                    }
-                    console.log('✅ Found Chat element:', el);
-                    return el;
-                }
-            }
-        }
-
-        console.log('❌ Chat tab NOT found!');
+        
         return null;
     }
 
-    // ====== IMPROVED: CHECK IF IN CHAT ======
-    function isInChat() {
-        console.log('🔍 Checking if in Chat...');
+    // ============================================================
+    // FIND JOIN BUTTON
+    // ============================================================
+    function findJoinButton() {
+        const selectors = [
+            'div.shrink-0 button.font-small-1-semibold',
+            '#str-chat__channel button.font-small-1-semibold',
+            'button[aria-label="Join"]',
+            'button[aria-label*="join"]',
+            '.join-btn',
+            '.join-rain-btn',
+            '.btn-join',
+            '[class*="join"][class*="rain"]',
+            '[class*="join"][class*="btn"]',
+            '[data-testid="join-rain-btn"]',
+            '[data-cy="join-rain"]',
+            '.str-chat__message-join',
+            '[class*="join-rain"]'
+        ];
         
-        // 1. Cek apakah ada elemen "Rain Pool" atau "Chat"
-        var allEls = document.querySelectorAll('*');
-        for (var i = 0; i < allEls.length; i++) {
-            var text = allEls[i].textContent ? allEls[i].textContent.trim() : '';
-            if (text === 'Rain Pool' || text.includes('Rain Pool') || text === 'Chat' || text.includes('Chat Room')) {
-                var rect = allEls[i].getBoundingClientRect();
-                if (rect.width > 0 && rect.height > 0) {
-                    console.log('✅ In Chat - found "Rain Pool" or "Chat"');
-                    return true;
+        for (const selector of selectors) {
+            try {
+                const elements = document.querySelectorAll(selector);
+                for (const el of elements) {
+                    const text = (el.textContent || '').trim().toLowerCase();
+                    if (isVisible(el) && !el.disabled) {
+                        if (text === 'join' || 
+                            text.includes('join') || 
+                            el.getAttribute('aria-label')?.toLowerCase().includes('join')) {
+                            return el;
+                        }
+                    }
+                }
+            } catch (e) {}
+        }
+        
+        const containers = document.querySelectorAll('*');
+        for (const container of containers) {
+            const text = (container.textContent || '');
+            if (text.includes('Rain Pool') || text.includes('Rain')) {
+                const btn = container.querySelector('button:not([disabled])');
+                if (btn && isVisible(btn)) {
+                    const btnText = (btn.textContent || '').trim().toLowerCase();
+                    if (btnText === 'join' || btnText.includes('join')) {
+                        return btn;
+                    }
                 }
             }
         }
+        
+        return null;
+    }
 
-        // 2. Cek apakah ada tombol "Add to Rain" (berarti sudah di chat)
-        var addBtn = findAddToRainButton();
-        if (addBtn) {
-            console.log('✅ In Chat - found "Add to Rain" button');
-            return true;
+    // ============================================================
+    // FIND CLOSE/SPLASH BUTTON
+    // ============================================================
+    function findCloseButton() {
+        const selectors = [
+            '[class*="close"]',
+            '[class*="dismiss"]',
+            '[aria-label="Close"]',
+            '[class*="modal-close"]',
+            '[class*="popup-close"]',
+            '[class*="splash-close"]',
+            'button[aria-label*="Close"]'
+        ];
+        
+        for (const selector of selectors) {
+            try {
+                const el = document.querySelector(selector);
+                if (el && isVisible(el)) return el;
+            } catch (e) {}
         }
-
-        // 3. Cek apakah ada tombol "Join" (berarti di chat room)
-        var joinBtn = findJoinButton();
-        if (joinBtn) {
-            console.log('✅ In Chat - found "Join" button');
-            return true;
+        
+        const buttons = document.querySelectorAll('button');
+        for (const btn of buttons) {
+            const text = (btn.textContent || '').trim();
+            if (text === '✕' || text === '×' || text === 'X' || text === 'x') {
+                if (isVisible(btn)) return btn;
+            }
         }
+        
+        return null;
+    }
 
-        // 4. Cek URL
-        if (window.location.href.includes('/chat')) {
-            console.log('✅ In Chat - URL contains /chat');
-            return true;
+    // ============================================================
+    // CHECK RAIN POOL OPEN
+    // ============================================================
+    function isRainPoolOpen() {
+        const indicators = [
+            'Rain Pool',
+            'Rain',
+            'rain-pool',
+            '[class*="rain-pool"]',
+            '[class*="rain"][class*="pool"]'
+        ];
+        
+        for (const indicator of indicators) {
+            try {
+                const el = document.querySelector(indicator);
+                if (el && isVisible(el)) return true;
+            } catch (e) {}
+            
+            const allEls = document.querySelectorAll('*');
+            for (const el of allEls) {
+                if (el.textContent && el.textContent.includes('Rain Pool')) {
+                    if (isVisible(el)) return true;
+                }
+            }
         }
-
-        console.log('❌ NOT in Chat');
+        
         return false;
     }
 
-    // ====== FIND JOIN BUTTON ======
-    function findJoinButton() {
-        var all = document.querySelectorAll('button, [role="button"], div[role="button"], span[role="button"]');
-        for (var i = 0; i < all.length; i++) {
-            var el = all[i];
-            var text = el.textContent ? el.textContent.trim() : '';
-            if (text === 'Join') {
-                var rect = el.getBoundingClientRect();
-                if (rect.width > 0 && rect.height > 0) {
-                    console.log('🔍 JOIN found:', el);
-                    return el;
-                }
+    // ============================================================
+    // CHECK APAKAH SUDAH JOIN
+    // ============================================================
+    function isAlreadyJoined() {
+        const buttons = document.querySelectorAll('button, [role="button"]');
+        for (const btn of buttons) {
+            const text = (btn.textContent || '').trim().toLowerCase();
+            if (text === 'add to rain' || text.includes('add to rain')) {
+                if (isVisible(btn)) return true;
             }
         }
-        return null;
+        return false;
     }
 
-    // ====== FIND ADD TO RAIN BUTTON ======
-    function findAddToRainButton() {
-        var all = document.querySelectorAll('button, [role="button"], div[role="button"]');
-        for (var i = 0; i < all.length; i++) {
-            var el = all[i];
-            var text = el.textContent ? el.textContent.trim() : '';
-            if (text === 'Add to Rain' || text.includes('Add to Rain')) {
-                var rect = el.getBoundingClientRect();
-                if (rect.width > 0 && rect.height > 0) {
-                    console.log('🔍 Add to Rain found:', el);
-                    return el;
-                }
-            }
+    // ============================================================
+    // MAIN LOGIC - AUTO JOIN
+    // ============================================================
+    async function autoJoin() {
+        if (!state.isRunning) return;
+        if (state.isJoining) {
+            log('⏳ Still processing...', '#fbbf24');
+            return;
         }
-        return null;
-    }
-
-    // ====== FORCE CLICK ======
-    function forceClickButton(btn) {
-        if (!btn) return false;
+        
+        state.isJoining = true;
+        state.status = 'searching';
+        updateUI();
+        
         try {
-            btn.click();
-            btn.dispatchEvent(new MouseEvent('click', { view: window, bubbles: true, cancelable: true }));
-            btn.dispatchEvent(new PointerEvent('pointerdown', { view: window, bubbles: true }));
-            btn.dispatchEvent(new PointerEvent('pointerup', { view: window, bubbles: true }));
-            btn.focus();
-            return true;
-        } catch(e) { return false; }
-    }
-
-    // ====== RAIN LOG ======
-    function rainLog(msg, color) {
-        color = color || '#888';
-        var logEl = document.getElementById('dicey-rain-log');
-        if (!logEl) return;
-        var now = Date.now();
-        if (msg === rainLastLog && now - rainLastLogTime < 3000) return;
-        rainLastLog = msg;
-        rainLastLogTime = now;
-        var time = new Date().toLocaleTimeString();
-        logEl.innerHTML += '<div style="color:' + color + ';padding:1px 0;border-bottom:1px solid rgba(255,255,255,0.02);font-size:8px;">[' + time + '] ' + msg + '</div>';
-        logEl.scrollTop = logEl.scrollHeight;
-        if (logEl.children.length > 50) logEl.removeChild(logEl.firstChild);
-    }
-
-    // ====== MAIN SCAN FUNCTION ======
-    function scanRain() {
-        if (!rainIsRunning || rainIsProcessing) return;
-        rainIsProcessing = true;
-
-        console.log('🔄 Scanning for rain...');
-
-        try {
-            // STEP 1: Cek apakah di Chat
-            var inChat = isInChat();
+            // STEP 1: Tutup splash screen
+            const closeBtn = findCloseButton();
+            if (closeBtn) {
+                log('❌ Closing splash screen...', '#fbbf24');
+                closeBtn.click();
+                await sleep(500);
+            }
             
-            if (!inChat) {
-                // STEP 2: Cari dan klik tab Chat
-                var chatTab = findChatTab();
+            // STEP 2: Cek Chat Tab
+            const chatTab = findChatTab();
+            const chatOpen = isRainPoolOpen();
+            
+            if (!chatOpen) {
                 if (chatTab) {
-                    rainLog('📂 Opening Chat...', '#60a5fa');
-                    forceClickButton(chatTab);
-                    rainLog('✅ Chat tab clicked', '#4ade80');
-                    setTimeout(function() {
-                        if (rainIsRunning) scanRain();
-                    }, 2000);
-                    rainIsProcessing = false;
-                    return;
+                    log('📂 Opening chat tab...', '#60a5fa');
+                    chatTab.click();
+                    await sleep(1000);
                 } else {
-                    rainLog('❌ Chat tab not found!', '#f87171');
-                    rainIsProcessing = false;
-                    return;
+                    log('⚠️ Chat tab not found', '#fbbf24');
                 }
             }
-
-            // STEP 3: Sudah di Chat - cek Add to Rain
-            var addBtn = findAddToRainButton();
-            if (addBtn) {
-                if (rainLastLog !== '✅ In rain pool - waiting...') {
-                    rainLog('✅ In rain pool - waiting for next rain...', '#4ade80');
-                }
-                rainIsProcessing = false;
+            
+            // STEP 3: Cek sudah join
+            if (isAlreadyJoined()) {
+                log('✅ Already joined this rain!', '#4ade80');
+                state.status = 'already_joined';
+                updateUI();
+                state.isJoining = false;
                 return;
             }
-
-            // STEP 4: Cari tombol Join
-            var joinBtn = findJoinButton();
-            if (joinBtn) {
-                rainLog('🔍 JOIN found - CLICKING!', '#ff922b');
-                forceClickButton(joinBtn);
-                rainLog('✅ JOIN CLICKED!', '#4ade80');
-                rainSuccessCount++;
-                updateRainUI();
+            
+            // STEP 4: Cari dan klik Join
+            const joinBtn = findJoinButton();
+            if (joinBtn && !joinBtn.disabled) {
+                const btnText = (joinBtn.textContent || '').trim();
+                log(`🔄 Clicking "${btnText}" button...`, '#4ade80');
+                
+                state.status = 'joining';
+                updateUI();
+                
+                // Multiple click events
+                joinBtn.click();
+                joinBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                joinBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                joinBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+                
+                state.lastJoinAttempt = Date.now();
+                state.successCount++;
+                
+                log('✅ Join button clicked!', '#4ade80');
+                state.status = 'success';
+                updateUI();
+                
+                log('💬 UI TETAP TERBUKA - Menunggu loop berikutnya', '#4ade80');
+                
             } else {
-                if (rainLastLog !== '⏳ No Join button') {
-                    rainLog('⏳ No Join button found', '#888');
+                if (chatOpen) {
+                    log('⏳ Rain pool open - no Join button', '#fbbf24');
+                } else {
+                    log('⏳ No rain available', '#888');
                 }
+                state.status = 'idle';
+                updateUI();
             }
-
-        } catch(e) {
-            console.error('Rain scan error:', e);
-            rainLog('⚠️ Error: ' + e.message, '#f87171');
+            
+        } catch (error) {
+            log(`❌ Error: ${error.message}`, '#f87171');
+            state.failCount++;
+            updateUI();
         }
-
-        rainIsProcessing = false;
-    }
-
-    // ====== INTERCEPT GRAPHQL ======
-    (function() {
-        var originalFetch = window.fetch;
-        window.fetch = function(...args) {
-            var url = args[0];
-            var options = args[1] || {};
-            if (typeof url === 'string' && url.includes('/graphql')) {
-                var body = null;
-                try { body = options.body ? JSON.parse(options.body) : null; } catch(e) {}
-                if (body && body.operationName === 'JoinRain') {
-                    return originalFetch.apply(this, args).then(async function(response) {
-                        var clonedResponse = response.clone();
-                        var data = await clonedResponse.json();
-                        var joinResult = data.data ? data.data.joinRain : null;
-                        if (joinResult) {
-                            if (joinResult.joined === true) {
-                                rainSuccessCount++;
-                                rainLog('✅ JOIN BERHASIL!', '#4ade80');
-                                updateRainUI();
-                            } else {
-                                rainFailCount++;
-                                var reason = joinResult.ineligibleReason || 'Unknown';
-                                rainLog('❌ JOIN GAGAL: ' + reason, '#f87171');
-                                updateRainUI();
-                            }
-                        }
-                        return response;
-                    });
-                }
-            }
-            return originalFetch.apply(this, args);
-        };
-    })();
-
-    // ====== RAIN UI ======
-    function updateRainUI() {
-        var successEl = $('dicey-rain-success');
-        var failEl = $('dicey-rain-fail');
-        var dot = $('dicey-rain-dot');
-        var statusText = $('dicey-rain-status');
-        var statusBtn = $('dicey-rain-status-btn');
-
-        if (successEl) successEl.textContent = rainSuccessCount;
-        if (failEl) failEl.textContent = rainFailCount;
-
-        if (rainIsRunning) {
-            if (dot) dot.style.background = '#4ade80';
-            if (statusText) { statusText.textContent = '● RUNNING'; statusText.style.color = '#4ade80'; }
-            if (statusBtn) { statusBtn.textContent = '● RUNNING'; statusBtn.style.background = '#1a3a1a'; statusBtn.style.color = '#4ade80'; }
-        } else {
-            if (dot) dot.style.background = '#888';
-            if (statusText) { statusText.textContent = '○ STOPPED'; statusText.style.color = '#888'; }
-            if (statusBtn) { statusBtn.textContent = '⏸️ IDLE'; statusBtn.style.background = '#1a1a1a'; statusBtn.style.color = '#888'; }
-        }
-        updateRainToggleUI();
-    }
-
-    function updateRainToggleUI() {
-        var toggleBtn = $('dicey-rain-toggle');
-        if (!toggleBtn) return;
-        if (rainIsRunning) {
-            toggleBtn.textContent = '■ STOP';
-            toggleBtn.style.background = '#ff4757';
-            toggleBtn.style.color = '#fff';
-        } else {
-            toggleBtn.textContent = '▶ START';
-            toggleBtn.style.background = '#ff922b';
-            toggleBtn.style.color = '#000';
-        }
-    }
-
-    function toggleRain() {
-        if (!isWhitelisted) { log('⚠️ Whitelist required!', '#f87171'); return; }
-        if (rainIsRunning) stopRain();
-        else startRain();
-        updateMasterUI();
-    }
-
-    function startRain() {
-        if (!isWhitelisted) { log('⚠️ Whitelist required!', '#f87171'); return; }
-        if (rainIsRunning) { log('⚠️ Rain already running', '#fbbf24'); return; }
-        rainIsRunning = true;
-        rainSuccessCount = 0;
-        rainFailCount = 0;
-        rainLastLog = '';
-        log('▶️ Rain started', '#4ade80');
-        updateRainUI();
-
-        if (rainIntervalId) clearInterval(rainIntervalId);
-        rainIntervalId = setInterval(scanRain, 15000);
-        setTimeout(scanRain, 500);
-        setTimeout(scanRain, 2000);
-        updateMasterUI();
-    }
-
-    function stopRain() {
-        rainIsRunning = false;
-        rainLastLog = '';
-        if (rainIntervalId) {
-            clearInterval(rainIntervalId);
-            rainIntervalId = null;
-        }
-        log('⏹️ Rain stopped', '#f87171');
-        updateRainUI();
-        updateMasterUI();
+        
+        state.isJoining = false;
     }
 
     // ============================================================
-    // ===== BONUS AUTO-CLAIM (SIMPLE) =====
+    // LOOP 30 MENIT
     // ============================================================
-    function bonusLog(msg, color) {
-        color = color || '#ff6b9d';
-        var logEl = document.getElementById('dicey-bonus-log');
-        if (!logEl) return;
-        var time = new Date().toLocaleTimeString();
-        logEl.innerHTML += '<div style="color:' + color + ';padding:1px 0;border-bottom:1px solid rgba(255,255,255,0.02);font-size:8px;">[' + time + '] ' + msg + '</div>';
-        logEl.scrollTop = logEl.scrollHeight;
-        if (logEl.children.length > 50) logEl.removeChild(logEl.firstChild);
+    async function loop30Minutes() {
+        if (!state.isRunning) return;
+        
+        state.loopCount++;
+        const nextLoop = new Date(Date.now() + CONFIG.LOOP_INTERVAL);
+        
+        logLoop(`⏰ 30-MINUTE LOOP #${state.loopCount} STARTED`, '#a78bfa');
+        logLoop(`Next loop at: ${nextLoop.toLocaleTimeString()}`, '#a78bfa');
+        
+        state.status = 'loop_start';
+        updateUI();
+        
+        await autoJoin();
+        
+        logLoop(`✅ Loop #${state.loopCount} completed`, '#4ade80');
+        state.status = 'loop_complete';
+        updateUI();
+        
+        // 🔥 PASTIKAN UI TETAP TERLIHAT
+        ensureUIVisible();
     }
 
-    function updateBonusUI() {
-        var countEl = $('dicey-bonus-count');
-        var lastEl = $('dicey-bonus-last');
-        if (countEl) countEl.textContent = bonusState.totalClaimed;
-        if (lastEl) {
-            lastEl.textContent = bonusState.lastClaim ? new Date(bonusState.lastClaim).toLocaleTimeString() : 'Never';
-        }
-        updateBonusToggleUI();
-    }
-
-    function updateBonusToggleUI() {
-        var toggleBtn = $('dicey-bonus-toggle');
-        if (!toggleBtn) return;
-        if (bonusState.isRunning) {
-            toggleBtn.textContent = '■ STOP';
-            toggleBtn.style.background = '#ff4757';
-            toggleBtn.style.color = '#fff';
+    // ============================================================
+    // 🔥 PASTIKAN UI SELALU TERLIHAT
+    // ============================================================
+    function ensureUIVisible() {
+        const ui = document.getElementById('dicey-rain-ui');
+        if (ui) {
+            ui.style.display = 'block !important';
+            ui.style.visibility = 'visible !important';
+            ui.style.opacity = '1 !important';
+            ui.style.zIndex = '999999 !important';
+            ui.style.pointerEvents = 'auto !important';
+            
+            // Cek apakah UI di dalam DOM
+            if (!document.body.contains(ui)) {
+                document.body.appendChild(ui);
+                log('🔧 UI re-attached to DOM', '#fbbf24');
+            }
         } else {
-            toggleBtn.textContent = '▶ AUTO';
-            toggleBtn.style.background = '#ff6b9d';
-            toggleBtn.style.color = '#000';
+            // Kalau UI hilang, buat ulang
+            log('🔧 UI hilang, membuat ulang...', '#f87171');
+            createUI();
         }
-    }
-
-    function toggleBonus() {
-        if (!isWhitelisted) { bonusLog('⚠️ Whitelist required!', '#f87171'); return; }
-        if (bonusState.isRunning) stopBonusAuto();
-        else startBonusAuto();
-        updateMasterUI();
-    }
-
-    function findBonusTab(text) {
-        var elements = document.querySelectorAll('span, div, button, [role="tab"]');
-        for (var i = 0; i < elements.length; i++) {
-            var el = elements[i];
-            var txt = el.textContent ? el.textContent.trim() : '';
-            if (txt === text || txt.includes(text)) {
-                var rect = el.getBoundingClientRect();
-                if (rect.width > 0 && rect.height > 0) return el;
-            }
-        }
-        return null;
-    }
-
-    function findClaimButton() {
-        var btns = document.querySelectorAll('button, [role="button"]');
-        for (var i = 0; i < btns.length; i++) {
-            var btn = btns[i];
-            var text = btn.textContent ? btn.textContent.trim() : '';
-            if (text === 'Claim' || text === 'Claim Now' || text === 'Collect') {
-                if (!btn.disabled) {
-                    var rect = btn.getBoundingClientRect();
-                    if (rect.width > 0 && rect.height > 0) return btn;
-                }
-            }
-        }
-        return null;
-    }
-
-    function findProfileButton() {
-        var selectors = ['header img[alt*="avatar"]', 'header [class*="avatar"] img', '[data-testid="user-menu"] img'];
-        for (var i = 0; i < selectors.length; i++) {
-            var el = document.querySelector(selectors[i]);
-            if (el) {
-                var rect = el.getBoundingClientRect();
-                if (rect.width > 0 && rect.height > 0) {
-                    var clickable = el.closest('button, [role="button"]');
-                    return clickable || el;
-                }
-            }
-        }
-        return null;
-    }
-
-    async function claimAllBonuses() {
-        if (bonusState.isProcessing) { bonusLog('⏳ Already processing...', '#fbbf24'); return; }
-        if (!isWhitelisted) { bonusLog('⚠️ Whitelist required!', '#f87171'); return; }
-        bonusState.isProcessing = true;
-        bonusLog('🔄 Checking bonuses...', '#60a5fa');
-
-        try {
-            var profileBtn = findProfileButton();
-            if (!profileBtn) { bonusLog('❌ Profile not found', '#f87171'); bonusState.isProcessing = false; return; }
-            forceClickButton(profileBtn);
-            await sleep(1000);
-
-            var bonusTypes = ['Instant Rakeback', 'Daily Bonus', 'Free Spins', 'Weekly Bonus'];
-            var claimed = 0;
-
-            for (var i = 0; i < bonusTypes.length; i++) {
-                var tab = findBonusTab(bonusTypes[i]);
-                if (tab) {
-                    forceClickButton(tab);
-                    await sleep(600);
-                    var claim = findClaimButton();
-                    if (claim) {
-                        forceClickButton(claim);
-                        await sleep(400);
-                        bonusLog('✅ ' + bonusTypes[i] + ' claimed!', '#4ade80');
-                        claimed++;
-                    }
-                }
-                await sleep(300);
-            }
-
-            if (claimed > 0) {
-                bonusState.totalClaimed += claimed;
-                bonusState.lastClaim = Date.now();
-                bonusLog('🎉 Total: ' + claimed + ' bonuses', '#ff6b9d');
-            } else {
-                bonusLog('ℹ️ No bonuses available', '#888');
-            }
-            updateBonusUI();
-
-        } catch(e) {
-            bonusLog('❌ ' + e.message, '#f87171');
-        }
-        bonusState.isProcessing = false;
-    }
-
-    function startBonusAuto() {
-        if (!isWhitelisted) { bonusLog('⚠️ Whitelist required!', '#f87171'); return; }
-        if (bonusState.isRunning) { bonusLog('⚠️ Already running', '#fbbf24'); return; }
-        bonusState.isRunning = true;
-        bonusLog('▶️ Auto-claim started', '#4ade80');
-        updateBonusUI();
-        setTimeout(claimAllBonuses, 1000);
-        if (bonusState.intervalId) clearInterval(bonusState.intervalId);
-        bonusState.intervalId = setInterval(function() {
-            if (bonusState.isRunning) claimAllBonuses();
-        }, 60000);
-        updateMasterUI();
-    }
-
-    function stopBonusAuto() {
-        bonusState.isRunning = false;
-        if (bonusState.intervalId) {
-            clearInterval(bonusState.intervalId);
-            bonusState.intervalId = null;
-        }
-        bonusLog('⏹️ Auto-claim stopped', '#f87171');
-        updateBonusUI();
-        updateMasterUI();
-    }
-
-    function manualClaim() {
-        if (!isWhitelisted) { bonusLog('⚠️ Whitelist required!', '#f87171'); return; }
-        claimAllBonuses();
     }
 
     // ============================================================
-    // ===== WAGER BOT =====
+    // MUTATION OBSERVER - Pantau perubahan DOM
     // ============================================================
-    function wagerLog(msg, color) {
-        color = color || '#a0a0a0';
-        var time = new Date().toLocaleTimeString();
-        var logEl = document.getElementById('dicey-log');
-        if (logEl) {
-            logEl.innerHTML += '<div style="color:' + color + ';padding:1px 0;border-bottom:1px solid rgba(255,255,255,0.02);font-size:9px;">[' + time + '] ' + msg + '</div>';
-            logEl.scrollTop = logEl.scrollHeight;
-            if (logEl.children.length > 200) logEl.removeChild(logEl.firstChild);
-        }
+    function setupUIMonitor() {
+        const observer = new MutationObserver(() => {
+            const ui = document.getElementById('dicey-rain-ui');
+            if (ui && ui.style.display === 'none') {
+                // Kalau UI disembunyikan, tampilkan lagi
+                ui.style.display = 'block';
+                log('🔧 UI was hidden, showing again', '#fbbf24');
+            }
+        });
+        
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['style', 'class']
+        });
+        
+        return observer;
     }
 
-    function updateWagerUI() {
-        var balance = wagerState.currentBalance;
-        var startBalance = wagerState.startBalance || 1;
-        var profit = balance - startBalance;
-
-        var balanceEl = $('dicey-balance');
-        var profitEl = $('dicey-profit');
-        var betsEl = $('dicey-bets');
-        var layerEl = $('dicey-layer');
-        var winsEl = $('dicey-wins');
-        var statusText = $('dicey-wager-status-text');
-
-        if (balanceEl) balanceEl.textContent = balance.toFixed(2);
-        if (profitEl) {
-            profitEl.textContent = (profit >= 0 ? '+' : '') + profit.toFixed(2);
-            profitEl.style.color = profit >= 0 ? '#4ade80' : '#f87171';
-        }
-        if (betsEl) betsEl.textContent = wagerState.totalBets;
-        if (winsEl) winsEl.textContent = wagerState.totalWins;
-        if (layerEl) {
-            layerEl.textContent = wagerState.currentLayer;
-            layerEl.style.color = wagerState.currentLayer === 1 ? '#00e5c0' : '#ff922b';
-        }
-        if (statusText) {
-            if (wagerState.isRunning) {
-                statusText.textContent = wagerState.isPaused ? '⏸ PAUSED' : '▶ RUNNING';
-                statusText.style.color = wagerState.isPaused ? '#ff922b' : '#4ade80';
-            } else {
-                statusText.textContent = '⏹ STOP';
-                statusText.style.color = '#ff4757';
-            }
-        }
-        updateWagerToggleUI();
-    }
-
-    function updateWagerToggleUI() {
-        var toggleBtn = $('dicey-wager-toggle');
-        if (!toggleBtn) return;
-        if (wagerState.isRunning && !wagerState.isPaused) {
-            toggleBtn.textContent = '■ STOP';
-            toggleBtn.style.background = '#ff4757';
-            toggleBtn.style.color = '#fff';
-        } else if (wagerState.isRunning && wagerState.isPaused) {
-            toggleBtn.textContent = '▶ RESUME';
-            toggleBtn.style.background = '#ff922b';
-            toggleBtn.style.color = '#000';
-        } else {
-            toggleBtn.textContent = '▶ START';
-            toggleBtn.style.background = '#00e5c0';
-            toggleBtn.style.color = '#000';
-        }
-    }
-
-    function toggleWager() {
-        if (!isWhitelisted) { wagerLog('⚠️ Whitelist required!', '#f87171'); return; }
-        if (wagerState.isRunning && !wagerState.isPaused) stopWagerBot();
-        else if (wagerState.isRunning && wagerState.isPaused) pauseWagerBot();
-        else startWagerBot();
-        updateMasterUI();
-    }
-
-    function getRealBalance() {
-        try {
-            var selectors = ['[class*="balance"]', '[class*="Balance"]', '[data-testid="balance"]', '.balance-amount'];
-            for (var i = 0; i < selectors.length; i++) {
-                var elements = document.querySelectorAll(selectors[i]);
-                for (var j = 0; j < elements.length; j++) {
-                    var text = elements[j].textContent.trim();
-                    var match = text.match(/(\d+\.?\d*)/);
-                    if (match) {
-                        var num = parseFloat(match[1]);
-                        if (num > 0) return num;
-                    }
-                }
-            }
-            return null;
-        } catch(e) { return null; }
-    }
-
-    async function placeBet(amount, chance) {
-        var target = Math.floor((chance / 100) * 10000);
-        var query = 'mutation PlaceDiceBet($input: DiceBetInput!) { placeDiceBet(input: $input) { roundId betAmount targetNumber rollMode rolledNumber multiplier winAmount isWin profit } }';
-        var vars = {
-            input: {
-                betAmount: String(amount),
-                cryptoCurrency: 'USDC',
-                nonce: generateUUID(),
-                rollMode: 'Under',
-                targetNumber: target
-            }
-        };
-        try {
-            var res = await fetch('https://api.dicey.com/graphql', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Origin': 'https://dicey.com' },
-                credentials: 'include',
-                body: JSON.stringify({ operationName: 'PlaceDiceBet', query: query, variables: vars })
-            });
-            if (!res.ok) throw new Error('HTTP ' + res.status);
-            var data = await res.json();
-            if (data.errors) throw new Error(data.errors[0].message);
-            return { success: true, data: data.data.placeDiceBet };
-        } catch(e) {
-            return { success: false, error: e.message };
-        }
-    }
-
-    var wagerLoopRunning = false;
-
-    async function doWager() {
-        if (!wagerState.isRunning || wagerState.isPaused || wagerLoopRunning) return;
-        wagerLoopRunning = true;
-
-        try {
-            var bal = getRealBalance();
-            if (bal !== null && bal > 0) wagerState.currentBalance = bal;
-
-            if (wagerState.currentBalance <= 0) {
-                wagerLog('❌ Insufficient balance!', '#f87171');
-                stopWagerBot();
-                wagerLoopRunning = false;
-                return;
-            }
-
-            var l1Bet = 0.01;
-            var l1Chance = 98;
-            var l2Bet = 0.01;
-
-            if (wagerState.totalBets === 0) {
-                wagerState.startBalance = wagerState.currentBalance;
-            }
-
-            wagerState.totalBets++;
-            var amount = wagerState.currentLayer === 1 ? l1Bet : l2Bet;
-            var chance = wagerState.currentLayer === 1 ? l1Chance : Math.floor(Math.random() * 25) + 50;
-
-            var result = await placeBet(amount, chance);
-            if (!result.success) {
-                wagerLog('❌ ' + result.error, '#f87171');
-                wagerLoopRunning = false;
-                if (wagerState.isRunning) setTimeout(doWager, 3000);
-                return;
-            }
-
-            var d = result.data;
-            var profit = parseFloat(d.profit) || 0;
-            wagerState.currentBalance += profit;
-
-            if (d.isWin) {
-                wagerState.totalWins++;
-                wagerState.currentStreak = wagerState.currentStreak > 0 ? wagerState.currentStreak + 1 : 1;
-                if (wagerState.currentLayer === 2) {
-                    wagerState.currentLayer = 1;
-                    wagerLog('⬆️ Back to L1', '#00e5c0');
-                }
-            } else {
-                wagerState.totalLosses++;
-                wagerState.currentStreak = wagerState.currentStreak < 0 ? wagerState.currentStreak - 1 : -1;
-                if (wagerState.currentLayer === 1) {
-                    wagerState.currentLayer = 2;
-                    wagerLog('⬇️ Switch to L2', '#ff922b');
-                }
-            }
-
-            wagerLog('#' + wagerState.totalBets + ' | ' + amount.toFixed(4) + ' USDC | ' + chance + '% | ' + (d.isWin ? '✅ WIN' : '❌ LOSS'), d.isWin ? '#4ade80' : '#f87171');
-            updateWagerUI();
-
-            if (wagerState.totalBets >= 100) {
-                wagerLog('🎯 Target 100 bets reached!', '#00e5c0');
-                stopWagerBot();
-                wagerLoopRunning = false;
-                return;
-            }
-
-            var stopLoss = wagerState.startBalance * 0.1;
-            if (wagerState.currentBalance <= stopLoss) {
-                wagerLog('🛑 STOP LOSS reached!', '#ff6b6b');
-                stopWagerBot();
-                wagerLoopRunning = false;
-                return;
-            }
-
-        } catch(e) {
-            wagerLog('⚠️ ' + e.message, '#f87171');
-        }
-
-        wagerLoopRunning = false;
-        if (wagerState.isRunning && !wagerState.isPaused) {
-            setTimeout(doWager, 1500);
-        }
-    }
-
-    function startWagerBot() {
-        if (!isWhitelisted) { wagerLog('⚠️ Whitelist required!', '#f87171'); return; }
-        if (wagerState.isRunning && !wagerState.isPaused) { wagerLog('⚠️ Already running', '#ffd700'); return; }
-        if (wagerState.isPaused) {
-            wagerState.isPaused = false;
-            wagerState.isRunning = true;
-            wagerLog('▶️ Resumed', '#00e5c0');
-            updateWagerUI();
-            setTimeout(doWager, 500);
-            updateMasterUI();
+    // ============================================================
+    // START / STOP
+    // ============================================================
+    function startBot() {
+        const usernameInput = document.getElementById('dicey-username');
+        if (!usernameInput || !usernameInput.value.trim()) {
+            log('⚠️ Enter username first!', '#f87171');
+            usernameInput?.focus();
             return;
         }
-
-        var bal = getRealBalance();
-        if (bal === null || bal <= 0) {
-            wagerLog('❌ Cannot get balance!', '#f87171');
+        
+        if (state.isRunning) {
+            log('⚠️ Bot already running', '#fbbf24');
             return;
         }
-
-        wagerState.isRunning = true;
-        wagerState.isPaused = false;
-        wagerState.totalBets = 0;
-        wagerState.totalWins = 0;
-        wagerState.totalLosses = 0;
-        wagerState.currentStreak = 0;
-        wagerState.currentLayer = 1;
-        wagerState.currentBalance = bal;
-        wagerState.startBalance = bal;
-        wagerState.isLooping = false;
-
-        wagerLog('▶️ WAGER STARTED | Balance: ' + bal.toFixed(2) + ' USDC', '#00e5c0');
-        updateWagerUI();
-        setTimeout(doWager, 500);
-        updateMasterUI();
+        
+        state.username = usernameInput.value.trim();
+        state.isRunning = true;
+        state.successCount = 0;
+        state.failCount = 0;
+        state.loopCount = 0;
+        state.isMobile = isMobileViewport();
+        state.isJoining = false;
+        
+        log(`▶️ Bot started for @${state.username}`, '#4ade80');
+        log(`📱 ${state.isMobile ? 'Mobile' : 'Desktop'} mode`, '#60a5fa');
+        log(`⏰ Loop: ${CONFIG.LOOP_INTERVAL/60000} minutes`, '#60a5fa');
+        log(`💬 UI TIDAK AKAN PERNAH TUTUP!`, '#4ade80');
+        
+        // First run
+        setTimeout(async () => {
+            await autoJoin();
+            if (state.interval) clearInterval(state.interval);
+            state.interval = setInterval(autoJoin, CONFIG.CHECK_INTERVAL);
+        }, 1000);
+        
+        // Loop 30 menit
+        if (state.loopInterval) clearInterval(state.loopInterval);
+        state.loopInterval = setInterval(loop30Minutes, CONFIG.LOOP_INTERVAL);
+        
+        setTimeout(() => {
+            if (state.isRunning) loop30Minutes();
+        }, CONFIG.LOOP_INTERVAL);
+        
+        updateUI();
     }
 
-    function pauseWagerBot() {
-        if (!wagerState.isRunning) { wagerLog('⚠️ Not running', '#ffd700'); return; }
-        wagerState.isPaused = !wagerState.isPaused;
-        wagerLog(wagerState.isPaused ? '⏸ Paused' : '▶️ Resumed', '#ffd700');
-        updateWagerUI();
-        if (!wagerState.isPaused) setTimeout(doWager, 500);
-        updateMasterUI();
-    }
-
-    function stopWagerBot() {
-        wagerState.isRunning = false;
-        wagerState.isPaused = false;
-        wagerState.isLooping = false;
-        var profit = wagerState.currentBalance - wagerState.startBalance;
-        wagerLog('⏹ STOPPED | ' + (profit >= 0 ? '+' : '') + profit.toFixed(2) + ' USDC', '#ffd700');
-        updateWagerUI();
-        updateMasterUI();
-    }
-
-    function resetWagerBot() {
-        stopWagerBot();
-        wagerState.totalBets = 0;
-        wagerState.totalWins = 0;
-        wagerState.totalLosses = 0;
-        wagerState.currentStreak = 0;
-        wagerState.currentLayer = 1;
-        var bal = getRealBalance();
-        if (bal !== null && bal > 0) {
-            wagerState.currentBalance = bal;
-            wagerState.startBalance = bal;
+    function stopBot() {
+        state.isRunning = false;
+        state.status = 'idle';
+        state.isJoining = false;
+        
+        if (state.interval) {
+            clearInterval(state.interval);
+            state.interval = null;
         }
-        wagerLog('🔄 RESET', '#ffd700');
-        updateWagerUI();
-        updateMasterUI();
+        if (state.loopInterval) {
+            clearInterval(state.loopInterval);
+            state.loopInterval = null;
+        }
+        
+        log('⏹️ Bot stopped', '#f87171');
+        log(`📊 ${state.successCount} success, ${state.failCount} failed`, '#888');
+        updateUI();
     }
 
     // ============================================================
-    // EVENT LISTENERS
+    // UPDATE UI
     // ============================================================
-    var usernameInput = $('dicey-username');
-    var checkWhitelistBtn = $('dicey-check-whitelist');
+    function updateUI() {
+        const statusEl = document.getElementById('dicey-status');
+        const dotEl = document.getElementById('dicey-dot');
+        const subEl = document.getElementById('dicey-sub-status');
+        const successEl = document.getElementById('dicey-success-count');
+        const failEl = document.getElementById('dicey-fail-count');
+        const loopEl = document.getElementById('dicey-loop-count');
+        const startBtn = document.getElementById('dicey-start-btn');
+        
+        if (state.isRunning) {
+            dotEl.style.background = '#4ade80';
+            statusEl.textContent = '● RUNNING';
+            statusEl.style.color = '#4ade80';
+            
+            const statusMap = {
+                'idle': '⏳ Waiting for rain...',
+                'searching': '🔍 Searching...',
+                'joining': '🔄 Joining...',
+                'success': '✅ Joined!',
+                'failed': '❌ Failed',
+                'already_joined': '✅ Already joined',
+                'loop_start': '🔄 Loop started...',
+                'loop_complete': '✅ Loop complete'
+            };
+            subEl.textContent = statusMap[state.status] || '⏳ Active';
+            subEl.style.color = '#60a5fa';
+            
+            if (loopEl) {
+                loopEl.textContent = `🔄 Loop ${state.loopCount}`;
+                loopEl.style.color = '#a78bfa';
+            }
+        } else {
+            dotEl.style.background = '#888';
+            statusEl.textContent = '○ STOPPED';
+            statusEl.style.color = '#888';
+            subEl.textContent = '⏸️ Idle';
+            subEl.style.color = '#888';
+            if (loopEl) {
+                loopEl.textContent = '⏸️ Stopped';
+                loopEl.style.color = '#888';
+            }
+        }
+        
+        if (successEl) successEl.textContent = state.successCount;
+        if (failEl) failEl.textContent = state.failCount;
+        if (startBtn) {
+            startBtn.textContent = state.isRunning ? '● RUNNING' : '▶ START';
+            startBtn.style.opacity = state.isRunning ? '0.6' : '1';
+        }
+    }
 
-    if (usernameInput) {
-        usernameInput.oninput = updateWhitelistStatus;
-        usernameInput.onkeydown = function(e) {
-            if (e.key === 'Enter') {
+    // ============================================================
+    // CREATE UI - PERMANEN, TIDAK PERNAH TUTUP
+    // ============================================================
+    function createUI() {
+        const existing = document.getElementById('dicey-rain-ui');
+        if (existing) existing.remove();
+        
+        const container = document.createElement('div');
+        container.id = 'dicey-rain-ui';
+        container.style.cssText = `
+            position: fixed !important;
+            bottom: 20px !important;
+            right: 20px !important;
+            width: 360px !important;
+            max-width: 90vw !important;
+            background: #0d1117 !important;
+            color: #e6edf3 !important;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+            border-radius: 12px !important;
+            border: 2px solid #4ade80 !important;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.9) !important;
+            z-index: 999999 !important;
+            padding: 16px 18px !important;
+            font-size: 13px !important;
+            user-select: none !important;
+            backdrop-filter: blur(10px) !important;
+            pointer-events: auto !important;
+            display: block !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+        `;
+        
+        container.innerHTML = `
+            <!-- Header -->
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <span style="font-weight:700;font-size:15px;color:#f0f6fc;">🎲 Auto Join</span>
+                    <span style="font-size:9px;color:#4ade80;background:#1a2e1a;padding:2px 8px;border-radius:10px;">● LIVE</span>
+                </div>
+                <button id="dicey-close" style="background:none;border:none;color:#8b949e;font-size:16px;cursor:pointer;padding:0 4px;">✕</button>
+            </div>
+            
+            <!-- Username -->
+            <div style="margin-bottom:10px;">
+                <input id="dicey-username" type="text" placeholder="Enter username..." style="width:100%;padding:8px 12px;border-radius:6px;border:1px solid #30363d;background:#0d1117;color:#e6edf3;font-size:13px;box-sizing:border-box;outline:none;">
+            </div>
+            
+            <!-- Buttons -->
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px;">
+                <button id="dicey-start-btn" style="padding:8px 0;border:none;border-radius:6px;background:#238636;color:#fff;font-weight:600;font-size:13px;cursor:pointer;">▶ START</button>
+                <button id="dicey-stop-btn" style="padding:8px 0;border:none;border-radius:6px;background:#21262d;color:#e6edf3;font-weight:600;font-size:13px;cursor:pointer;opacity:0.4;">■ STOP</button>
+            </div>
+            
+            <!-- Status -->
+            <div style="padding:10px 0;border-top:1px solid #21262d;border-bottom:1px solid #21262d;margin-bottom:10px;">
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <span id="dicey-dot" style="width:6px;height:6px;border-radius:50%;background:#888;display:inline-block;"></span>
+                    <span id="dicey-status" style="font-size:12px;font-weight:500;color:#888;">○ STOPPED</span>
+                    <span style="margin-left:auto;font-size:11px;display:flex;gap:12px;">
+                        <span style="color:#4ade80;">✓ <span id="dicey-success-count">0</span></span>
+                        <span style="color:#f87171;">✗ <span id="dicey-fail-count">0</span></span>
+                        <span id="dicey-loop-count" style="color:#a78bfa;">⏸️ Stopped</span>
+                    </span>
+                </div>
+                <div id="dicey-sub-status" style="font-size:11px;color:#888;margin-top:4px;padding-left:14px;">⏸️ Idle</div>
+            </div>
+            
+            <!-- Info Loop -->
+            <div style="padding:6px 0;margin-bottom:8px;font-size:10px;color:#a78bfa;text-align:center;border-bottom:1px solid #1a1a2e;">
+                ⏰ Next loop: <span id="dicey-next-loop">Not started</span>
+            </div>
+            
+            <!-- Log -->
+            <div id="dicey-log" style="background:#0d1117;border-radius:6px;padding:4px 0;max-height:120px;overflow-y:auto;font-size:11px;color:#8b949e;font-family:monospace;line-height:1.6;"></div>
+            
+            <!-- Footer -->
+            <div style="margin-top:8px;font-size:9px;color:#4ade80;text-align:center;border-top:1px solid #1a2e1a;padding-top:8px;">
+                🔄 Loop 30m · UI PERMANEN · Ctrl+Enter toggle
+            </div>
+        `;
+        
+        document.body.appendChild(container);
+        
+        // EVENTS
+        document.getElementById('dicey-start-btn').onclick = startBot;
+        document.getElementById('dicey-stop-btn').onclick = stopBot;
+        
+        // ✕ CLOSE - JANGAN HILANGKAN UI, hanya minimize
+        document.getElementById('dicey-close').onclick = () => {
+            const ui = document.getElementById('dicey-rain-ui');
+            if (ui) {
+                ui.style.width = '50px';
+                ui.style.height = '40px';
+                ui.style.overflow = 'hidden';
+                ui.style.padding = '8px 10px';
+                ui.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;height:100%;">
+                    <span style="font-size:12px;font-weight:700;color:#4ade80;">🎲</span>
+                    <button id="dicey-restore" style="background:none;border:none;color:#4ade80;font-size:14px;cursor:pointer;">⤢</button>
+                </div>`;
+                
+                document.getElementById('dicey-restore').onclick = () => {
+                    location.reload(); // Reload buat restore UI
+                };
+            }
+        };
+        
+        document.getElementById('dicey-username').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') startBot();
+        });
+        
+        // Keyboard shortcut
+        document.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.key === 'Enter') {
                 e.preventDefault();
-                updateWhitelistStatus();
+                state.isRunning ? stopBot() : startBot();
             }
-        };
-        var savedUsername = localStorage.getItem('dicey_username');
-        if (savedUsername) {
-            usernameInput.value = savedUsername;
-            setTimeout(updateWhitelistStatus, 500);
-        }
+        });
+        
+        // DRAG
+        let isDragging = false, offsetX, offsetY;
+        const header = container.querySelector('div:first-child');
+        header.addEventListener('mousedown', (e) => {
+            if (e.target.closest('button')) return;
+            isDragging = true;
+            const rect = container.getBoundingClientRect();
+            offsetX = e.clientX - rect.left;
+            offsetY = e.clientY - rect.top;
+            container.style.cursor = 'grabbing';
+        });
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            let x = e.clientX - offsetX;
+            let y = e.clientY - offsetY;
+            x = Math.max(0, Math.min(window.innerWidth - container.offsetWidth, x));
+            y = Math.max(0, Math.min(window.innerHeight - container.offsetHeight, y));
+            container.style.left = x + 'px';
+            container.style.right = 'auto';
+            container.style.bottom = 'auto';
+            container.style.top = y + 'px';
+        });
+        document.addEventListener('mouseup', () => {
+            isDragging = false;
+            container.style.cursor = '';
+        });
+        
+        // UPDATE NEXT LOOP
+        setInterval(() => {
+            if (state.isRunning) {
+                const nextLoopEl = document.getElementById('dicey-next-loop');
+                if (nextLoopEl) {
+                    const nextTime = new Date(Date.now() + CONFIG.LOOP_INTERVAL);
+                    nextLoopEl.textContent = nextTime.toLocaleTimeString();
+                }
+            }
+        }, 10000);
+        
+        log('✅ Bot ready! Enter username & START', '#4ade80');
+        log('🔒 UI PERMANEN - Tidak akan pernah hilang!', '#4ade80');
+        log('🔄 Loop 30 menit otomatis', '#a78bfa');
+        
+        // 🔥 SETUP UI MONITOR
+        setupUIMonitor();
+        
+        updateUI();
     }
-
-    if (checkWhitelistBtn) checkWhitelistBtn.onclick = function(e) {
-        e.preventDefault();
-        updateWhitelistStatus();
-    };
-
-    document.getElementById('toggle-rain').onchange = updateToggleVisibility;
-    document.getElementById('toggle-wager').onchange = updateToggleVisibility;
-    document.getElementById('toggle-bonus').onchange = updateToggleVisibility;
-
-    document.getElementById('dicey-master').onclick = toggleMaster;
-    document.getElementById('dicey-rain-toggle').onclick = toggleRain;
-    document.getElementById('dicey-wager-toggle').onclick = toggleWager;
-    document.getElementById('dicey-wager-pause').onclick = pauseWagerBot;
-    document.getElementById('dicey-wager-reset').onclick = resetWagerBot;
-    document.getElementById('dicey-bonus-toggle').onclick = toggleBonus;
-    document.getElementById('dicey-bonus-claim').onclick = manualClaim;
-
-    document.getElementById('dicey-clear-logs').onclick = function() {
-        var logEl = $('dicey-log');
-        if (logEl) logEl.innerHTML = '';
-        var rainLogEl = $('dicey-rain-log');
-        if (rainLogEl) rainLogEl.innerHTML = '';
-    };
-
-    var minimized = false;
-    var minimizeBtn = $('dicey-minimize');
-    var closeBtn = $('dicey-close');
-    var content = $('dicey-content');
-
-    if (minimizeBtn) {
-        minimizeBtn.onclick = function() {
-            minimized = !minimized;
-            if (content) content.style.display = minimized ? 'none' : 'block';
-            this.textContent = minimized ? '▲' : '▼';
-            container.style.height = minimized ? '56px' : '100%';
-        };
-    }
-
-    if (closeBtn) {
-        closeBtn.onclick = function() {
-            if (wagerState.isRunning) stopWagerBot();
-            if (rainIsRunning) stopRain();
-            if (bonusState.isRunning) stopBonusAuto();
-            container.style.display = 'none';
-        };
-    }
-
-    document.onkeydown = function(e) {
-        if (e.ctrlKey && e.shiftKey && e.key === 'D') {
-            e.preventDefault();
-            container.style.display = container.style.display === 'none' ? 'block' : 'none';
-        }
-        if (e.ctrlKey && e.key === 'Enter') {
-            e.preventDefault();
-            toggleMaster();
-        }
-    };
 
     // ============================================================
     // INIT
     // ============================================================
-    var initialBalance = getRealBalance();
-    if (initialBalance !== null && initialBalance > 0) {
-        wagerState.currentBalance = initialBalance;
-        wagerState.startBalance = initialBalance;
+    let uiMonitor = null;
+    
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => {
+            createUI();
+            uiMonitor = setupUIMonitor();
+        });
     } else {
-        wagerState.currentBalance = 3;
-        wagerState.startBalance = 3;
+        createUI();
+        uiMonitor = setupUIMonitor();
     }
-
-    setTimeout(updateToggleVisibility, 100);
-    setTimeout(updateWhitelistStatus, 200);
-    updateWagerUI();
-    updateRainUI();
-    updateBonusUI();
-    updateMasterUI();
-
-    log('🔥 DiceY Dual Engine v6.0 - Chat Detection FIXED', '#ff6b35');
-    log('📱 Full screen mobile UI', '#4ade80');
-    log('📌 Enter username, click CHECK, then START ALL', '#60a5fa');
-
-    console.log('✅ Chat detection improved!');
-    console.log('✅ Will scan and click Chat tab automatically');
+    
+    // 🔥 CEK UI SETIAP 5 DETIK - PASTIKAN TIDAK HILANG
+    setInterval(() => {
+        const ui = document.getElementById('dicey-rain-ui');
+        if (!ui || ui.style.display === 'none') {
+            ensureUIVisible();
+        }
+    }, 5000);
+    
+    // Expose
+    window.autoJoinBot = {
+        start: startBot,
+        stop: stopBot,
+        state: state,
+        config: CONFIG,
+        ensureUI: ensureUIVisible
+    };
+    
+    console.log('🎲 DiceY Auto Join v3.2 loaded');
+    console.log('🔒 UI PERMANEN - Tidak akan pernah hilang!');
+    console.log('🔄 Loop: 30 MENIT');
+    console.log('📌 Ctrl+Enter: Start/Stop');
 
 })();
