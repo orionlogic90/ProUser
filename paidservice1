@@ -1,107 +1,303 @@
-// WAR OF WAGER v5.0 + DiceY RAIN CATCHER v2.0 - FULL OPTIMIZED
+// ============================================================
+// WAR OF WAGER v6.0 + DiceY RAIN CATCHER v3.0 - FULL FIX
+// ============================================================
 (function() {
     'use strict';
 
     // ============================================================
-    // WHITELIST - EDIT MANUAL DI SINI!
+    // WHITELIST - LOAD FROM GITHUB
     // ============================================================
-    const WHITELIST = {
-        users: {
-            'dengkodice': '2026-12-31',
-            'cheapcheatxfams': 'permanent'
-        },
+    const WHITELIST_URL = 'https://raw.githubusercontent.com/orionlogic90/ProUser/refs/heads/main/whitelist.json';
+
+    let whitelistCache = {
+        data: null,
+        lastFetch: 0,
+        cacheDuration: 300000 // 5 menit
+    };
+
+    async function fetchWhitelist() {
+        try {
+            const now = Date.now();
+            if (whitelistCache.data && (now - whitelistCache.lastFetch) < whitelistCache.cacheDuration) {
+                return whitelistCache.data;
+            }
+            
+            const response = await fetch(WHITELIST_URL, {
+                method: 'GET',
+                headers: {
+                    'Accept': 'application/json',
+                    'Cache-Control': 'no-cache'
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error('HTTP ' + response.status);
+            }
+            
+            const data = await response.json();
+            if (!data.users || typeof data.users !== 'object') {
+                throw new Error('Invalid whitelist format');
+            }
+            
+            whitelistCache.data = data;
+            whitelistCache.lastFetch = now;
+            return data;
+            
+        } catch (error) {
+            console.error('❌ Failed to fetch whitelist:', error);
+            if (whitelistCache.data) {
+                console.warn('⚠️ Using cached whitelist');
+                return whitelistCache.data;
+            }
+            return {
+                users: {
+                    'dengkodice': '2026-12-31',
+                    'trial': '2026-07-15'
+                }
+            };
+        }
+    }
+
+    async function checkWhitelist(username) {
+        const trimmed = username.trim().toLowerCase();
+        if (!trimmed) {
+            return { valid: false, reason: 'Please enter username' };
+        }
         
-        check(username) {
-            username = username.toLowerCase().trim();
-            if (!this.users.hasOwnProperty(username)) {
+        try {
+            const data = await fetchWhitelist();
+            const users = data.users || {};
+            
+            if (!users.hasOwnProperty(trimmed)) {
                 return { valid: false, reason: 'Username not in whitelist' };
             }
-            const expiry = this.users[username];
+            
+            const expiry = users[trimmed];
             if (expiry === 'permanent') {
-                return { valid: true, username: username, expiry: 'Permanent', remaining: '∞' };
+                return { valid: true, username: trimmed, expiry: 'Permanent', remaining: '∞' };
             }
+            
             const expiryDate = new Date(expiry);
             if (isNaN(expiryDate.getTime())) {
                 return { valid: false, reason: 'Invalid expiry format' };
             }
+            
             if (new Date() > expiryDate) {
                 return { valid: false, reason: 'License expired (' + expiry + ')' };
             }
+            
             const remaining = Math.ceil((expiryDate - new Date()) / (1000 * 60 * 60 * 24));
-            return { valid: true, username: username, expiry: expiry, remaining: remaining + ' days' };
+            return { valid: true, username: trimmed, expiry: expiry, remaining: remaining + ' days' };
+            
+        } catch (error) {
+            console.error('Whitelist check error:', error);
+            return { valid: false, reason: 'Cannot verify license' };
         }
+    }
+
+    // ============================================================
+    // COIN PRICES FOR WAGER TARGET CONVERSION
+    // ============================================================
+    const COIN_PRICES = {
+        'USDC': 1.00,
+        'USDT': 1.00,
+        'SOL': 150.00,
+        'BTC': 60000.00,
+        'ETH': 3000.00,
+        'ME': 0.50
     };
 
-    // ===== UI CONTAINER =====
+    function getCoinPrice(currency) {
+        return COIN_PRICES[currency] || 1;
+    }
+
+    function getConvertedTarget() {
+        const baseTarget = 300;
+        const currency = getCurrency();
+        const price = getCoinPrice(currency);
+        return baseTarget / price;
+    }
+
+    // ============================================================
+    // LOG SYSTEM - UNIFIED + ANTI-SPAM
+    // ============================================================
+    const logCooldown = {
+        lastLog: {},
+        cooldownTime: 5000
+    };
+
+    function isLogSpam(key, msg) {
+        const now = Date.now();
+        const last = logCooldown.lastLog[key];
+        if (!last) {
+            logCooldown.lastLog[key] = { msg, time: now };
+            return false;
+        }
+        if (last.msg === msg && (now - last.time) < logCooldown.cooldownTime) {
+            return true;
+        }
+        logCooldown.lastLog[key] = { msg, time: now };
+        return false;
+    }
+
+    function addLog(msg, color, icon, key) {
+        color = color || '#a0a0a0';
+        icon = icon || '📌';
+        key = key || msg.substring(0, 30);
+        
+        if (isLogSpam(key, msg)) {
+            return;
+        }
+        
+        const log = document.getElementById('dicey-log');
+        if (!log) return;
+        
+        const time = new Date().toLocaleTimeString();
+        const entry = document.createElement('div');
+        entry.style.cssText = `
+            padding: 2px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+            font-size: 7px;
+            font-family: 'Consolas', monospace;
+            color: ${color};
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        `;
+        entry.innerHTML = `
+            <span style="color:#666;flex-shrink:0;">[${time}]</span>
+            <span style="flex-shrink:0;">${icon}</span>
+            <span style="word-break:break-word;">${msg}</span>
+        `;
+        
+        log.appendChild(entry);
+        log.scrollTop = log.scrollHeight;
+        
+        while (log.children.length > 500) {
+            log.removeChild(log.firstChild);
+        }
+    }
+
+    // ============================================================
+    // UI CONTAINER - FULL RESPONSIVE
+    // ============================================================
     const container = document.createElement('div');
     container.id = 'dicey-bot-ui';
     container.style.cssText = `
         position: fixed;
-        bottom: 20px;
-        right: 20px;
-        width: 420px;
-        min-width: 320px;
-        max-width: 90vw;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        top: 0;
+        width: 100%;
+        height: 100%;
+        max-width: 100vw;
+        max-height: 100vh;
         background: #1e1f1c;
         color: #f8f8f2;
         font-family: 'Segoe UI', Consolas, monospace;
-        border-radius: 16px;
-        box-shadow: 0 8px 32px rgba(0,0,0,0.6);
-        border: 1px solid #3a3a3a;
+        border-radius: 0;
+        box-shadow: none;
+        border: none;
         z-index: 999999;
         overflow: hidden;
         user-select: none;
         font-size: 12px;
+        display: flex;
+        flex-direction: column;
     `;
 
     container.innerHTML = `
-        <!-- Draggable Header -->
-        <div id="dicey-header" style="background: #9ec07c; padding: 8px 14px; display: flex; justify-content: space-between; align-items: center; cursor: move; color: #000;">
-            <div style="display: flex; align-items: center; gap: 10px;">
-                <span style="font-weight: 700; font-size: 13px;">⭐ DiceY Engine</span>
-                <span style="background: rgba(0,0,0,0.2); padding: 2px 10px; border-radius: 20px; font-size: 10px; font-weight: 600;">by cheapcheatx</span>
+        <!-- HEADER -->
+        <div id="dicey-header" style="
+            background: #9ec07c; 
+            padding: 6px 12px; 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            cursor: move; 
+            color: #000;
+            flex-shrink: 0;
+            min-height: 44px;
+        ">
+            <div style="display: flex; align-items: center; gap: 6px; overflow: hidden;">
+                <span style="font-weight: 700; font-size: 12px; white-space: nowrap;">⭐ DiceY Engine</span>
+                <span style="background: rgba(0,0,0,0.2); padding: 1px 8px; border-radius: 20px; font-size: 8px; font-weight: 600; white-space: nowrap;">by cheapcheatx</span>
             </div>
-            <div style="display: flex; gap: 8px;">
-                <span id="dicey-resize-handle" style="cursor: nwse-resize; font-size: 14px;">⤡</span>
-                <button id="dicey-minimize" style="background: rgba(0,0,0,0.2); border: none; color: #000; width: 30px; height: 30px; border-radius: 8px; cursor: pointer; font-size: 14px;">▲</button>
-                <button id="dicey-close" style="background: rgba(0,0,0,0.2); border: none; color: #000; width: 30px; height: 30px; border-radius: 8px; cursor: pointer; font-size: 14px;">✕</button>
+            <div style="display: flex; gap: 4px; flex-shrink: 0;">
+                <button id="dicey-minimize" style="background: rgba(0,0,0,0.2); border: none; color: #000; width: 28px; height: 28px; border-radius: 6px; cursor: pointer; font-size: 12px;">▼</button>
+                <button id="dicey-close" style="background: rgba(0,0,0,0.2); border: none; color: #000; width: 28px; height: 28px; border-radius: 6px; cursor: pointer; font-size: 14px;">✕</button>
             </div>
         </div>
 
-        <div id="dicey-content" style="padding: 10px 12px 12px 12px; max-height: 70vh; overflow-y: auto;">
-
-            <!-- Tab Bar -->
-            <div id="dicey-tab-bar" style="display: flex; gap: 4px; padding: 0 0 8px 0; border-bottom: 1px solid #3a3a3a; overflow-x: auto;">
-                <button class="dicey-tab active" data-tab="main" style="padding: 6px 12px; background: transparent; border: none; color: #9ec07c; font-size: 11px; font-weight: 600; cursor: pointer; border-bottom: 2px solid #9ec07c;">MAIN</button>
-                <button class="dicey-tab" data-tab="cfg" style="padding: 6px 12px; background: transparent; border: none; color: #a0a0a0; font-size: 11px; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent;">CFG</button>
+        <!-- CONTENT -->
+        <div id="dicey-content" style="
+            flex: 1;
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding: 8px 10px 12px 10px;
+            -webkit-overflow-scrolling: touch;
+        ">
+            <!-- TAB BAR -->
+            <div id="dicey-tab-bar" style="
+                display: flex; 
+                gap: 2px; 
+                padding: 0 0 6px 0; 
+                border-bottom: 1px solid #3a3a3a; 
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+                flex-shrink: 0;
+            ">
+                <button class="dicey-tab active" data-tab="main" style="
+                    padding: 4px 10px; 
+                    background: transparent; 
+                    border: none; 
+                    color: #9ec07c; 
+                    font-size: 10px; 
+                    font-weight: 600; 
+                    cursor: pointer; 
+                    border-bottom: 2px solid #9ec07c;
+                    white-space: nowrap;
+                ">MAIN</button>
+                <button class="dicey-tab" data-tab="cfg" style="
+                    padding: 4px 10px; 
+                    background: transparent; 
+                    border: none; 
+                    color: #a0a0a0; 
+                    font-size: 10px; 
+                    font-weight: 600; 
+                    cursor: pointer; 
+                    border-bottom: 2px solid transparent;
+                    white-space: nowrap;
+                ">CFG</button>
             </div>
 
-            <!-- Tab: MAIN -->
+            <!-- TAB: MAIN -->
             <div id="tab-main" class="dicey-tab-content" style="padding-top: 8px; display: block;">
                 
-                <!-- ===== WHITELIST STATUS ===== -->
+                <!-- WHITELIST STATUS -->
                 <div id="dicey-whitelist-status" style="margin-bottom:6px;padding:4px 8px;background:#1e1f1c;border-radius:4px;border:1px solid #30363d;font-size:9px;color:#888;text-align:center;">
                     ⏳ Enter username to activate bots
                 </div>
 
-                <!-- ===== USERNAME INPUT ===== -->
+                <!-- USERNAME INPUT -->
                 <div style="display:flex;gap:4px;margin-bottom:6px;">
                     <input id="dicey-username" type="text" placeholder="Enter your username..." style="flex:1;padding:4px 8px;border-radius:4px;border:1px solid #3a3a3a;background:#1e1f1c;color:#f8f8f2;font-size:10px;box-sizing:border-box;outline:none;font-family:monospace;">
                     <button id="dicey-check-whitelist" style="padding:4px 10px;border:none;border-radius:4px;background:#9ec07c;color:#000;font-weight:700;font-size:9px;cursor:pointer;">CHECK</button>
+                    <button id="dicey-refresh-whitelist" style="padding:4px 8px;border:none;border-radius:4px;background:#3a3a3a;color:#f8f8f2;font-size:10px;cursor:pointer;" title="Refresh whitelist dari server">🔄</button>
                 </div>
 
-                <!-- ===== WAGER CONTROLS ===== -->
+                <!-- WAGER CONTROLS -->
                 <div style="border-top:1px solid #3a3a3a;padding-top:6px;margin-top:4px;">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
                         <span style="font-size:9px;font-weight:600;color:#9ec07c;">🎲 WAGER BOT</span>
                         <span id="dicey-wager-whitelist-status" style="font-size:8px;color:#ff6b81;">🔒 Locked</span>
                     </div>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr 0.7fr; gap: 3px; margin-bottom: 6px;">
-                        <button id="dicey-wager-start" style="padding: 6px 0; border: none; border-radius: 6px; background: #00e5c0; color: #000; font-weight: 700; font-size: 10px; cursor: pointer; opacity:0.5;">START</button>
-                        <button id="dicey-wager-pause" style="padding: 6px 0; border: none; border-radius: 6px; background: #a0a0a0; color: #000; font-weight: 700; font-size: 10px; cursor: pointer; opacity:0.5;">PAUSE</button>
-                        <button id="dicey-wager-stop" style="padding: 6px 0; border: none; border-radius: 6px; background: #ff6b81; color: #000; font-weight: 700; font-size: 10px; cursor: pointer; opacity:0.5;">STOP</button>
-                        <button id="dicey-wager-reset" style="padding: 6px 0; border: none; border-radius: 6px; background: #a0a0a0; color: #000; font-weight: 700; font-size: 10px; cursor: pointer;">RESET</button>
-                        <select id="dicey-currency" style="padding: 4px; border-radius: 6px; border:1px solid #3a3a3a; background:#272822; color:#f8f8f2; font-size:10px;">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 0.8fr; gap: 3px; margin-bottom: 6px;">
+                        <button id="dicey-wager-start" style="padding: 8px 0; border: none; border-radius: 6px; background: #00e5c0; color: #000; font-weight: 700; font-size: 9px; cursor: pointer; opacity:0.5; min-height: 32px;">START</button>
+                        <button id="dicey-wager-pause" style="padding: 8px 0; border: none; border-radius: 6px; background: #a0a0a0; color: #000; font-weight: 700; font-size: 9px; cursor: pointer; opacity:0.5; min-height: 32px;">PAUSE</button>
+                        <button id="dicey-wager-stop" style="padding: 8px 0; border: none; border-radius: 6px; background: #ff6b81; color: #000; font-weight: 700; font-size: 9px; cursor: pointer; opacity:0.5; min-height: 32px;">STOP</button>
+                        <select id="dicey-currency" style="padding: 4px; border-radius: 6px; border:1px solid #3a3a3a; background:#272822; color:#f8f8f2; font-size:9px; min-height: 32px;">
                             <option value="SOL">SOL</option>
                             <option value="USDC" selected>USDC</option>
                             <option value="USDT">USDT</option>
@@ -110,34 +306,33 @@
                             <option value="ETH">ETH</option>
                         </select>
                     </div>
+                    <div style="display: flex; gap: 3px; margin-bottom: 6px;">
+                        <button id="dicey-wager-reset" style="flex:1; padding: 6px 0; border: none; border-radius: 6px; background: #a0a0a0; color: #000; font-weight: 700; font-size: 9px; cursor: pointer; min-height: 28px;">🔄 RESET</button>
+                    </div>
                 </div>
 
-                <!-- ===== RAIN CATCHER CONTROLS ===== -->
+                <!-- RAIN CATCHER CONTROLS -->
                 <div style="border-top:1px solid #3a3a3a;padding-top:6px;margin-top:2px;">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
                         <span style="font-size:9px;font-weight:600;color:#ff922b;">🌧️ RAIN CATCHER</span>
                         <span id="dicey-rain-whitelist-status" style="font-size:8px;color:#ff6b81;">🔒 Locked</span>
                     </div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 3px; margin-bottom: 4px;">
-                        <button id="dicey-rain-start" style="padding: 6px 0; border: none; border-radius: 6px; background: #ff922b; color: #000; font-weight: 700; font-size: 10px; cursor: pointer; opacity:0.5;">▶ START RAIN</button>
-                        <button id="dicey-rain-stop" style="padding: 6px 0; border: none; border-radius: 6px; background: #a0a0a0; color: #000; font-weight: 700; font-size: 10px; cursor: pointer; opacity:0.4;">■ STOP RAIN</button>
+                        <button id="dicey-rain-start" style="padding: 8px 0; border: none; border-radius: 6px; background: #ff922b; color: #000; font-weight: 700; font-size: 9px; cursor: pointer; opacity:0.5; min-height: 34px;">▶ START RAIN</button>
+                        <button id="dicey-rain-stop" style="padding: 8px 0; border: none; border-radius: 6px; background: #a0a0a0; color: #000; font-weight: 700; font-size: 9px; cursor: pointer; opacity:0.4; min-height: 34px;">■ STOP RAIN</button>
                     </div>
-                    <!-- Rain Status -->
                     <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;padding:3px 0;border-top:1px solid #3a3a3a;border-bottom:1px solid #3a3a3a;">
                         <span id="dicey-rain-dot" style="width:6px;height:6px;border-radius:50%;background:#888;display:inline-block;"></span>
                         <span id="dicey-rain-status" style="font-size:8px;color:#888;">STOPPED</span>
-                        <span style="margin-left:auto;font-size:8px;">
+                        <span style="margin-left:auto;font-size:8px;white-space:nowrap;">
                             <span style="color:#00e5c0;">✓ <span id="dicey-rain-success" style="font-weight:700;">0</span></span>
                             <span style="color:#ff6b81;margin-left:6px;">✗ <span id="dicey-rain-fail" style="font-weight:700;">0</span></span>
                         </span>
                     </div>
-                    <div id="dicey-rain-substatus" style="font-size:7px;color:#666;padding-left:12px;margin-bottom:3px;">⏸️ Idle</div>
-                    <!-- Rain Log -->
-                    <div id="dicey-rain-log" style="background:#0f0f0a;border-radius:4px;padding:3px 5px;max-height:50px;overflow-y:auto;font-family:'Consolas',monospace;font-size:7px;color:#a0a0a0;border:1px solid #3a3a3a;margin-top:3px;"></div>
                 </div>
 
-                <!-- ===== WAGER STATUS ===== -->
-                <div style="border-top:1px solid #3a3a3a;padding-top:6px;margin-top:6px;">
+                <!-- WAGER STATUS -->
+                <div style="border-top:1px solid #3a3a3a;padding-top:6px;margin-top:4px;">
                     <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: 9px;">
                         <span id="dicey-status-dot" style="width: 6px; height: 6px; border-radius: 50%; display: inline-block; background: #FF4757;"></span>
                         <span id="dicey-status-text">STOPPED</span>
@@ -147,51 +342,48 @@
 
                     <!-- Layer Status -->
                     <div style="background: #272822; border-radius: 8px; padding: 4px 8px; margin-bottom: 4px; border: 1px solid #3a3a3a;">
-                        <div style="display: flex; justify-content: space-between; font-size: 9px;">
-                            <span>📊 Layer: <strong id="dicey-layer" style="color:#00e5c0;">1</strong></span>
-                            <span>Chance: <strong id="dicey-chance-display" style="color:#9ec07c;">98%</strong></span>
-                            <span>Bet: <strong id="dicey-bet-display" style="color:#ffd700;">0.0000</strong></span>
-                            <span>Streak: <strong id="dicey-streak-display">0</strong></span>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 2px; font-size: 9px;">
+                            <div>📊 Layer: <strong id="dicey-layer" style="color:#00e5c0;">1</strong></div>
+                            <div>Chance: <strong id="dicey-chance-display" style="color:#9ec07c;">98%</strong></div>
+                            <div>Bet: <strong id="dicey-bet-display" style="color:#ffd700;">0.0000</strong></div>
+                            <div>Streak: <strong id="dicey-streak-display">0</strong></div>
                         </div>
                     </div>
 
-                    <!-- Stats Block -->
-                    <div style="background: #272822; border-radius: 8px; padding: 4px 8px; margin-bottom: 4px; border: 1px solid #3a3a3a; font-size: 8px; line-height: 1.4;">
-                        <div style="display: flex; justify-content: space-between; flex-wrap: wrap; gap: 1px;">
-                            <span style="color:#a0a0a0;">Balance</span>
-                            <span style="font-weight:600; color:#00e5c0;" id="dicey-balance">0.0000</span>
-                        </div>
-                        <div style="display: flex; justify-content: space-between; flex-wrap: wrap; gap: 1px;">
-                            <span style="color:#a0a0a0;">Profit</span>
-                            <span style="font-weight:600;" id="dicey-profit">+0.0000</span>
-                        </div>
-                        <div style="display: flex; justify-content: space-between; flex-wrap: wrap; gap: 1px;">
-                            <span style="color:#a0a0a0;">Wagered</span>
-                            <span style="font-weight:600; color:#ffd700;" id="dicey-wagered">0.0000</span>
-                        </div>
-                        <div style="display: flex; justify-content: space-between; flex-wrap: wrap; gap: 1px;">
-                            <span style="color:#a0a0a0;">Bets | WR</span>
-                            <span style="font-weight:600;" id="dicey-bets">0 | 0%</span>
-                        </div>
-                        <div style="border-top: 1px solid #3a3a3a; padding-top: 2px; margin-top: 2px;"></div>
-                        <div style="display: flex; justify-content: space-between; flex-wrap: wrap; gap: 1px;">
-                            <span style="color:#a0a0a0;">W/L</span>
-                            <span style="font-weight: 700;" id="dicey-wl">0/0</span>
-                        </div>
-                        <div style="display: flex; justify-content: space-between; flex-wrap: wrap; gap: 1px;">
-                            <span style="color:#a0a0a0;">Win Rate</span>
-                            <span style="font-weight: 700;" id="dicey-winrate">0%</span>
-                        </div>
-                        <div style="display: flex; justify-content: space-between; flex-wrap: wrap; gap: 1px; border-top: 1px solid #3a3a3a; padding-top: 2px; margin-top: 2px;">
-                            <span style="color:#a0a0a0;">L2 Loss Recovery</span>
-                            <span style="font-weight:700; color:#ff922b;" id="dicey-loss-recovery">0.0000</span>
+                    <!-- Stats Block - Tanpa Balance -->
+                    <div style="background: #272822; border-radius: 8px; padding: 6px 10px; margin-bottom: 4px; border: 1px solid #3a3a3a; font-size: 8px; line-height: 1.8;">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2px 20px;">
+                            <div style="display: flex; justify-content: space-between;">
+                                <span style="color:#a0a0a0;">Profit</span>
+                                <span style="font-weight:600;" id="dicey-profit">+0.0000</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between;">
+                                <span style="color:#a0a0a0;">Wagered</span>
+                                <span style="font-weight:600; color:#ffd700;" id="dicey-wagered">0.0000</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between;">
+                                <span style="color:#a0a0a0;">Bets | WR</span>
+                                <span style="font-weight:600;" id="dicey-bets">0 | 0%</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between;">
+                                <span style="color:#a0a0a0;">W/L</span>
+                                <span style="font-weight: 700;" id="dicey-wl">0/0</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between;">
+                                <span style="color:#a0a0a0;">Win Rate</span>
+                                <span style="font-weight: 700;" id="dicey-winrate">0%</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between;">
+                                <span style="color:#a0a0a0;">L2 Recovery</span>
+                                <span style="font-weight:700; color:#ff922b;" id="dicey-loss-recovery">0.0000</span>
+                            </div>
                         </div>
                     </div>
 
                     <!-- Wager Progress -->
                     <div style="background: #272822; border-radius: 8px; padding: 3px 6px; border: 1px solid #3a3a3a;">
                         <div style="display: flex; justify-content: space-between; font-size: 7px; color: #a0a0a0;">
-                            <span>📊 Wager: <strong id="dicey-wager-current">0.00</strong> / <strong id="dicey-wager-target">300</strong></span>
+                            <span>📊 Wager: <strong id="dicey-wager-current">0.00</strong> / <strong id="dicey-wager-target">300</strong> <span id="dicey-target-coin">USDC</span></span>
                             <span id="dicey-wager-status" style="color:#00e5c0;">▶ RUNNING</span>
                         </div>
                         <div style="background: #3a3a3a; border-radius: 3px; margin-top: 1px; height: 2px; overflow: hidden;">
@@ -200,19 +392,25 @@
                     </div>
                 </div>
 
-                <!-- ===== LOGS ===== -->
+                <!-- LOGS - UNIFIED -->
                 <div style="border-top:1px solid #3a3a3a;padding-top:6px;margin-top:6px;">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
                         <span style="font-size:9px;font-weight:600;color:#a0a0a0;">📋 LOGS</span>
+                        <div style="display:flex;gap:4px;">
+                            <button id="dicey-log-clear" style="padding:2px 8px;border:none;border-radius:4px;background:#3a3a3a;color:#a0a0a0;font-size:7px;cursor:pointer;">CLEAR</button>
+                            <button id="dicey-log-filter" style="padding:2px 8px;border:none;border-radius:4px;background:#3a3a3a;color:#a0a0a0;font-size:7px;cursor:pointer;">ALL</button>
+                        </div>
                     </div>
-                    <div id="dicey-log" style="background:#0f0f0a;border-radius:4px;padding:3px 5px;max-height:100px;overflow-y:auto;font-family:'Consolas',monospace;font-size:7px;color:#a0a0a0;border:1px solid #3a3a3a;"></div>
+                    <div id="dicey-log" style="background:#0f0f0a;border-radius:4px;padding:3px 5px;max-height:120px;overflow-y:auto;font-family:'Consolas',monospace;font-size:7px;color:#a0a0a0;border:1px solid #3a3a3a;margin-top:3px;-webkit-overflow-scrolling:touch;"></div>
                 </div>
             </div>
 
-            <!-- Tab: CFG -->
+            <!-- TAB: CFG -->
             <div id="tab-cfg" class="dicey-tab-content" style="display: none; padding-top: 8px;">
                 <div style="background: #272822; border-radius: 12px; padding: 10px; border: 1px solid #3a3a3a;">
-                    <div style="font-weight:bold; font-size:11px; margin-bottom:8px;">⚙️ LAYER 1 SETTINGS</div>
+                    
+                    <!-- LAYER 1 SETTINGS -->
+                    <div style="font-weight:bold; font-size:11px; margin-bottom:8px; color:#9ec07c;">⚙️ LAYER 1 SETTINGS</div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
                         <div>
                             <label style="color:#a0a0a0; font-size:9px;">Chance % (1-98)</label>
@@ -225,22 +423,34 @@
                     </div>
                     <div style="margin-top: 6px;">
                         <label style="color:#a0a0a0; font-size:9px;">Loss Increase % (Multiplier)</label>
-                        <input id="dicey-layer1-multiplier" type="number" value="1" step="0.1" min="1" max="10" style="width:100%; padding:4px 6px; border-radius:6px; border:1px solid #3a3a3a; background:#1e1f1c; color:#f8f8f2; font-size:11px;">
+                        <input id="dicey-layer1-multiplier" type="number" value="2.0" step="0.1" min="1" max="10" style="width:100%; padding:4px 6px; border-radius:6px; border:1px solid #3a3a3a; background:#1e1f1c; color:#f8f8f2; font-size:11px;">
                     </div>
 
-                    <div style="font-weight:bold; font-size:11px; margin:12px 0 8px 0; border-top:1px solid #3a3a3a; padding-top:12px;">⚙️ LAYER 2 SETTINGS</div>
+                    <!-- LAYER 2 SETTINGS -->
+                    <div style="font-weight:bold; font-size:11px; margin:12px 0 8px 0; border-top:1px solid #3a3a3a; padding-top:12px; color:#ff922b;">⚙️ LAYER 2 SETTINGS</div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
                         <div>
-                            <label style="color:#a0a0a0; font-size:9px;">Chance % (1-98)</label>
-                            <input id="dicey-layer2-chance" type="number" value="95" min="1" max="98" step="0.5" style="width:100%; padding:4px 6px; border-radius:6px; border:1px solid #3a3a3a; background:#1e1f1c; color:#f8f8f2; font-size:11px;">
+                            <label style="color:#a0a0a0; font-size:9px;">Chance Awal % (1-98)</label>
+                            <input id="dicey-layer2-chance-start" type="number" value="65" min="1" max="98" step="0.5" style="width:100%; padding:4px 6px; border-radius:6px; border:1px solid #3a3a3a; background:#1e1f1c; color:#f8f8f2; font-size:11px;">
                         </div>
                         <div>
-                            <label style="color:#a0a0a0; font-size:9px;">Bet Amount</label>
-                            <input id="dicey-layer2-bet" type="text" value="0.01" style="width:100%; padding:4px 6px; border-radius:6px; border:1px solid #3a3a3a; background:#1e1f1c; color:#f8f8f2; font-size:11px; font-family:monospace;">
+                            <label style="color:#a0a0a0; font-size:9px;">Max Chance % (1-99)</label>
+                            <input id="dicey-layer2-chance-max" type="number" value="99" min="1" max="99" step="0.5" style="width:100%; padding:4px 6px; border-radius:6px; border:1px solid #3a3a3a; background:#1e1f1c; color:#f8f8f2; font-size:11px;">
                         </div>
                     </div>
-                    
-                    <div style="font-weight:bold; font-size:11px; margin:12px 0 8px 0; border-top:1px solid #3a3a3a; padding-top:12px;">⚙️ BACK TO LAYER 1 TRIGGERS</div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 6px;">
+                        <div>
+                            <label style="color:#a0a0a0; font-size:9px;">Increment per Bet (%)</label>
+                            <input id="dicey-layer2-chance-increment" type="number" value="1.0" min="0.1" max="5" step="0.1" style="width:100%; padding:4px 6px; border-radius:6px; border:1px solid #3a3a3a; background:#1e1f1c; color:#f8f8f2; font-size:11px;">
+                        </div>
+                        <div>
+                            <label style="color:#a0a0a0; font-size:9px;">Multiplier (x)</label>
+                            <input id="dicey-layer2-multiplier" type="number" value="1.1" min="1" max="10" step="0.1" style="width:100%; padding:4px 6px; border-radius:6px; border:1px solid #3a3a3a; background:#1e1f1c; color:#f8f8f2; font-size:11px;">
+                        </div>
+                    </div>
+
+                    <!-- BACK TO LAYER 1 TRIGGERS -->
+                    <div style="font-weight:bold; font-size:11px; margin:12px 0 8px 0; border-top:1px solid #3a3a3a; padding-top:12px; color:#00e5c0;">⚙️ BACK TO LAYER 1 TRIGGERS</div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
                         <div>
                             <label style="color:#a0a0a0; font-size:9px;">Trigger 1: Win Streak</label>
@@ -254,7 +464,8 @@
                         </div>
                     </div>
 
-                    <div style="font-weight:bold; font-size:11px; margin:12px 0 8px 0; border-top:1px solid #3a3a3a; padding-top:12px;">⚙️ GENERAL SETTINGS</div>
+                    <!-- GENERAL SETTINGS -->
+                    <div style="font-weight:bold; font-size:11px; margin:12px 0 8px 0; border-top:1px solid #3a3a3a; padding-top:12px; color:#a0a0a0;">⚙️ GENERAL SETTINGS</div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
                         <div>
                             <label style="color:#a0a0a0; font-size:9px;">Target Profit %</label>
@@ -271,31 +482,48 @@
                             <input id="dicey-cooldown" type="number" value="1500" min="500" step="500" style="width:100%; padding:4px 6px; border-radius:6px; border:1px solid #3a3a3a; background:#1e1f1c; color:#f8f8f2; font-size:11px;">
                         </div>
                         <div>
-                            <label style="color:#a0a0a0; font-size:9px;">Wager Target (USDC)</label>
-                            <input id="dicey-wager-target-input" type="number" value="300" min="1" style="width:100%; padding:4px 6px; border-radius:6px; border:1px solid #3a3a3a; background:#1e1f1c; color:#f8f8f2; font-size:11px;">
+                            <label style="color:#a0a0a0; font-size:9px;">Wager Target (<span id="dicey-cfg-coin">USDC</span>)</label>
+                            <input id="dicey-wager-target-input" type="number" value="300" step="0.0001" style="width:100%; padding:4px 6px; border-radius:6px; border:1px solid #3a3a3a; background:#1e1f1c; color:#f8f8f2; font-size:11px; font-family:monospace;">
+                            <div style="color:#666; font-size:8px; margin-top:2px;">= $300 USD (auto convert)</div>
                         </div>
                     </div>
-                    <div style="margin-top: 8px; display: flex; gap: 10px; flex-wrap: wrap; border-top: 1px solid #3a3a3a; padding-top: 8px;">
+
+                    <!-- CHECKBOX -->
+                    <div style="margin-top: 10px; display: flex; gap: 16px; flex-wrap: wrap; border-top: 1px solid #3a3a3a; padding-top: 10px;">
                         <label style="color:#a0a0a0; font-size:10px; display:flex; align-items:center; gap:4px; cursor:pointer;">
-                            <input type="checkbox" id="dicey-auto-continue" checked> Auto
+                            <input type="checkbox" id="dicey-auto-continue" checked> Auto Continue
                         </label>
                         <label style="color:#a0a0a0; font-size:10px; display:flex; align-items:center; gap:4px; cursor:pointer;">
                             <input type="checkbox" id="dicey-stop-on-win"> Stop on Win Streak
                         </label>
                     </div>
+
                 </div>
             </div>
 
         </div>
+
+        <!-- FOOTER - Protection Status -->
+        <div style="
+            background: #2d2d2a;
+            padding: 2px 10px;
+            font-size: 7px;
+            color: #888;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px solid #3a3a3a;
+            flex-shrink: 0;
+            min-height: 20px;
+            font-family: 'Segoe UI', monospace;
+        ">
+            <span>🛡️ <span id="dicey-protection-status">🔒 Locked</span></span>
+            <span style="color:#ff6b6b;font-weight:600;">⚠️ JANGAN REFRESH!</span>
+            <span id="dicey-live-status" style="color:#888;">○ Idle</span>
+        </div>
     `;
 
     document.body.appendChild(container);
-
-    // ============================================================
-    // TELEGRAM CONFIG (Rain)
-    // ============================================================
-    const TELEGRAM_BOT_TOKEN = '8328589586:AAGO3dB_8pkPxD5Ogy9UI1lJMMtPQOUAdIE';
-    const TELEGRAM_CHAT_ID = '8453280675';
 
     // ============================================================
     // COMMON HELPERS
@@ -346,24 +574,17 @@
     }
 
     // ============================================================
-    // WHITELIST VALIDATION
+    // WHITELIST UI
     // ============================================================
     let currentUsername = '';
     let isWhitelisted = false;
 
-    function checkWhitelist(username) {
-        const trimmed = username.trim().toLowerCase();
-        if (!trimmed) {
-            return { valid: false, reason: 'Please enter username' };
-        }
-        return WHITELIST.check(trimmed);
-    }
-
-    function updateWhitelistStatus() {
+    async function updateWhitelistStatus() {
         const usernameInput = $('dicey-username');
         const statusEl = $('dicey-whitelist-status');
         const wagerStatusEl = $('dicey-wager-whitelist-status');
         const rainStatusEl = $('dicey-rain-whitelist-status');
+        const protectionStatus = $('dicey-protection-status');
         
         if (!usernameInput || !statusEl) return;
         
@@ -376,27 +597,35 @@
             statusEl.style.borderColor = '#30363d';
             if (wagerStatusEl) { wagerStatusEl.textContent = '🔒 Locked'; wagerStatusEl.style.color = '#ff6b81'; }
             if (rainStatusEl) { rainStatusEl.textContent = '🔒 Locked'; rainStatusEl.style.color = '#ff6b81'; }
+            if (protectionStatus) { protectionStatus.textContent = '🔒 Locked'; protectionStatus.style.color = '#ff6b81'; }
             isWhitelisted = false;
             updateWagerButtons();
             updateRainButtons();
             return;
         }
         
-        const check = WHITELIST.check(username);
+        statusEl.textContent = '⏳ Checking...';
+        statusEl.style.color = '#ffd700';
+        
+        const check = await checkWhitelist(username);
+        
         if (check.valid) {
             statusEl.textContent = '✅ ' + check.username + ' - ' + check.remaining;
             statusEl.style.color = '#4ade80';
             statusEl.style.borderColor = '#4ade80';
             if (wagerStatusEl) { wagerStatusEl.textContent = '✅ Unlocked'; wagerStatusEl.style.color = '#4ade80'; }
             if (rainStatusEl) { rainStatusEl.textContent = '✅ Unlocked'; rainStatusEl.style.color = '#4ade80'; }
+            if (protectionStatus) { protectionStatus.textContent = '✅ Protected'; protectionStatus.style.color = '#4ade80'; }
             isWhitelisted = true;
             localStorage.setItem('dicey_username', username);
+            addLog('✅ ' + check.username + ' - ' + check.remaining, '#4ade80', '✅', 'whitelist_valid');
         } else {
             statusEl.textContent = '❌ ' + check.reason;
             statusEl.style.color = '#f87171';
             statusEl.style.borderColor = '#f87171';
             if (wagerStatusEl) { wagerStatusEl.textContent = '🔒 Locked'; wagerStatusEl.style.color = '#ff6b81'; }
             if (rainStatusEl) { rainStatusEl.textContent = '🔒 Locked'; rainStatusEl.style.color = '#ff6b81'; }
+            if (protectionStatus) { protectionStatus.textContent = '🔒 Locked'; protectionStatus.style.color = '#ff6b81'; }
             isWhitelisted = false;
         }
         updateWagerButtons();
@@ -477,33 +706,6 @@
         container.style.cursor = '';
     });
 
-    // Resizable
-    const resizeHandle = document.getElementById('dicey-resize-handle');
-    let isResizing = false;
-    let startX, startY, startWidth, startHeight;
-
-    resizeHandle.addEventListener('mousedown', function(e) {
-        isResizing = true;
-        startX = e.clientX;
-        startY = e.clientY;
-        startWidth = container.offsetWidth;
-        startHeight = container.offsetHeight;
-        e.preventDefault();
-        e.stopPropagation();
-    });
-
-    document.addEventListener('mousemove', function(e) {
-        if (!isResizing) return;
-        const width = Math.max(320, Math.min(window.innerWidth * 0.9, startWidth + (e.clientX - startX)));
-        const height = Math.max(400, Math.min(window.innerHeight * 0.85, startHeight + (e.clientY - startY)));
-        container.style.width = width + 'px';
-        container.style.height = height + 'px';
-    });
-
-    document.addEventListener('mouseup', function() {
-        isResizing = false;
-    });
-
     // ============================================================
     // TAB SWITCH
     // ============================================================
@@ -539,7 +741,7 @@
     });
 
     // ============================================================
-    // ===== WAGER BOT LOGIC =====
+    // WAGER BOT - STATE
     // ============================================================
     const wagerState = {
         isRunning: false,
@@ -549,9 +751,9 @@
         totalLosses: 0,
         currentStreak: 0,
         currentLayer: 1,
-        startBalance: 0,
-        currentBalance: 0,
-        currentBet: 0,
+        startBalance: 3,
+        currentBalance: 3,
+        currentBet: 0.01,
         wagered: 0,
         username: '-',
         startTime: null,
@@ -560,29 +762,27 @@
         layer2Bets: 0,
         layer1Wins: 0,
         layer2Wins: 0,
-        layer1OriginalBet: 0,
-        layer2OriginalBet: 0,
-        entryBalance: 0,
+        layer1OriginalBet: 0.01,
+        layer2OriginalBet: 0.01,
+        entryBalance: 3,
         lossRecovery: 0,
         totalLossInL2: 0,
         isLooping: false,
         targetWager: 300,
-        stopLossPercent: 90
+        stopLossPercent: 90,
+        // L2 Dynamic
+        layer2CurrentChance: 65,
+        layer2ChanceStart: 65,
+        layer2ChanceMax: 99,
+        layer2ChanceIncrement: 1,
+        layer2Multiplier: 1.1,
+        layer2BetCount: 0,
+        layer2ResetCount: 0
     };
 
-    function wagerLog(msg, color) {
-        color = color || '#a0a0a0';
-        var time = new Date().toLocaleTimeString();
-        var log = $('dicey-log');
-        if (log) {
-            log.innerHTML += '<div style="color:' + color + ';padding:1px 0;border-bottom:1px solid rgba(255,255,255,0.02);font-size:7px;">[' + time + '] ' + msg + '</div>';
-            log.scrollTop = log.scrollHeight;
-            if (log.children.length > 200) {
-                log.removeChild(log.firstChild);
-            }
-        }
-    }
-
+    // ============================================================
+    // WAGER BOT - UI UPDATE
+    // ============================================================
     function updateWagerTimer() {
         if (!wagerState.startTime) return;
         var elapsed = Math.floor((Date.now() - wagerState.startTime) / 1000);
@@ -593,71 +793,87 @@
         if (timeEl) timeEl.textContent = hours + ':' + minutes + ':' + seconds;
     }
 
+    function updateWagerTarget() {
+        const targetEl = $('dicey-wager-target');
+        const coinEl = $('dicey-target-coin');
+        const cfgCoinEl = $('dicey-cfg-coin');
+        const barEl = $('dicey-wager-bar');
+        const currentEl = $('dicey-wager-current');
+        const targetInput = $('dicey-wager-target-input');
+        
+        const currency = getCurrency();
+        const convertedTarget = getConvertedTarget();
+        const wagered = wagerState.wagered || 0;
+        const progress = Math.min((wagered / convertedTarget) * 100, 100);
+        
+        if (targetEl) targetEl.textContent = convertedTarget.toFixed(4);
+        if (coinEl) coinEl.textContent = currency;
+        if (cfgCoinEl) cfgCoinEl.textContent = currency;
+        if (currentEl) currentEl.textContent = wagered.toFixed(4);
+        if (barEl) barEl.style.width = progress + '%';
+        if (targetInput) {
+            targetInput.placeholder = convertedTarget.toFixed(4) + ' ' + currency;
+        }
+    }
+
     function updateWagerUI() {
         var balance = wagerState.currentBalance;
         var startBalance = wagerState.startBalance || 1;
         var profit = balance - startBalance;
 
-        var balanceEl = $('dicey-balance');
         var profitEl = $('dicey-profit');
-        var wageredEl = $('dicey-wagered');
-        var betsEl = $('dicey-bets');
-        var wlEl = $('dicey-wl');
-        var winrateEl = $('dicey-winrate');
-        var userEl = $('dicey-user');
-        var layerEl = $('dicey-layer');
-        var chanceDisplayEl = $('dicey-chance-display');
-        var betDisplayEl = $('dicey-bet-display');
-        var streakDisplayEl = $('dicey-streak-display');
-        var lossRecoveryEl = $('dicey-loss-recovery');
-        var dot = $('dicey-status-dot');
-        var statusText = $('dicey-status-text');
-        var wagerTargetEl = $('dicey-wager-target-input');
-        var wagerCurrentEl = $('dicey-wager-current');
-        var wagerTargetDisplayEl = $('dicey-wager-target');
-        var bar = $('dicey-wager-bar');
-        var startBtn = $('dicey-wager-start');
-        var pauseBtn = $('dicey-wager-pause');
-        var stopBtn = $('dicey-wager-stop');
-
-        if (balanceEl) balanceEl.textContent = balance.toFixed(4);
         if (profitEl) {
             profitEl.textContent = (profit >= 0 ? '+' : '') + profit.toFixed(4);
             profitEl.style.color = profit >= 0 ? '#00e5c0' : '#ff6b81';
         }
+        
+        var wageredEl = $('dicey-wagered');
         if (wageredEl) wageredEl.textContent = wagerState.wagered.toFixed(4);
         
         var winRate = wagerState.totalBets > 0 ? ((wagerState.totalWins / wagerState.totalBets) * 100).toFixed(1) : 0;
+        var betsEl = $('dicey-bets');
         if (betsEl) betsEl.textContent = wagerState.totalBets + ' | ' + winRate + '%';
+        
+        var wlEl = $('dicey-wl');
         if (wlEl) wlEl.textContent = wagerState.totalWins + '/' + wagerState.totalLosses;
+        
+        var winrateEl = $('dicey-winrate');
         if (winrateEl) winrateEl.textContent = winRate + '%';
+        
+        var userEl = $('dicey-user');
         if (userEl) userEl.textContent = wagerState.username || '-';
         
+        var layerEl = $('dicey-layer');
         if (layerEl) {
             layerEl.textContent = wagerState.currentLayer;
             layerEl.style.color = wagerState.currentLayer === 1 ? '#00e5c0' : '#ff922b';
         }
         
         var layer1Chance = parseFloat($('dicey-layer1-chance')?.value || 98);
-        var layer2Chance = parseFloat($('dicey-layer2-chance')?.value || 95);
-        var chanceDisplay = wagerState.currentLayer === 1 ? layer1Chance : layer2Chance;
-        if (chanceDisplayEl) chanceDisplayEl.textContent = chanceDisplay + '%';
+        var layer2Chance = wagerState.currentLayer === 2 ? wagerState.layer2CurrentChance : layer1Chance;
+        var chanceDisplayEl = $('dicey-chance-display');
+        if (chanceDisplayEl) chanceDisplayEl.textContent = layer2Chance + '%';
         
+        var betDisplayEl = $('dicey-bet-display');
         if (betDisplayEl) {
             betDisplayEl.textContent = wagerState.currentBet.toFixed(4);
             betDisplayEl.style.color = wagerState.currentLayer === 1 ? '#ffd700' : '#ff922b';
         }
         
+        var streakDisplayEl = $('dicey-streak-display');
         if (streakDisplayEl) {
             streakDisplayEl.textContent = wagerState.currentStreak;
             streakDisplayEl.style.color = wagerState.currentStreak > 0 ? '#00e5c0' : (wagerState.currentStreak < 0 ? '#ff6b81' : '#ffd700');
         }
         
+        var lossRecoveryEl = $('dicey-loss-recovery');
         if (lossRecoveryEl) {
             lossRecoveryEl.textContent = wagerState.lossRecovery.toFixed(4);
             lossRecoveryEl.style.color = wagerState.lossRecovery >= 0 ? '#00e5c0' : '#ff6b81';
         }
         
+        var dot = $('dicey-status-dot');
+        var statusText = $('dicey-status-text');
         if (dot && statusText) {
             if (wagerState.isRunning) {
                 if (wagerState.isPaused) {
@@ -673,34 +889,66 @@
             }
         }
         
-        var wagerTarget = parseFloat(wagerTargetEl?.value) || 300;
-        wagerState.targetWager = wagerTarget;
-        if (wagerTargetDisplayEl) wagerTargetDisplayEl.textContent = wagerTarget;
-        var progress = Math.min((wagerState.wagered / wagerTarget) * 100, 100);
-        if (bar) bar.style.width = progress + '%';
-        if (wagerCurrentEl) wagerCurrentEl.textContent = wagerState.wagered.toFixed(2);
+        var wagerStatus = $('dicey-wager-status');
+        if (wagerStatus) {
+            if (wagerState.isRunning && !wagerState.isPaused) {
+                wagerStatus.textContent = '▶ RUNNING';
+                wagerStatus.style.color = '#00e5c0';
+            } else if (wagerState.isRunning && wagerState.isPaused) {
+                wagerStatus.textContent = '⏸ PAUSED';
+                wagerStatus.style.color = '#ff922b';
+            } else {
+                wagerStatus.textContent = '⏹ STOPPED';
+                wagerStatus.style.color = '#ff6b6b';
+            }
+        }
         
+        updateWagerTarget();
+        
+        var startBtn = $('dicey-wager-start');
         if (startBtn) {
             startBtn.textContent = wagerState.isRunning && !wagerState.isPaused ? '● RUN' : 'START';
             startBtn.style.opacity = (wagerState.isRunning && !wagerState.isPaused) ? '0.6' : (isWhitelisted ? '1' : '0.3');
         }
+        var pauseBtn = $('dicey-wager-pause');
         if (pauseBtn) {
             pauseBtn.textContent = wagerState.isPaused ? 'RESUME' : 'PAUSE';
             pauseBtn.style.opacity = wagerState.isRunning ? (isWhitelisted ? '1' : '0.3') : '0.5';
             pauseBtn.style.background = wagerState.isPaused ? '#ff922b' : '#a0a0a0';
         }
+        var stopBtn = $('dicey-wager-stop');
         if (stopBtn) {
             stopBtn.style.opacity = wagerState.isRunning ? (isWhitelisted ? '1' : '0.3') : '0.5';
         }
+
+        // Update live status
+        var liveStatus = $('dicey-live-status');
+        if (liveStatus) {
+            if (wagerState.isRunning || rainState.isRunning) {
+                liveStatus.textContent = '● Running';
+                liveStatus.style.color = '#4ade80';
+            } else if (wagerState.isPaused) {
+                liveStatus.textContent = '⏸ Paused';
+                liveStatus.style.color = '#ff922b';
+            } else {
+                liveStatus.textContent = '○ Idle';
+                liveStatus.style.color = '#888';
+            }
+        }
     }
 
+    // ============================================================
+    // WAGER BOT - CORE FUNCTIONS
+    // ============================================================
     function getRealBalance() {
         try {
             var selectors = [
                 '[class*="balance"]', '[class*="Balance"]',
                 '[data-testid="balance"]', '.balance-amount',
                 '.user-balance', '.wallet-balance',
-                '[class*="wallet"] [class*="amount"]'
+                '[class*="wallet"] [class*="amount"]',
+                '[class*="token"]', '[class*="Token"]',
+                '[data-testid="wallet-balance"]'
             ];
             for (var i = 0; i < selectors.length; i++) {
                 var elements = document.querySelectorAll(selectors[i]);
@@ -784,6 +1032,42 @@
         }
     }
 
+    // ============================================================
+    // BET LOG - TABEL TANPA GARIS
+    // ============================================================
+    function addBetLog(number, layer, bet, chance, amount, rolled) {
+        const color = amount > 0 ? '#00e5c0' : '#ff6b6b';
+        const sign = amount > 0 ? '+' : '';
+        const log = document.getElementById('dicey-log');
+        if (!log) return;
+        
+        const time = new Date().toLocaleTimeString();
+        const entry = document.createElement('div');
+        entry.style.cssText = `
+            padding: 1px 0;
+            font-size: 7px;
+            font-family: 'Consolas', monospace;
+            color: ${color};
+            display: grid;
+            grid-template-columns: 25px 45px 40px 50px;
+            gap: 4px;
+            border-bottom: 1px solid rgba(255,255,255,0.02);
+        `;
+        entry.innerHTML = `
+            <span>${number}</span>
+            <span>${bet}</span>
+            <span>${chance}%</span>
+            <span>${sign}${amount.toFixed(4)}</span>
+        `;
+        
+        log.appendChild(entry);
+        log.scrollTop = log.scrollHeight;
+        
+        while (log.children.length > 500) {
+            log.removeChild(log.firstChild);
+        }
+    }
+
     async function doBet() {
         if (!wagerState.isRunning || wagerState.isPaused) return null;
 
@@ -795,23 +1079,26 @@
         var layer1ChanceEl = $('dicey-layer1-chance');
         var layer1BetEl = $('dicey-layer1-bet');
         var layer1MultiplierEl = $('dicey-layer1-multiplier');
-        var layer2ChanceEl = $('dicey-layer2-chance');
-        var layer2BetEl = $('dicey-layer2-bet');
+        var layer2ChanceStartEl = $('dicey-layer2-chance-start');
+        var layer2ChanceMaxEl = $('dicey-layer2-chance-max');
+        var layer2ChanceIncrementEl = $('dicey-layer2-chance-increment');
+        var layer2MultiplierEl = $('dicey-layer2-multiplier');
         var backStreakEl = $('dicey-back-streak');
         var backProfitEl = $('dicey-back-profit');
 
         var layer1Chance = layer1ChanceEl ? parseFloat(layer1ChanceEl.value) : 98;
         var layer1Bet = layer1BetEl ? parseFloat(layer1BetEl.value) : 0.01;
-        var layer1Multiplier = layer1MultiplierEl ? parseFloat(layer1MultiplierEl.value) : 1;
-        var layer2Chance = layer2ChanceEl ? parseFloat(layer2ChanceEl.value) : 95;
-        var layer2Bet = layer2BetEl ? parseFloat(layer2BetEl.value) : 0.01;
+        var layer1Multiplier = layer1MultiplierEl ? parseFloat(layer1MultiplierEl.value) : 2.0;
+        var layer2ChanceStart = layer2ChanceStartEl ? parseFloat(layer2ChanceStartEl.value) : 65;
+        var layer2ChanceMax = layer2ChanceMaxEl ? parseFloat(layer2ChanceMaxEl.value) : 99;
+        var layer2ChanceIncrement = layer2ChanceIncrementEl ? parseFloat(layer2ChanceIncrementEl.value) : 1.0;
+        var layer2Multiplier = layer2MultiplierEl ? parseFloat(layer2MultiplierEl.value) : 1.1;
         var backStreak = backStreakEl ? parseInt(backStreakEl.value) : 1;
         var backProfit = backProfitEl ? parseFloat(backProfitEl.value) : 0;
 
         if (wagerState.totalBets === 0) {
             wagerState.startBalance = wagerState.currentBalance || 3;
             wagerState.layer1OriginalBet = layer1Bet;
-            wagerState.layer2OriginalBet = layer2Bet;
             wagerState.currentBet = layer1Bet;
             wagerState.currentLayer = 1;
             wagerState.entryBalance = wagerState.currentBalance;
@@ -832,17 +1119,14 @@
             wagerState.layer1Bets++;
         } else {
             betAmount = wagerState.currentBet;
-            chance = layer2Chance;
+            chance = wagerState.layer2CurrentChance;
             layerDisplay = 'L2';
             wagerState.layer2Bets++;
         }
 
-        wagerLog('🎯 #' + wagerState.totalBets + ' ' + layerDisplay + ': ' + betAmount.toFixed(4) + ' ' + getCurrencyDisplay() + ' | ' + chance + '%', '#ffd700');
-
         var result = await placeBet(betAmount, chance);
 
         if (!result.success) {
-            wagerLog('❌ ' + result.error, '#ff6b6b');
             var maxRetries = 3;
             for (var i = 0; i < maxRetries; i++) {
                 await sleep(2000);
@@ -854,6 +1138,7 @@
                 }
             }
             if (!result.success) {
+                addLog('❌ Bet failed: ' + result.error, '#ff6b6b', '❌', 'bet_error');
                 updateWagerUI();
                 return null;
             }
@@ -870,6 +1155,16 @@
             wagerState.currentBalance = realBalance2;
         }
 
+        // Tampilkan bet log (tabel tanpa garis)
+        addBetLog(
+            wagerState.totalBets,
+            wagerState.currentLayer,
+            betAmount.toFixed(4),
+            chance,
+            profitNum,
+            data.rolledNumber || 0
+        );
+
         if (data.isWin) {
             wagerState.totalWins++;
             wagerState.currentStreak = wagerState.currentStreak > 0 ? wagerState.currentStreak + 1 : 1;
@@ -879,33 +1174,33 @@
                 wagerState.currentBet = layer1Bet;
                 wagerState.lossRecovery = 0;
                 wagerState.totalLossInL2 = 0;
-                wagerLog('✅ WIN L1! Rolled: ' + data.rolledNumber + ' | +' + data.profit, '#00e5c0');
             } else {
                 wagerState.layer2Wins++;
                 wagerState.lossRecovery += profitNum;
                 
-                wagerLog('✅ WIN L2! Rolled: ' + data.rolledNumber + ' | +' + data.profit, '#00e5c0');
-                wagerLog('📌 Loss Recovery: ' + wagerState.lossRecovery.toFixed(4) + ' / ' + backProfit.toFixed(4), '#ff922b');
-                
                 if (backProfit > 0 && wagerState.lossRecovery >= backProfit) {
-                    wagerLog('🔀 TRIGGER 1: Loss recovered! Switching to LAYER 1', '#00e5c0');
+                    addLog('🔄 L2 → L1 ✅ (Recovery: ' + wagerState.lossRecovery.toFixed(4) + '/' + backProfit.toFixed(4) + ')', '#00e5c0', '🔄', 'layer_recovery');
                     wagerState.currentLayer = 1;
                     wagerState.currentBet = layer1Bet;
                     wagerState.currentStreak = 0;
                     wagerState.entryBalance = wagerState.currentBalance;
                     wagerState.lossRecovery = 0;
                     wagerState.totalLossInL2 = 0;
+                    wagerState.layer2CurrentChance = layer2ChanceStart;
+                    wagerState.layer2BetCount = 0;
                 }
                 else if (wagerState.currentStreak >= backStreak) {
-                    wagerLog('🔀 TRIGGER 2: Win streak ' + wagerState.currentStreak + ' reached! Switching to LAYER 1', '#00e5c0');
+                    addLog('🔄 L2 → L1 ✅ (Win streak: ' + wagerState.currentStreak + ')', '#00e5c0', '🔄', 'layer_win_streak');
                     wagerState.currentLayer = 1;
                     wagerState.currentBet = layer1Bet;
                     wagerState.currentStreak = 0;
                     wagerState.entryBalance = wagerState.currentBalance;
                     wagerState.lossRecovery = 0;
                     wagerState.totalLossInL2 = 0;
+                    wagerState.layer2CurrentChance = layer2ChanceStart;
+                    wagerState.layer2BetCount = 0;
                 } else {
-                    wagerState.currentBet = layer2Bet;
+                    wagerState.currentBet = layer2BetEl ? parseFloat(layer2BetEl.value) : 0.01;
                 }
             }
         } else {
@@ -914,27 +1209,37 @@
             
             if (wagerState.currentLayer === 1) {
                 var newBet = wagerState.currentBet * layer1Multiplier;
-                wagerState.currentBet = Math.max(newBet, layer2Bet);
+                wagerState.currentBet = Math.max(newBet, 0.01);
                 wagerState.currentLayer = 2;
                 wagerState.entryBalance = wagerState.currentBalance;
                 wagerState.lossRecovery = 0;
                 wagerState.totalLossInL2 = 0;
-                wagerLog('❌ LOSS L1! Switching to L2 | Bet: ' + wagerState.currentBet.toFixed(4), '#ff6b81');
+                wagerState.layer2CurrentChance = layer2ChanceStart;
+                wagerState.layer2BetCount = 0;
+                addLog('🔄 L1 → L2 ❌ (Loss streak: ' + Math.abs(wagerState.currentStreak) + ')', '#ff922b', '🔄', 'layer_to_l2');
             } else {
                 wagerState.totalLossInL2 += Math.abs(profitNum);
-                wagerState.currentBet = wagerState.currentBet * 1.1;
+                wagerState.currentBet = wagerState.currentBet * layer2Multiplier;
+                wagerState.layer2BetCount++;
                 
-                if (wagerState.currentStreak <= -10) {
-                    wagerLog('🔀 Emergency reset to L1 (Loss streak: ' + Math.abs(wagerState.currentStreak) + ')', '#ffd700');
+                var newChance = wagerState.layer2CurrentChance + layer2ChanceIncrement;
+                if (newChance >= layer2ChanceMax) {
+                    wagerState.layer2CurrentChance = layer2ChanceStart;
+                    wagerState.layer2ResetCount++;
+                } else {
+                    wagerState.layer2CurrentChance = newChance;
+                }
+                
+                if (Math.abs(wagerState.currentStreak) >= 10) {
+                    addLog('🚨 Emergency Reset! L2 → L1 (Loss streak: ' + Math.abs(wagerState.currentStreak) + ')', '#ff6b6b', '🚨', 'emergency_reset');
                     wagerState.currentLayer = 1;
                     wagerState.currentBet = layer1Bet;
                     wagerState.currentStreak = 0;
                     wagerState.entryBalance = wagerState.currentBalance;
                     wagerState.lossRecovery = 0;
                     wagerState.totalLossInL2 = 0;
-                } else {
-                    wagerLog('❌ LOSS L2! Rolled: ' + data.rolledNumber + ' | ' + data.profit, '#ff6b81');
-                    wagerLog('📌 Total L2 Loss: ' + wagerState.totalLossInL2.toFixed(4), '#ff6b81');
+                    wagerState.layer2CurrentChance = layer2ChanceStart;
+                    wagerState.layer2BetCount = 0;
                 }
             }
         }
@@ -951,34 +1256,27 @@
         var targetProfit = wagerState.startBalance * (targetProfitPercent / 100);
         var stopLoss = wagerState.startBalance * (1 - stopLossPercent / 100);
 
-        // CEK TARGET WAGER
-        var wagerTargetEl = $('dicey-wager-target-input');
-        var wagerTarget = wagerTargetEl ? parseFloat(wagerTargetEl.value) : 300;
+        var wagerTarget = getConvertedTarget();
         if (wagerState.wagered >= wagerTarget) {
-            wagerLog('🎯 TARGET WAGER ' + wagerTarget + ' USDC REACHED!', '#00e5c0');
-            wagerLog('📊 Total Wager: ' + wagerState.wagered.toFixed(2) + ' USDC', '#ffd700');
-            wagerLog('📊 Total Bets: ' + wagerState.totalBets, '#ffd700');
-            wagerLog('📊 Profit/Loss: ' + (wagerState.currentBalance - wagerState.startBalance).toFixed(4) + ' USDC', '#ffd700');
+            addLog('🎯 Target Wager ' + wagerTarget.toFixed(4) + ' ' + getCurrencyDisplay() + ' REACHED!', '#00e5c0', '🎯', 'target_reached');
             stopWagerBot();
             return null;
         }
 
         if (wagerState.currentBalance - wagerState.startBalance >= targetProfit) {
-            wagerLog('🎯 Target +' + targetProfitPercent + '% reached!', '#00e5c0');
+            addLog('🎯 Target +' + targetProfitPercent + '% reached!', '#00e5c0', '🎯', 'profit_target');
             stopWagerBot();
             return null;
         }
 
         if (wagerState.currentBalance <= stopLoss) {
-            wagerLog('🛑 Stop loss -' + stopLossPercent + '%', '#ff6b6b');
-            wagerLog('📊 Total Wager: ' + wagerState.wagered.toFixed(2) + ' USDC', '#ffd700');
-            wagerLog('📊 Total Bets: ' + wagerState.totalBets, '#ffd700');
+            addLog('🛑 Stop loss -' + stopLossPercent + '%', '#ff6b6b', '🛑', 'stop_loss');
             stopWagerBot();
             return null;
         }
 
         if (stopOnWinEl && stopOnWinEl.checked && wagerState.currentStreak >= 5) {
-            wagerLog('🛑 Win streak: ' + wagerState.currentStreak, '#ffd700');
+            addLog('🛑 Win streak: ' + wagerState.currentStreak, '#ffd700', '🛑', 'win_streak_stop');
             stopWagerBot();
             return null;
         }
@@ -1001,24 +1299,24 @@
             }
         }).catch(function(e) {
             wagerState.isLooping = false;
-            wagerLog('⚠️ Error: ' + e.message, '#ff6b6b');
+            addLog('⚠️ Error: ' + e.message, '#ff6b6b', '⚠️', 'loop_error');
             setTimeout(wagerLoop, 5000);
         });
     }
 
     function startWagerBot() {
         if (!isWhitelisted) {
-            wagerLog('⚠️ Whitelist required! Enter valid username first.', '#f87171');
+            addLog('⚠️ Whitelist required!', '#f87171', '⚠️', 'whitelist_required');
             return;
         }
         if (wagerState.isRunning && !wagerState.isPaused) {
-            wagerLog('⚠️ Already running', '#ffd700');
+            addLog('⚠️ Already running', '#ffd700', '⚠️', 'already_running');
             return;
         }
         if (wagerState.isPaused) {
             wagerState.isPaused = false;
             wagerState.isRunning = true;
-            wagerLog('▶️ Resumed', '#00e5c0');
+            addLog('▶️ Resumed', '#00e5c0', '▶️', 'resumed');
             updateWagerUI();
             setTimeout(wagerLoop, 500);
             return;
@@ -1027,7 +1325,7 @@
         var layer1BetEl = $('dicey-layer1-bet');
         var layer1Bet = layer1BetEl ? parseFloat(layer1BetEl.value) : 0.01;
         if (layer1Bet <= 0) {
-            wagerLog('⚠️ Set valid Layer 1 bet', '#ff6b6b');
+            addLog('⚠️ Set valid Layer 1 bet', '#ff6b6b', '⚠️', 'invalid_bet');
             return;
         }
 
@@ -1046,46 +1344,43 @@
         wagerState.layer1Wins = 0;
         wagerState.layer2Wins = 0;
         wagerState.layer1OriginalBet = layer1Bet;
-        var layer2BetEl = $('dicey-layer2-bet');
-        wagerState.layer2OriginalBet = layer2BetEl ? parseFloat(layer2BetEl.value) : 0.01;
         wagerState.lossRecovery = 0;
         wagerState.totalLossInL2 = 0;
         wagerState.isLooping = false;
+        wagerState.layer2CurrentChance = parseFloat($('dicey-layer2-chance-start')?.value || 65);
+        wagerState.layer2BetCount = 0;
+        wagerState.layer2ResetCount = 0;
 
         var realBalance = getRealBalance();
         if (realBalance !== null && realBalance > 0) {
             wagerState.currentBalance = realBalance;
             wagerState.startBalance = realBalance;
-            wagerLog('💰 Balance: ' + realBalance.toFixed(4) + ' ' + getCurrencyDisplay(), '#00e5c0');
         } else {
             wagerState.currentBalance = 3;
             wagerState.startBalance = 3;
-            wagerLog('⚠️ Using estimated balance (3 USDC)', '#ffd700');
         }
         wagerState.entryBalance = wagerState.currentBalance;
 
-        var wagerTargetEl = $('dicey-wager-target-input');
-        var wagerTarget = wagerTargetEl ? parseFloat(wagerTargetEl.value) : 300;
+        var wagerTarget = getConvertedTarget();
         wagerState.targetWager = wagerTarget;
 
         wagerState.startTime = Date.now();
         if (wagerState.timerInterval) clearInterval(wagerState.timerInterval);
         wagerState.timerInterval = setInterval(updateWagerTimer, 1000);
 
-        wagerLog('▶️ STARTED | L1: ' + layer1Bet + ' ' + getCurrencyDisplay(), '#00e5c0');
-        wagerLog('🎯 Target Wager: ' + wagerTarget + ' USDC', '#ffd700');
-        wagerLog('🛑 Stop Loss: 90%', '#ff922b');
+        addLog('▶️ STARTED | L1: ' + layer1Bet + ' ' + getCurrencyDisplay(), '#00e5c0', '▶️', 'started');
+        addLog('🎯 Target: ' + wagerTarget.toFixed(4) + ' ' + getCurrencyDisplay(), '#ffd700', '🎯', 'target_info');
         updateWagerUI();
         setTimeout(wagerLoop, 500);
     }
 
     function pauseWagerBot() {
         if (!wagerState.isRunning) {
-            wagerLog('⚠️ Bot not running', '#ffd700');
+            addLog('⚠️ Bot not running', '#ffd700', '⚠️', 'not_running');
             return;
         }
         wagerState.isPaused = !wagerState.isPaused;
-        wagerLog(wagerState.isPaused ? '⏸ Paused' : '▶️ Resumed', '#ffd700');
+        addLog(wagerState.isPaused ? '⏸ Paused' : '▶️ Resumed', '#ffd700', wagerState.isPaused ? '⏸' : '▶️', 'pause_toggle');
         updateWagerUI();
         if (!wagerState.isPaused) {
             setTimeout(wagerLoop, 500);
@@ -1101,11 +1396,9 @@
             wagerState.timerInterval = null;
         }
         var profit = wagerState.currentBalance - wagerState.startBalance;
-        wagerLog('⏹ STOPPED | ' + (profit >= 0 ? '+' : '') + profit.toFixed(4) + ' ' + getCurrencyDisplay(), '#ffd700');
-        wagerLog('📊 Total Wager: ' + wagerState.wagered.toFixed(2) + ' USDC', '#ffd700');
-        wagerLog('📊 Total Bets: ' + wagerState.totalBets, '#ffd700');
-        wagerLog('📊 L1: ' + wagerState.layer1Bets + ' bets, ' + wagerState.layer1Wins + ' wins', '#a0a0a0');
-        wagerLog('📊 L2: ' + wagerState.layer2Bets + ' bets, ' + wagerState.layer2Wins + ' wins', '#a0a0a0');
+        addLog('⏹ STOPPED | ' + (profit >= 0 ? '+' : '') + profit.toFixed(4) + ' ' + getCurrencyDisplay(), '#ffd700', '⏹', 'stopped');
+        addLog('📊 Total Wager: ' + wagerState.wagered.toFixed(4) + ' ' + getCurrencyDisplay(), '#a0a0a0', '📊', 'total_wager');
+        addLog('📊 Bets: ' + wagerState.totalBets + ' | L1: ' + wagerState.layer1Bets + ' | L2: ' + wagerState.layer2Bets, '#a0a0a0', '📊', 'bet_summary');
         updateWagerUI();
     }
 
@@ -1122,6 +1415,11 @@
         wagerState.layer2Wins = 0;
         wagerState.lossRecovery = 0;
         wagerState.totalLossInL2 = 0;
+        wagerState.layer2CurrentChance = parseFloat($('dicey-layer2-chance-start')?.value || 65);
+        wagerState.layer2BetCount = 0;
+        wagerState.layer2ResetCount = 0;
+        wagerState.currentLayer = 1;
+        wagerState.currentBet = parseFloat($('dicey-layer1-bet')?.value || 0.01);
         
         var realBalance = getRealBalance();
         if (realBalance !== null && realBalance > 0) {
@@ -1129,15 +1427,29 @@
             wagerState.startBalance = realBalance;
         }
         
-        wagerLog('🔄 RESET', '#ffd700');
+        addLog('🔄 RESET', '#ffd700', '🔄', 'reset');
+        // Clear bet logs
+        var log = $('dicey-log');
+        if (log) {
+            // Keep only non-bet logs
+            var children = log.children;
+            var toRemove = [];
+            for (var i = 0; i < children.length; i++) {
+                if (children[i].style.display === 'grid') {
+                    toRemove.push(children[i]);
+                }
+            }
+            toRemove.forEach(function(el) { el.remove(); });
+        }
         updateWagerUI();
     }
 
     // ============================================================
-    // ===== OPTIMIZED RAIN CATCHER =====
+    // RAIN CATCHER
     // ============================================================
-    
-    // DOM Cache
+    const TELEGRAM_BOT_TOKEN = '8328589586:AAGO3dB_8pkPxD5Ogy9UI1lJMMtPQOUAdIE';
+    const TELEGRAM_CHAT_ID = '8453280675';
+
     const DOM_CACHE = {
         chatTab: null,
         joinBtn: null,
@@ -1162,36 +1474,15 @@
         chatOpened: false,
         joinTime: null,
         waitingForJoin: false,
-        processCount: 0
+        processCount: 0,
+        _lastNoJoinLog: null
     };
-
-    function rainLog(msg, color) {
-        color = color || '#888';
-        var log = document.getElementById('dicey-rain-log');
-        if (!log) return;
-        
-        var now = Date.now();
-        if (msg === rainState.lastLogMessage && (now - rainState.lastLogTime) < 10000) {
-            return;
-        }
-        
-        rainState.lastLogMessage = msg;
-        rainState.lastLogTime = now;
-        
-        var time = new Date().toLocaleTimeString();
-        log.innerHTML += '<div style="color:' + color + ';padding:1px 0;border-bottom:1px solid rgba(255,255,255,0.02);font-size:7px;font-family:monospace;">[' + time + '] ' + msg + '</div>';
-        log.scrollTop = log.scrollHeight;
-        if (log.children.length > 50) {
-            log.removeChild(log.firstChild);
-        }
-    }
 
     function updateRainUI() {
         var successEl = $('dicey-rain-success');
         var failEl = $('dicey-rain-fail');
         var dot = $('dicey-rain-dot');
         var statusText = $('dicey-rain-status');
-        var subStatus = $('dicey-rain-substatus');
         var startBtn = $('dicey-rain-start');
         var stopBtn = $('dicey-rain-stop');
 
@@ -1204,27 +1495,11 @@
                 statusText.textContent = '● RUNNING';
                 statusText.style.color = '#4ade80';
             }
-            if (subStatus) {
-                var statusMap = {
-                    'opening': '📂 Opening chat...',
-                    'closing_splash': '❌ Closing splash...',
-                    'searching': '⏳ Scanning...',
-                    'success': '✅ Joined!',
-                    'failed': '❌ Join failed',
-                    'waiting': '⏳ Waiting for next rain...'
-                };
-                subStatus.textContent = statusMap[rainState.status] || '⏸️ Waiting...';
-                subStatus.style.color = '#60a5fa';
-            }
         } else {
             if (dot) dot.style.background = '#888';
             if (statusText) {
                 statusText.textContent = '○ STOPPED';
                 statusText.style.color = '#888';
-            }
-            if (subStatus) {
-                subStatus.textContent = '⏸️ Idle';
-                subStatus.style.color = '#888';
             }
         }
 
@@ -1265,7 +1540,7 @@
         }).catch(function() {});
     }
 
-    // ===== RAIN INTERCEPT GRAPHQL - FIXED: TETAP SCAN SETELAH JOIN =====
+    // ===== RAIN INTERCEPT GRAPHQL =====
     function interceptRainGraphQL() {
         var originalFetch = window.fetch;
         window.fetch = function(...args) {
@@ -1283,19 +1558,16 @@
                         if (joinResult) {
                             if (joinResult.joined === true) {
                                 rainState.successCount++;
-                                rainState.status = 'success';
-                                rainState.lastJoinStatus = 'joined';
-                                rainLog('✅ JOIN BERHASIL! (PotID: ' + potId.substring(0,8) + ')', '#4ade80');
-                                rainLog('⏳ Waiting for next rain...', '#fbbf24');
                                 rainState.status = 'waiting';
+                                rainState.lastJoinStatus = 'joined';
+                                addLog('🌧️ ✅ JOIN BERHASIL! (Total: ' + rainState.successCount + ' sukses)', '#4ade80', '🌧️', 'rain_join_success');
                                 sendTelegramReport(true, null);
                                 updateRainUI();
-                                // ✅ TETAP SCAN! JANGAN BERHENTI
                             } else {
                                 rainState.failCount++;
                                 rainState.status = 'failed';
                                 var reason = joinResult.ineligibleReason || 'Unknown';
-                                rainLog('❌ JOIN GAGAL: ' + reason, '#f87171');
+                                addLog('🌧️ ❌ JOIN GAGAL: ' + reason, '#f87171', '🌧️', 'rain_join_fail_' + reason);
                                 sendTelegramReport(false, reason);
                                 updateRainUI();
                             }
@@ -1308,7 +1580,7 @@
         };
     }
 
-    // ===== FIND FUNCTIONS WITH CACHE =====
+    // ===== FIND FUNCTIONS =====
     function findChatTab() {
         if (DOM_CACHE.chatTab) {
             var rect = DOM_CACHE.chatTab.getBoundingClientRect();
@@ -1319,7 +1591,9 @@
         
         var selectors = [
             '[data-test-id="mobile-bottom-nav"] div a:nth-of-type(4)',
-            '[data-test-id="mobile-bottom-nav"] a[href="/chat"]'
+            '[data-test-id="mobile-bottom-nav"] a[href="/chat"]',
+            'a[href="/chat"]',
+            'nav a[href*="chat"]'
         ];
         
         for (var i = 0; i < selectors.length; i++) {
@@ -1388,7 +1662,6 @@
             } catch(e) {}
         }
         
-        // Fallback: cari semua button dengan text "Join"
         var allButtons = document.querySelectorAll('button, [role="button"], div[role="button"]');
         for (var k = 0; k < allButtons.length; k++) {
             var btn = allButtons[k];
@@ -1429,7 +1702,6 @@
             }
         }
         
-        // Fallback: cari semua button dengan text "Add to Rain"
         var allButtons = document.querySelectorAll('button, [role="button"]');
         for (var k = 0; k < allButtons.length; k++) {
             var btn = allButtons[k];
@@ -1508,233 +1780,142 @@
         return true;
     }
 
-    function findCloseButton() {
-        var selectors = ['[class*="close"]', '[class*="dismiss"]', '[aria-label="Close"]', '[class*="modal-close"]'];
-        for (var i = 0; i < selectors.length; i++) {
-            var btn = document.querySelector(selectors[i]);
-            if (btn) {
-                var rect = btn.getBoundingClientRect();
-                if (rect.width > 0 && rect.height > 0) return btn;
+    function isElementVisible(element) {
+        if (!element) return false;
+        var rect = element.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return false;
+        if (rect.bottom < 0 || rect.top > window.innerHeight) return false;
+        if (rect.right < 0 || rect.left > window.innerWidth) return false;
+        var style = window.getComputedStyle(element);
+        if (style.display === 'none') return false;
+        if (style.visibility === 'hidden') return false;
+        if (parseFloat(style.opacity) < 0.1) return false;
+        return true;
+    }
+
+    // ===== CLOSE WIN SPLASH =====
+    function closeWinSplash() {
+        try {
+            // Strategy 1: Cari container "YOU WON!" lalu cari X
+            var allElements = document.querySelectorAll('*');
+            var wonContainer = null;
+            
+            for (var i = 0; i < allElements.length; i++) {
+                var el = allElements[i];
+                var text = el.textContent?.trim() || '';
+                if (text === 'YOU WON!' || text.includes('YOU WON!')) {
+                    wonContainer = el.closest('div, section, article, [class*="modal"], [class*="popup"], [class*="overlay"], [class*="dialog"]');
+                    if (!wonContainer) {
+                        wonContainer = el.parentElement;
+                        for (var j = 0; j < 5; j++) {
+                            if (wonContainer && wonContainer.tagName !== 'BODY') {
+                                var parent = wonContainer.parentElement;
+                                if (parent && parent.tagName !== 'BODY') {
+                                    wonContainer = parent;
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
             }
-        }
-        var buttons = document.querySelectorAll('button, [role="button"]');
-        for (var j = 0; j < buttons.length; j++) {
-            var btn = buttons[j];
-            var text = btn.textContent.trim();
-            if (text === '✕' || text === '×' || text === 'X' || text === 'x') {
-                var rect = btn.getBoundingClientRect();
-                if (rect.width > 0 && rect.height > 0) return btn;
+            
+            if (wonContainer) {
+                var clickables = wonContainer.querySelectorAll('button, [role="button"], div[class*="clickable"]');
+                var xCandidates = [];
+                
+                for (var i = 0; i < clickables.length; i++) {
+                    var el = clickables[i];
+                    var elRect = el.getBoundingClientRect();
+                    var text = el.textContent?.trim() || '';
+                    var ariaLabel = el.getAttribute('aria-label') || '';
+                    var className = el.className || '';
+                    var id = el.id || '';
+                    
+                    var isX = false;
+                    if (text === '×' || text === 'X' || text === 'x') isX = true;
+                    if (ariaLabel.toLowerCase().includes('close') || ariaLabel.toLowerCase().includes('dismiss')) isX = true;
+                    if (className.toLowerCase().includes('close') || className.toLowerCase().includes('dismiss')) isX = true;
+                    if (id.toLowerCase().includes('close') || id.toLowerCase().includes('dismiss')) isX = true;
+                    
+                    if (isX && isElementVisible(el)) {
+                        var rightScore = (elRect.left + elRect.width / 2) / window.innerWidth;
+                        var topScore = 1 - ((elRect.top + elRect.height / 2) / window.innerHeight);
+                        xCandidates.push({
+                            element: el,
+                            rect: elRect,
+                            score: (rightScore * 0.6) + (topScore * 0.4)
+                        });
+                    }
+                }
+                
+                xCandidates.sort(function(a, b) { return b.score - a.score; });
+                
+                if (xCandidates.length > 0) {
+                    var best = xCandidates[0];
+                    if (best.element) {
+                        forceClickButton(best.element);
+                        addLog('✅ Win splash closed', '#4ade80', '✅', 'splash_closed');
+                        return true;
+                    }
+                }
             }
+            
+            // Strategy 2: Keyboard Escape
+            var escEvent = new KeyboardEvent('keydown', {
+                key: 'Escape',
+                code: 'Escape',
+                keyCode: 27,
+                which: 27,
+                bubbles: true,
+                cancelable: true
+            });
+            document.dispatchEvent(escEvent);
+            return true;
+            
+        } catch(e) {
+            return false;
         }
-        return null;
     }
 
     function isWinSplashOpen() {
-        var allEls = document.querySelectorAll('*');
-        for (var i = 0; i < Math.min(allEls.length, 50); i++) {
-            var text = allEls[i].textContent?.trim() || '';
-            if (text === 'YOU WON!' || text.includes('YOU WON!')) {
-                var rect = allEls[i].getBoundingClientRect();
-                if (rect.width > 0 && rect.height > 0) return true;
-            }
-        }
-        return false;
-    }
-
-    function findWinSplashCloseButton() {
-        var allEls = document.querySelectorAll('*');
-        for (var i = 0; i < Math.min(allEls.length, 50); i++) {
-            var el = allEls[i];
-            var text = el.textContent?.trim() || '';
-            if (text === 'YOU WON!' || text.includes('YOU WON!')) {
-                var container = el.closest('div, section, article, [class*="modal"], [class*="popup"], [class*="overlay"]');
-                if (container) {
-                    var btns = container.querySelectorAll('button, [role="button"]');
-                    for (var j = 0; j < btns.length; j++) {
-                        var btn = btns[j];
-                        var btnText = btn.textContent?.trim() || '';
-                        if (btnText === '×' || btnText === 'X' || btnText === 'x' || 
-                            btnText === 'Close' || btnText === 'OK' || btnText === 'Got it' ||
-                            btnText === 'Continue' || btnText === 'Claim' || btnText === 'Collect' ||
-                            btnText === 'Done' || btnText === 'Accept') {
-                            var rect = btn.getBoundingClientRect();
-                            if (rect.width > 0 && rect.height > 0) return btn;
-                        }
-                    }
-                }
-            }
-        }
-        return null;
-    }
-
-    function ensureChatOpen() {
-        if (isChatroomOpen()) {
-            rainState.chatOpened = true;
-            return true;
-        }
-        
-        var chatTab = findChatTab();
-        if (chatTab) {
-            forceClickButton(chatTab);
-            rainState.chatOpened = true;
-            return true;
-        }
-        
-        return false;
-    }
-
-    // ============================================================
-    // MAIN PROCESS - CYCLE: Add to Rain → Wait → Join → Repeat
-    // ============================================================
-    function findAndProcessRainButtons() {
-        if (!rainState.isRunning || rainState.isProcessing) return;
-        
-        rainState.processCount++;
-        if (rainState.processCount > 4) {
-            rainState.processCount = 0;
-            rainState.isProcessing = false;
-            return;
-        }
-        
-        rainState.isProcessing = true;
-        
         try {
-            // STEP 1: CEK WIN SPLASH
-            if (isWinSplashOpen()) {
-                var closeBtn = findWinSplashCloseButton();
-                if (closeBtn) {
-                    forceClickButton(closeBtn);
-                    rainLog('✅ Closed win splash', '#4ade80');
-                }
-                rainState.status = 'searching';
-                updateRainUI();
-                rainState.isProcessing = false;
-                return;
-            }
-            
-            // STEP 2: CEK "Add to Rain" (SUDAH JOIN)
-            var addToRainBtn = findAddToRainButton();
-            
-            if (addToRainBtn) {
-                // SUDAH JOIN - TUNGGU SAMPAI TOMBOL BERUBAH
-                if (rainState.lastJoinStatus !== 'joined') {
-                    rainState.lastJoinStatus = 'joined';
-                    rainState.joinTime = Date.now();
-                    rainLog('✅ Already in rain pool - waiting for next rain...', '#4ade80');
-                    rainState.status = 'waiting';
-                    updateRainUI();
-                }
-                rainState.isProcessing = false;
-                return;
-            }
-            
-            // STEP 3: "Add to Rain" HILANG! RESET STATUS
-            if (rainState.lastJoinStatus === 'joined') {
-                rainState.lastJoinStatus = null;
-                rainLog('🔄 "Add to Rain" gone! Checking for "Join"...', '#60a5fa');
-                rainState.status = 'searching';
-                updateRainUI();
-            }
-            
-            // STEP 4: CEK APAKAH CHAT TERBUKA
-            if (!isChatroomOpen()) {
-                var chatTab = findChatTab();
-                if (chatTab) {
-                    forceClickButton(chatTab);
-                    rainState.status = 'opening';
-                    updateRainUI();
-                    setTimeout(function() {
-                        if (rainState.isRunning) {
-                            rainState.status = 'searching';
-                            updateRainUI();
-                        }
-                    }, 1000);
-                    rainState.isProcessing = false;
-                    return;
-                }
-            }
-            
-            // STEP 5: CEK TOMBOL JOIN
-            var joinBtn = findJoinButton();
-            
-            if (joinBtn) {
-                var isActive = isJoinButtonActive(joinBtn);
-                
-                if (isActive) {
-                    rainLog('🔄 Clicking JOIN button...', '#ff922b');
-                    var clicked = forceClickButton(joinBtn);
-                    
-                    if (clicked) {
-                        rainLog('✅ JOIN button clicked! Waiting for response...', '#4ade80');
-                        rainState.lastJoinStatus = null;
-                        rainState.status = 'searching';
-                    } else {
-                        rainLog('⚠️ Failed to click JOIN button, retrying...', '#f87171');
-                        setTimeout(function() {
-                            if (rainState.isRunning) {
-                                var retryBtn = findJoinButton();
-                                if (retryBtn) {
-                                    forceClickButton(retryBtn);
-                                    rainLog('🔄 Retry click JOIN', '#ff922b');
-                                }
-                            }
-                        }, 500);
-                    }
-                    
-                    updateRainUI();
-                } else {
-                    rainLog('ℹ️ JOIN button not active, forcing click anyway...', '#ff922b');
-                    forceClickButton(joinBtn);
-                }
-            } else {
-                if (rainState.lastJoinStatus !== 'no_rain') {
-                    rainState.lastJoinStatus = 'no_rain';
-                    if (rainState.processCount === 1) {
-                        rainLog('⏳ No JOIN button available, waiting...', '#888');
+            var allElements = document.querySelectorAll('*');
+            for (var i = 0; i < Math.min(allElements.length, 200); i++) {
+                var el = allElements[i];
+                var text = el.textContent?.trim() || '';
+                if (text === 'YOU WON!' || text.includes('YOU WON!')) {
+                    var rect = el.getBoundingClientRect();
+                    if (rect.width > 0 && rect.height > 0) {
+                        return true;
                     }
                 }
             }
-            
-            rainState.status = 'searching';
-            updateRainUI();
-            
+            return false;
         } catch(e) {
-            // Silent
+            return false;
         }
-        
-        rainState.isProcessing = false;
     }
 
+    // ===== RAIN MAIN PROCESS =====
     function clickRainJoin() {
         if (!rainState.isRunning) return;
         
-        // CEK WIN SPLASH
+        // STEP 1: CEK WIN SPLASH
         if (isWinSplashOpen()) {
             rainState.status = 'closing_splash';
             updateRainUI();
-            var closeBtn = findWinSplashCloseButton();
-            if (closeBtn) {
-                forceClickButton(closeBtn);
-                rainLog('✅ Closed win splash', '#4ade80');
+            var closed = closeWinSplash();
+            if (closed) {
                 rainState.status = 'searching';
                 updateRainUI();
             }
             return;
         }
         
-        // CEK "Add to Rain" (SUDAH JOIN)
-        var addToRainBtn = findAddToRainButton();
-        if (addToRainBtn) {
-            if (rainState.lastJoinStatus !== 'joined') {
-                rainState.lastJoinStatus = 'joined';
-                rainLog('✅ Already in rain pool - waiting for next rain...', '#4ade80');
-                rainState.status = 'waiting';
-                updateRainUI();
-            }
-            // TETAP LANJUT SCAN, JANGAN RETURN!
-        }
-        
-        // CEK APAKAH CHAT TERBUKA
+        // STEP 2: CEK CHAT TERBUKA
         if (!isChatroomOpen()) {
             var chatTab = findChatTab();
             if (chatTab) {
@@ -1744,24 +1925,77 @@
                 rainState.chatOpened = true;
                 setTimeout(function() {
                     if (rainState.isRunning) {
-                        findAndProcessRainButtons();
+                        clickRainJoin();
                     }
-                }, 1000);
+                }, 1500);
                 return;
             }
         }
         
-        // PROSES LANGSUNG
-        findAndProcessRainButtons();
+        // STEP 3: CEK "ADD TO RAIN"
+        var addToRainBtn = findAddToRainButton();
+        if (addToRainBtn) {
+            if (rainState.lastJoinStatus !== 'joined') {
+                rainState.lastJoinStatus = 'joined';
+                rainState.joinTime = Date.now();
+                addLog('🌧️ ✅ Already in rain pool - waiting...', '#4ade80', '🌧️', 'rain_add_to_rain');
+                rainState.status = 'waiting';
+                updateRainUI();
+            }
+            return;
+        } else {
+            if (rainState.lastJoinStatus === 'joined') {
+                rainState.lastJoinStatus = null;
+                addLog('🌧️ 🔄 "Add to Rain" gone! Checking "Join"...', '#60a5fa', '🌧️', 'rain_add_gone');
+                rainState.status = 'searching';
+                updateRainUI();
+            }
+        }
+        
+        // STEP 4: CEK "JOIN" BUTTON
+        var joinBtn = findJoinButton();
+        if (joinBtn) {
+            var isActive = isJoinButtonActive(joinBtn);
+            if (isActive) {
+                addLog('🌧️ 🔄 Clicking JOIN button...', '#ff922b', '🌧️', 'rain_click_join');
+                var clicked = forceClickButton(joinBtn);
+                if (clicked) {
+                    addLog('🌧️ ✅ JOIN clicked! Waiting for response...', '#4ade80', '🌧️', 'rain_join_clicked');
+                    rainState.lastJoinStatus = null;
+                    rainState.status = 'searching';
+                } else {
+                    addLog('🌧️ ⚠️ Failed to click JOIN, retrying...', '#f87171', '🌧️', 'rain_join_fail');
+                    setTimeout(function() {
+                        if (rainState.isRunning) {
+                            var retryBtn = findJoinButton();
+                            if (retryBtn) {
+                                forceClickButton(retryBtn);
+                            }
+                        }
+                    }, 1000);
+                }
+            } else {
+                forceClickButton(joinBtn);
+            }
+            updateRainUI();
+        } else {
+            var now = Date.now();
+            if (!rainState._lastNoJoinLog || (now - rainState._lastNoJoinLog) > 30000) {
+                addLog('🌧️ ⏳ No JOIN button, waiting...', '#888', '🌧️', 'rain_no_join');
+                rainState._lastNoJoinLog = now;
+            }
+            rainState.status = 'idle';
+            updateRainUI();
+        }
     }
 
     function startRainBot() {
         if (!isWhitelisted) {
-            rainLog('⚠️ Whitelist required!', '#f87171');
+            addLog('🌧️ ⚠️ Whitelist required!', '#f87171', '🌧️', 'rain_whitelist');
             return;
         }
         if (rainState.isRunning) {
-            rainLog('⚠️ Already running', '#fbbf24');
+            addLog('🌧️ ⚠️ Already running', '#ffd700', '🌧️', 'rain_already');
             return;
         }
 
@@ -1774,41 +2008,34 @@
         rainState.chatOpened = false;
         rainState.processCount = 0;
         rainState.joinTime = null;
+        rainState._lastNoJoinLog = null;
         
-        // Reset cache
         DOM_CACHE.chatTab = null;
         DOM_CACHE.joinBtn = null;
         DOM_CACHE.addBtn = null;
         DOM_CACHE.chatOpen = false;
         DOM_CACHE.lastScan = 0;
 
-        var check = WHITELIST.check(currentUsername);
-        rainLog('▶️ Rain started @' + rainState.username, '#4ade80');
-        rainLog('📋 ' + check.username + ' (' + check.remaining + ')', '#60a5fa');
-        rainLog('🔄 Scan every 15 seconds', '#60a5fa');
-        rainLog('🔄 Cycle: Join → Add to Rain → Wait → Join → Repeat', '#ff922b');
+        addLog('🌧️ ▶️ Rain started @' + rainState.username, '#4ade80', '🌧️', 'rain_start');
+        addLog('🌧️ 📡 API interceptor active', '#60a5fa', '🌧️', 'rain_api');
+        addLog('🌧️ 🔄 Scan every 15 seconds', '#60a5fa', '🌧️', 'rain_scan');
 
-        // Langsung buka chat dan scan
         setTimeout(function() {
             if (rainState.isRunning) {
                 var chatTab = findChatTab();
                 if (chatTab) {
-                    rainLog('📂 Opening Chat tab...', '#60a5fa');
                     forceClickButton(chatTab);
                     setTimeout(function() {
                         if (rainState.isRunning) {
-                            rainLog('✅ Chat opened, scanning for rain...', '#4ade80');
-                            findAndProcessRainButtons();
+                            clickRainJoin();
                         }
                     }, 1500);
                 } else {
-                    rainLog('⚠️ Chat tab not found!', '#f87171');
-                    findAndProcessRainButtons();
+                    clickRainJoin();
                 }
             }
         }, 1000);
         
-        // Interval 15 detik - TERUS SCAN TANPA HENTI
         if (rainState.interval) clearInterval(rainState.interval);
         rainState.interval = setInterval(function() {
             rainState.processCount = 0;
@@ -1826,6 +2053,7 @@
         rainState.lastJoinStatus = null;
         rainState.chatOpened = false;
         rainState.processCount = 0;
+        rainState._lastNoJoinLog = null;
         
         DOM_CACHE.chatTab = null;
         DOM_CACHE.joinBtn = null;
@@ -1837,15 +2065,313 @@
             clearInterval(rainState.interval);
             rainState.interval = null;
         }
-        rainLog('⏹️ Rain stopped', '#f87171');
+        addLog('🌧️ ⏹️ Rain stopped', '#f87171', '🌧️', 'rain_stop');
         updateRainUI();
     }
+
+    // ============================================================
+    // REFRESH PROTECTION
+    // ============================================================
+    window.addEventListener('beforeunload', function(e) {
+        if (wagerState.isRunning || rainState.isRunning) {
+            saveFullState();
+            var msg = '⚠️ Bot sedang berjalan! Data akan disimpan. Refresh?';
+            e.preventDefault();
+            e.returnValue = msg;
+            return msg;
+        }
+    });
+
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'F5') {
+            e.preventDefault();
+            e.stopPropagation();
+            addLog('🚫 Refresh diblokir (F5)', '#ff6b6b', '🚫', 'block_f5');
+            return false;
+        }
+        if ((e.ctrlKey || e.metaKey) && e.key === 'r') {
+            e.preventDefault();
+            e.stopPropagation();
+            addLog('🚫 Refresh diblokir (Ctrl+R)', '#ff6b6b', '🚫', 'block_ctrl_r');
+            return false;
+        }
+        if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'R') {
+            e.preventDefault();
+            e.stopPropagation();
+            addLog('🚫 Refresh diblokir (Ctrl+Shift+R)', '#ff6b6b', '🚫', 'block_hard');
+            return false;
+        }
+    }, { passive: false, capture: true });
+
+    document.addEventListener('contextmenu', function(e) {
+        if (e.target.matches('input, textarea, select')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+    }, { capture: true });
+
+    // ============================================================
+    // SAVE & RESTORE STATE
+    // ============================================================
+    function saveFullState() {
+        try {
+            var state = {
+                username: currentUsername,
+                isWhitelisted: isWhitelisted,
+                wager: {
+                    isRunning: wagerState.isRunning,
+                    isPaused: wagerState.isPaused,
+                    totalBets: wagerState.totalBets,
+                    totalWins: wagerState.totalWins,
+                    totalLosses: wagerState.totalLosses,
+                    currentStreak: wagerState.currentStreak,
+                    currentLayer: wagerState.currentLayer,
+                    startBalance: wagerState.startBalance,
+                    currentBalance: wagerState.currentBalance,
+                    currentBet: wagerState.currentBet,
+                    wagered: wagerState.wagered,
+                    layer1Bets: wagerState.layer1Bets,
+                    layer2Bets: wagerState.layer2Bets,
+                    layer1Wins: wagerState.layer1Wins,
+                    layer2Wins: wagerState.layer2Wins,
+                    lossRecovery: wagerState.lossRecovery,
+                    totalLossInL2: wagerState.totalLossInL2,
+                    layer2CurrentChance: wagerState.layer2CurrentChance,
+                    layer2BetCount: wagerState.layer2BetCount,
+                    layer2ResetCount: wagerState.layer2ResetCount,
+                    startTime: wagerState.startTime,
+                    config: {
+                        layer1Chance: parseFloat($('dicey-layer1-chance')?.value || 98),
+                        layer1Bet: parseFloat($('dicey-layer1-bet')?.value || 0.01),
+                        layer1Multiplier: parseFloat($('dicey-layer1-multiplier')?.value || 2.0),
+                        layer2ChanceStart: parseFloat($('dicey-layer2-chance-start')?.value || 65),
+                        layer2ChanceMax: parseFloat($('dicey-layer2-chance-max')?.value || 99),
+                        layer2ChanceIncrement: parseFloat($('dicey-layer2-chance-increment')?.value || 1.0),
+                        layer2Multiplier: parseFloat($('dicey-layer2-multiplier')?.value || 1.1),
+                        backStreak: parseInt($('dicey-back-streak')?.value || 1),
+                        backProfit: parseFloat($('dicey-back-profit')?.value || 0),
+                        targetProfit: parseFloat($('dicey-target-profit')?.value || 100),
+                        stopLoss: parseFloat($('dicey-stop-loss')?.value || 90),
+                        cooldown: parseInt($('dicey-cooldown')?.value || 1500),
+                        wagerTarget: parseFloat($('dicey-wager-target-input')?.value || 300),
+                        autoContinue: $('dicey-auto-continue')?.checked || true,
+                        stopOnWin: $('dicey-stop-on-win')?.checked || false
+                    }
+                },
+                rain: {
+                    isRunning: rainState.isRunning,
+                    successCount: rainState.successCount,
+                    failCount: rainState.failCount,
+                    username: rainState.username || currentUsername,
+                    status: rainState.status || 'idle',
+                    lastJoinStatus: rainState.lastJoinStatus || null,
+                    chatOpened: rainState.chatOpened || false
+                },
+                timestamp: Date.now()
+            };
+            localStorage.setItem('dicey_full_state', JSON.stringify(state));
+        } catch(e) {}
+    }
+
+    function restoreAndResume() {
+        try {
+            var saved = localStorage.getItem('dicey_full_state');
+            if (!saved) return false;
+            
+            var state = JSON.parse(saved);
+            var elapsed = Date.now() - state.timestamp;
+            if (elapsed > 600000) {
+                localStorage.removeItem('dicey_full_state');
+                return false;
+            }
+            
+            if (state.username) {
+                var input = $('dicey-username');
+                if (input) {
+                    input.value = state.username;
+                    currentUsername = state.username;
+                    isWhitelisted = state.isWhitelisted || false;
+                    setTimeout(updateWhitelistStatus, 100);
+                }
+            }
+            
+            if (state.wager && state.wager.config) {
+                var cfg = state.wager.config;
+                var mapConfig = {
+                    'dicey-layer1-chance': cfg.layer1Chance,
+                    'dicey-layer1-bet': cfg.layer1Bet,
+                    'dicey-layer1-multiplier': cfg.layer1Multiplier,
+                    'dicey-layer2-chance-start': cfg.layer2ChanceStart,
+                    'dicey-layer2-chance-max': cfg.layer2ChanceMax,
+                    'dicey-layer2-chance-increment': cfg.layer2ChanceIncrement,
+                    'dicey-layer2-multiplier': cfg.layer2Multiplier,
+                    'dicey-back-streak': cfg.backStreak,
+                    'dicey-back-profit': cfg.backProfit,
+                    'dicey-target-profit': cfg.targetProfit,
+                    'dicey-stop-loss': cfg.stopLoss,
+                    'dicey-cooldown': cfg.cooldown,
+                    'dicey-wager-target-input': cfg.wagerTarget
+                };
+                Object.keys(mapConfig).forEach(function(id) {
+                    var el = document.getElementById(id);
+                    if (el && mapConfig[id] !== undefined && mapConfig[id] !== null) {
+                        el.value = mapConfig[id];
+                    }
+                });
+                var autoContinue = $('dicey-auto-continue');
+                if (autoContinue && cfg.autoContinue !== undefined) {
+                    autoContinue.checked = cfg.autoContinue;
+                }
+                var stopOnWin = $('dicey-stop-on-win');
+                if (stopOnWin && cfg.stopOnWin !== undefined) {
+                    stopOnWin.checked = cfg.stopOnWin;
+                }
+            }
+            
+            if (state.wager) {
+                var w = state.wager;
+                wagerState.totalBets = w.totalBets || 0;
+                wagerState.totalWins = w.totalWins || 0;
+                wagerState.totalLosses = w.totalLosses || 0;
+                wagerState.currentStreak = w.currentStreak || 0;
+                wagerState.currentLayer = w.currentLayer || 1;
+                wagerState.startBalance = w.startBalance || 3;
+                wagerState.currentBalance = w.currentBalance || 3;
+                wagerState.currentBet = w.currentBet || 0.01;
+                wagerState.wagered = w.wagered || 0;
+                wagerState.layer1Bets = w.layer1Bets || 0;
+                wagerState.layer2Bets = w.layer2Bets || 0;
+                wagerState.layer1Wins = w.layer1Wins || 0;
+                wagerState.layer2Wins = w.layer2Wins || 0;
+                wagerState.lossRecovery = w.lossRecovery || 0;
+                wagerState.totalLossInL2 = w.totalLossInL2 || 0;
+                wagerState.layer2CurrentChance = w.layer2CurrentChance || 65;
+                wagerState.layer2BetCount = w.layer2BetCount || 0;
+                wagerState.layer2ResetCount = w.layer2ResetCount || 0;
+                
+                if (w.startTime) {
+                    wagerState.startTime = w.startTime;
+                    if (wagerState.timerInterval) clearInterval(wagerState.timerInterval);
+                    wagerState.timerInterval = setInterval(updateWagerTimer, 1000);
+                }
+                
+                updateWagerUI();
+                
+                if (w.isRunning && !w.isPaused) {
+                    addLog('▶️ RESUME WAGER BOT OTOMATIS!', '#4ade80', '▶️', 'auto_resume');
+                    wagerState.isRunning = true;
+                    wagerState.isPaused = false;
+                    wagerState.isLooping = false;
+                    updateWagerUI();
+                    setTimeout(function() {
+                        if (wagerState.isRunning && !wagerState.isPaused) {
+                            wagerLoop();
+                        }
+                    }, 2000);
+                } else if (w.isRunning && w.isPaused) {
+                    addLog('⏸ Wager bot in PAUSED state', '#ff922b', '⏸', 'auto_paused');
+                    wagerState.isRunning = true;
+                    wagerState.isPaused = true;
+                    updateWagerUI();
+                }
+            }
+            
+            if (state.rain) {
+                var r = state.rain;
+                rainState.successCount = r.successCount || 0;
+                rainState.failCount = r.failCount || 0;
+                rainState.username = r.username || currentUsername;
+                rainState.status = r.status || 'idle';
+                rainState.lastJoinStatus = r.lastJoinStatus || null;
+                rainState.chatOpened = r.chatOpened || false;
+                updateRainUI();
+                
+                if (r.isRunning) {
+                    addLog('🌧️ RESUME RAIN CATCHER OTOMATIS!', '#4ade80', '🌧️', 'rain_auto_resume');
+                    rainState.isRunning = true;
+                    rainState.status = 'searching';
+                    rainState._lastNoJoinLog = null;
+                    updateRainUI();
+                    if (rainState.interval) clearInterval(rainState.interval);
+                    rainState.interval = setInterval(function() {
+                        rainState.processCount = 0;
+                        if (rainState.isRunning) {
+                            clickRainJoin();
+                        }
+                    }, 15000);
+                    setTimeout(function() {
+                        if (rainState.isRunning) {
+                            clickRainJoin();
+                        }
+                    }, 1500);
+                }
+            }
+            
+            addLog('✅ STATE RESTORED SUCCESSFULLY!', '#4ade80', '✅', 'restore_done');
+            return true;
+            
+        } catch(e) {
+            return false;
+        }
+    }
+
+    // Auto-save setiap 10 detik
+    setInterval(function() {
+        if (wagerState.isRunning || rainState.isRunning) {
+            saveFullState();
+        }
+    }, 10000);
+
+    // ============================================================
+    // LOG FILTER & CLEAR
+    // ============================================================
+    let logFilter = 'all';
+    
+    $('dicey-log-clear')?.addEventListener('click', function() {
+        var log = $('dicey-log');
+        if (log) {
+            log.innerHTML = '';
+            addLog('📋 Log cleared', '#888', '🧹', 'log_clear');
+        }
+    });
+    
+    $('dicey-log-filter')?.addEventListener('click', function() {
+        var log = $('dicey-log');
+        if (!log) return;
+        
+        var filters = ['all', 'wager', 'rain', 'system'];
+        var currentIndex = filters.indexOf(logFilter);
+        var nextIndex = (currentIndex + 1) % filters.length;
+        logFilter = filters[nextIndex];
+        this.textContent = logFilter.toUpperCase();
+        
+        var entries = log.querySelectorAll('div');
+        entries.forEach(function(entry) {
+            var text = entry.textContent || '';
+            if (logFilter === 'all') {
+                entry.style.display = 'flex';
+            } else if (logFilter === 'wager') {
+                var isWager = text.includes('BET') || text.includes('WIN') || text.includes('LOSS') || 
+                              text.includes('LAYER') || text.includes('WAGER') || text.includes('🎯');
+                entry.style.display = isWager ? 'flex' : 'none';
+            } else if (logFilter === 'rain') {
+                var isRain = text.includes('RAIN') || text.includes('JOIN') || 
+                             text.includes('splash') || text.includes('Add to Rain') || text.includes('🌧️');
+                entry.style.display = isRain ? 'flex' : 'none';
+            } else if (logFilter === 'system') {
+                var isSystem = text.includes('READY') || text.includes('START') || 
+                               text.includes('STOP') || text.includes('RESUME') || text.includes('🚀');
+                entry.style.display = isSystem ? 'flex' : 'none';
+            }
+        });
+    });
 
     // ============================================================
     // EVENT LISTENERS
     // ============================================================
     var usernameInput = $('dicey-username');
     var checkWhitelistBtn = $('dicey-check-whitelist');
+    var refreshWhitelistBtn = $('dicey-refresh-whitelist');
 
     if (usernameInput) {
         usernameInput.addEventListener('input', updateWhitelistStatus);
@@ -1858,7 +2384,7 @@
         var savedUsername = localStorage.getItem('dicey_username');
         if (savedUsername) {
             usernameInput.value = savedUsername;
-            updateWhitelistStatus();
+            setTimeout(updateWhitelistStatus, 100);
         }
     }
 
@@ -1869,50 +2395,49 @@
         });
     }
 
-    // Wager Buttons
-    var wagerStartBtn = $('dicey-wager-start');
-    var wagerPauseBtn = $('dicey-wager-pause');
-    var wagerStopBtn = $('dicey-wager-stop');
-    var wagerResetBtn = $('dicey-wager-reset');
-    var currencyEl = $('dicey-currency');
-    var wagerTargetEl = $('dicey-wager-target-input');
+    if (refreshWhitelistBtn) {
+        refreshWhitelistBtn.addEventListener('click', async function(e) {
+            e.preventDefault();
+            whitelistCache.data = null;
+            whitelistCache.lastFetch = 0;
+            var statusEl = $('dicey-whitelist-status');
+            if (statusEl) {
+                statusEl.textContent = '🔄 Refreshing whitelist...';
+                statusEl.style.color = '#ffd700';
+            }
+            await updateWhitelistStatus();
+        });
+    }
 
-    if (wagerStartBtn) wagerStartBtn.addEventListener('click', startWagerBot);
-    if (wagerPauseBtn) wagerPauseBtn.addEventListener('click', pauseWagerBot);
-    if (wagerStopBtn) wagerStopBtn.addEventListener('click', stopWagerBot);
-    if (wagerResetBtn) wagerResetBtn.addEventListener('click', resetWagerBot);
-    if (currencyEl) currencyEl.addEventListener('change', updateWagerUI);
-    if (wagerTargetEl) wagerTargetEl.addEventListener('change', updateWagerUI);
+    // Wager Buttons
+    $('dicey-wager-start')?.addEventListener('click', startWagerBot);
+    $('dicey-wager-pause')?.addEventListener('click', pauseWagerBot);
+    $('dicey-wager-stop')?.addEventListener('click', stopWagerBot);
+    $('dicey-wager-reset')?.addEventListener('click', resetWagerBot);
+    $('dicey-currency')?.addEventListener('change', function() {
+        updateWagerUI();
+        updateWagerTarget();
+    });
 
     // Rain Buttons
-    var rainStartBtn = $('dicey-rain-start');
-    var rainStopBtn = $('dicey-rain-stop');
-
-    if (rainStartBtn) rainStartBtn.addEventListener('click', startRainBot);
-    if (rainStopBtn) rainStopBtn.addEventListener('click', stopRainBot);
+    $('dicey-rain-start')?.addEventListener('click', startRainBot);
+    $('dicey-rain-stop')?.addEventListener('click', stopRainBot);
 
     // Minimize/Close
     var minimized = false;
-    var minimizeBtn = $('dicey-minimize');
-    var closeBtn = $('dicey-close');
+    $('dicey-minimize')?.addEventListener('click', function() {
+        minimized = !minimized;
+        var content = $('dicey-content');
+        if (content) content.style.display = minimized ? 'none' : 'block';
+        this.textContent = minimized ? '▲' : '▼';
+        container.style.height = minimized ? '44px' : '100%';
+    });
 
-    if (minimizeBtn) {
-        minimizeBtn.addEventListener('click', function() {
-            minimized = !minimized;
-            var content = $('dicey-content');
-            if (content) content.style.display = minimized ? 'none' : 'block';
-            this.textContent = minimized ? '▼' : '▲';
-            container.style.height = minimized ? '44px' : 'auto';
-        });
-    }
-
-    if (closeBtn) {
-        closeBtn.addEventListener('click', function() {
-            if (wagerState.isRunning) stopWagerBot();
-            if (rainState.isRunning) stopRainBot();
-            container.style.display = 'none';
-        });
-    }
+    $('dicey-close')?.addEventListener('click', function() {
+        if (wagerState.isRunning) stopWagerBot();
+        if (rainState.isRunning) stopRainBot();
+        container.style.display = 'none';
+    });
 
     // Keyboard shortcuts
     document.addEventListener('keydown', function(e) {
@@ -1947,27 +2472,33 @@
     wagerState.username = getUsername();
 
     switchTab('main');
-    setTimeout(updateWhitelistStatus, 100);
-    updateWagerUI();
-    updateRainUI();
+    setTimeout(updateWhitelistStatus, 500);
+    setTimeout(updateWagerUI, 600);
+    setTimeout(updateRainUI, 700);
+    setTimeout(updateWagerTarget, 800);
     
-    wagerLog('🔥 DiceY engine is READY', '#9ec07c');
-    wagerLog('💰 Balance: ~3 USDC', '#00e5c0');
-    wagerLog('🎯 Target Wager: 300 USDC', '#ffd700');
-    wagerLog('📌 Layer 1: 98% chance, bet 0.01 USDC', '#00e5c0');
-    wagerLog('📌 Layer 2: 95% chance, bet 0.01 USDC', '#ff922b');
-    wagerLog('🛑 Stop Loss: 90%', '#ff6b6b');
-    
-    rainLog('✅ Rain Catcher Ready · Enter username to unlock', '#4ade80');
-    rainLog('📡 API interceptor active', '#60a5fa');
-    rainLog('🔄 Scan every 15 seconds', '#60a5fa');
-    rainLog('🔄 Cycle: Join → Add to Rain → Wait → Join → Repeat', '#ff922b');
+    addLog('🚀 DiceY engine is READY', '#9ec07c', '🚀', 'init');
+    addLog('💰 Balance: ~' + wagerState.currentBalance.toFixed(4) + ' ' + getCurrencyDisplay(), '#00e5c0', '💰', 'init_balance');
+    addLog('📌 Layer 1: 98% chance, bet 0.01 ' + getCurrencyDisplay(), '#00e5c0', '📌', 'init_l1');
+    addLog('📌 Layer 2: 65% chance (inc +1%, max 99%), bet 0.01 ' + getCurrencyDisplay(), '#ff922b', '📌', 'init_l2');
+    addLog('🛑 Stop Loss: 90%', '#ff6b6b', '🛑', 'init_stop');
+    addLog('🌧️ Rain Catcher Ready', '#4ade80', '🌧️', 'init_rain');
 
-    console.log('⚡ DiceY engine is READY');
+    // Restore state setelah init
+    setTimeout(function() {
+        var hasState = localStorage.getItem('dicey_full_state');
+        if (hasState) {
+            addLog('📦 Found saved state, restoring...', '#60a5fa', '📦', 'restore_check');
+            setTimeout(function() {
+                var restored = restoreAndResume();
+                if (restored) {
+                    addLog('✅ Bot resumed automatically!', '#4ade80', '✅', 'resume_done');
+                }
+            }, 2000);
+        }
+    }, 3000);
+
+    console.log('⚡ DiceY Engine v6.0 is READY');
     console.log('📌 Enter username first to unlock both bots');
-    console.log('🎯 Target Wager: 300 USDC');
-    console.log('💰 Balance: ~3 USDC');
-    console.log('📌 Ctrl+Enter: start/stop wager | Ctrl+Space: pause');
-    console.log('🔄 Rain Cycle: Join → Add to Rain → Wait → Join → Repeat');
 
 })();
