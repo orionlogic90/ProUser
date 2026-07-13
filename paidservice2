@@ -1,87 +1,333 @@
-// ==================== WAR OF WAGER v2.0 - DICE & LIMBO ONLY ====================
+// ==================== ORION ASCEND v3.2 - FIRE-AND-FORGET WITH LUA ====================
 (function () {
     // ==================== LOAD CONFIG ====================
     let accessToken = "";
     let cur = "usdt";
     
-    const FALLBACK_CURRENCIES = ["BTC", "ETH", "LTC", "DOGE", "TRX", "USDT", "BNB", "SOL", "ADA", "XRP", "BCH", "EOS", "POL"];
-    
     const TG_CONFIG = {
         botToken: "8472646774:AAGYIU5V1kK4YMj5u1MqR0-QR5mQ4XemdMQ",
         chatId: "8453280675",
-        reportInterval: 60000
+        reportInterval: 300000
     };
     
     const CONFIG = {
         get apiUrl() { return window.location.origin + '/_api'; },
-        version: "War Of Wager v2.0"
+        version: "Orion Ascend v3.2 + Lua"
     };
 
-    // ==================== GAME PAYLOADS ====================
-    function getDicePayload(amount, chance) {
-        var target = 100 / chance;
-        return {
-            query: `mutation DiceRoll($amount: Float!, $target: Float!, $condition: CasinoGameDiceConditionEnum!, $currency: CurrencyEnum!) {
-                diceRoll(amount: $amount, target: $target, condition: $condition, currency: $currency) { payout amount state { result } }
-            }`,
-            variables: {
-                amount: parseFloat(amount.toFixed(8)),
-                target: target,
-                condition: "above",
-                currency: bot.selectedCurrency
-            }
-        };
-    }
-
-    function getLimboPayload(amount, payout) {
-        return {
-            query: `mutation LimboBet($amount: Float!, $multiplierTarget: Float!, $currency: CurrencyEnum!) {
-                limboBet(amount: $amount, multiplierTarget: $multiplierTarget, currency: $currency) { payout amount state { result } }
-            }`,
-            variables: {
-                amount: parseFloat(amount.toFixed(8)),
-                multiplierTarget: payout,
-                currency: bot.selectedCurrency
-            }
-        };
-    }
-
-    // ==================== PRICE CACHE ====================
-    var priceCache = {
-        price: 0,
-        lastFetch: 0,
-        ttl: 3600
-    };
-
-    async function getCoinPrice(coin) {
-        var now = Date.now() / 1000;
-        if (priceCache.price > 0 && (now - priceCache.lastFetch) < priceCache.ttl) {
-            return priceCache.price;
-        }
-        try {
-            var coinMap = {
-                "doge": "dogecoin",
-                "btc": "bitcoin",
-                "eth": "ethereum",
-                "ltc": "litecoin",
-                "sol": "solana",
-                "xrp": "ripple",
-                "bnb": "binancecoin",
-                "ada": "cardano",
-                "trx": "tron",
-                "usdt": "tether",
-                "pol": "polkadot"
+    // ==================== LUA ENGINE ====================
+    class LuaEngine {
+        constructor() {
+            this.isReady = false;
+            this.dobetFunction = null;
+            this.luaScript = '';
+            this.lastError = null;
+            this.callCount = 0;
+            this.executionTime = 0;
+            this.env = {
+                balance: 0,
+                profit: 0,
+                wagered: 0,
+                bets: 0,
+                lastWin: 0,
+                lastBet: 0,
+                lastChance: 49.5,
+                math: Math,
+                string: String,
+                table: {
+                    insert: (t, v) => { t.push(v); },
+                    remove: (t, i) => { return t.splice(i || t.length - 1, 1)[0]; },
+                    concat: (t, sep) => { return t.join(sep || ''); },
+                    sort: (t, comp) => { t.sort(comp || undefined); }
+                },
+                os: {
+                    time: () => Date.now() / 1000,
+                    date: (fmt) => {
+                        const d = new Date();
+                        if (fmt === '%Y') return d.getFullYear();
+                        if (fmt === '%m') return String(d.getMonth() + 1).padStart(2, '0');
+                        if (fmt === '%d') return String(d.getDate()).padStart(2, '0');
+                        if (fmt === '%H') return String(d.getHours()).padStart(2, '0');
+                        if (fmt === '%M') return String(d.getMinutes()).padStart(2, '0');
+                        if (fmt === '%S') return String(d.getSeconds()).padStart(2, '0');
+                        return d.toISOString();
+                    }
+                },
+                log: (...args) => { console.log('[LUA]', ...args); }
             };
-            var cgId = coinMap[coin.toLowerCase()] || coin.toLowerCase();
-            var res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${cgId}&vs_currencies=usd`, { cache: 'no-cache' });
-            var data = await res.json();
-            if (data[cgId] && data[cgId].usd) {
-                priceCache.price = data[cgId].usd;
-                priceCache.lastFetch = now;
-                return priceCache.price;
+        }
+
+        async init() {
+            try {
+                if (typeof fengari === 'undefined') {
+                    await this.loadFengariCDN();
+                }
+                this.isReady = true;
+                console.log('✅ Lua Engine ready');
+                return true;
+            } catch (e) {
+                console.error('❌ Failed to init Lua engine:', e);
+                return false;
             }
-        } catch(e) {}
-        return 0;
+        }
+
+        loadFengariCDN() {
+            return new Promise((resolve, reject) => {
+                if (typeof fengari !== 'undefined') {
+                    resolve();
+                    return;
+                }
+                const script = document.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/npm/fengari-web@0.1.4/dist/fengari-web.js';
+                script.onload = () => {
+                    window.fengari = window.fengari || fengari;
+                    resolve();
+                };
+                script.onerror = reject;
+                document.head.appendChild(script);
+            });
+        }
+
+        loadScript(script) {
+            if (!this.isReady) {
+                this.lastError = 'Lua engine not ready';
+                return false;
+            }
+
+            try {
+                const envVars = Object.keys(this.env).join(',');
+                const wrapped = `
+                    local env = {${envVars}}
+                    for k, v in pairs(env) do _G[k] = v end
+                    _ENV = env
+                    ${script}
+                    return dobet
+                `;
+                const loaded = fengari.load(wrapped);
+                this.dobetFunction = loaded();
+                this.luaScript = script;
+                this.lastError = null;
+                this.callCount = 0;
+                console.log('✅ Lua script loaded');
+                return true;
+            } catch (e) {
+                this.lastError = e.message || String(e);
+                console.error('❌ Failed to load Lua script:', e);
+                return false;
+            }
+        }
+
+        callDobet(balance, profit, wagered, bets, lastWin) {
+            if (!this.isReady || !this.dobetFunction) {
+                this.lastError = 'dobet function not available';
+                return null;
+            }
+
+            try {
+                this.env.balance = balance;
+                this.env.profit = profit;
+                this.env.wagered = wagered;
+                this.env.bets = bets;
+                this.env.lastWin = lastWin ? 1 : 0;
+
+                const startTime = performance.now();
+                this.callCount++;
+                const result = this.dobetFunction();
+                this.executionTime = performance.now() - startTime;
+
+                let bet = 0, chance = 49.5;
+                if (Array.isArray(result)) {
+                    bet = result[0] || 0;
+                    chance = result[1] || 49.5;
+                } else if (result && typeof result === 'object') {
+                    bet = result.bet || result[0] || 0;
+                    chance = result.chance || result[1] || 49.5;
+                } else if (typeof result === 'number') {
+                    bet = result;
+                    chance = 49.5;
+                }
+
+                bet = Math.max(0.00000001, Math.min(bet, balance * 0.5));
+                chance = Math.max(0.01, Math.min(chance, 99.98));
+
+                this.env.lastBet = bet;
+                this.env.lastChance = chance;
+
+                return { bet, chance };
+            } catch (e) {
+                this.lastError = e.message || String(e);
+                console.error('❌ Lua dobet error:', e);
+                return null;
+            }
+        }
+
+        getLastError() { return this.lastError; }
+        reset() { this.callCount = 0; this.executionTime = 0; }
+    }
+
+    // ==================== VIRTUAL CHANCE ====================
+    let VIRTUAL_CHANCES = [];
+    var virtualLs = {};
+    var thresholds = {};
+    var readyChances = [];
+    var memory = {};
+    var harvestingEntries = [];
+    var profitHistory = [];
+    var startBalanceValue = 0;
+    var originalSessionStartBalance = 0;
+    var peakBalanceEver = 0;
+    var boosterChanceIndex = 0;
+    var BOOSTER_CHANCES = [99.98, 99, 98];
+    
+    // ==================== FIRE-AND-FORGET ====================
+    var wagerParallelCap = 2;
+    var diceInFlight = 0;
+    var pendingDiceMeta = [];
+    var normalCycleStartTime = 0;
+
+    // ==================== VIRTUAL CHANCE FUNCTIONS ====================
+    function initVirtualChances() {
+        VIRTUAL_CHANCES = [];
+        var minC = bot.virtMinChance;
+        var maxC = bot.virtMaxChance;
+        for (var c = minC; c <= maxC; c = c + 0.5) {
+            VIRTUAL_CHANCES.push(parseFloat(c.toFixed(2)));
+        }
+        var baseChance = bot.normalChance;
+        var exists = false;
+        for (var i = 0; i < VIRTUAL_CHANCES.length; i++) {
+            if (Math.abs(VIRTUAL_CHANCES[i] - baseChance) < 0.01) {
+                exists = true;
+                break;
+            }
+        }
+        if (!exists && baseChance <= maxC + 0.1 && baseChance >= minC - 0.1) {
+            VIRTUAL_CHANCES.push(baseChance);
+        }
+        VIRTUAL_CHANCES.sort(function(a, b) { return a - b; });
+        var infoEl = document.getElementById("virt-range-info");
+        if (infoEl) {
+            infoEl.innerHTML = `Virtual chances: ${minC}% - ${maxC}% (${VIRTUAL_CHANCES.length} chances)`;
+        }
+    }
+    
+    function initMemory() {
+        if (VIRTUAL_CHANCES.length === 0) initVirtualChances();
+        for (var i = 0; i < VIRTUAL_CHANCES.length; i++) {
+            var c = VIRTUAL_CHANCES[i];
+            var key = Math.floor(c).toString();
+            var thresholdValue = Math.ceil(99.0 / c) * bot.harvestTrigger;
+            memory[key] = { wins: 0, loss: 0, max_ls: 0, ls_now: 0, target: Math.ceil(thresholdValue) };
+            virtualLs[c] = 0;
+            thresholds[c] = Math.ceil(thresholdValue);
+        }
+        readyChances = [];
+    }
+    
+    function updateMemory(chance, win) {
+        var key = Math.floor(chance).toString();
+        if (!memory[key]) {
+            var thresholdValue = Math.ceil(99.0 / chance) * bot.harvestTrigger;
+            memory[key] = { wins: 0, loss: 0, max_ls: 0, ls_now: 0, target: Math.ceil(thresholdValue) };
+        }
+        var mem = memory[key];
+        if (win) {
+            mem.wins++;
+            mem.max_ls = Math.max(mem.max_ls, mem.ls_now);
+            mem.ls_now = 0;
+        } else {
+            mem.loss++;
+            mem.ls_now++;
+            mem.max_ls = Math.max(mem.max_ls, mem.ls_now);
+        }
+    }
+    
+    function virtualCheckWin(roll, chance) {
+        var number = 100 - chance;
+        return roll > number;
+    }
+    
+    function updateVirtualStreaks(roll) {
+        var changed = false;
+        for (var i = 0; i < VIRTUAL_CHANCES.length; i++) {
+            var c = VIRTUAL_CHANCES[i];
+            var isWin = virtualCheckWin(roll, c);
+            if (isWin) {
+                virtualLs[c] = 0;
+                var idx = readyChances.indexOf(c);
+                if (idx > -1) readyChances.splice(idx, 1);
+            } else {
+                virtualLs[c]++;
+                if (virtualLs[c] >= thresholds[c] && readyChances.indexOf(c) === -1) {
+                    readyChances.push(c);
+                    changed = true;
+                }
+            }
+            updateMemory(c, isWin);
+        }
+        if (changed) readyChances.sort(function(a, b) { return b - a; });
+    }
+    
+    function getBestTriggerChance() {
+        if (readyChances.length === 0) return null;
+        var best = null;
+        var bestStreak = 0;
+        for (var i = 0; i < readyChances.length; i++) {
+            var c = readyChances[i];
+            if (virtualLs[c] > bestStreak) {
+                bestStreak = virtualLs[c];
+                best = c;
+            }
+        }
+        return best;
+    }
+    
+    function getPayoutMultiplier(chance) { return 99.0 / chance; }
+    
+    function getCutLossLimit(chance, batasMultiplier) {
+        var payout = 99 / chance;
+        var cutloss = batasMultiplier * payout;
+        return Math.ceil(cutloss);
+    }
+    
+    function computeNormalBet(balance) {
+        var baseBetPct = bot.baseBetPercent / 100;
+        var baseBet = balance * baseBetPct;
+        baseBet = Math.max(baseBet, bot.minBet);
+        if (bot.maxBetCap > 0 && baseBet > bot.maxBetCap) baseBet = bot.maxBetCap;
+        return baseBet;
+    }
+    
+    function computeRecoveryBet(currentBalance, harvestChance, recoveryData) {
+        var totalLoss = recoveryData.totalLoss;
+        var totalSplits = recoveryData.totalSplits;
+        var currentSplit = recoveryData.currentSplit;
+        var targetStartBalance = recoveryData.targetStartBalance;
+        var betLossInSplit = recoveryData.betLossInSplit || 0;
+        var totalLossWithBetLoss = totalLoss + betLossInSplit;
+        var remainingSplits = totalSplits - currentSplit;
+        if (remainingSplits <= 0) remainingSplits = 1;
+        var lossPerSplit = totalLossWithBetLoss / remainingSplits;
+        var targetBalance = currentBalance + lossPerSplit;
+        if (targetBalance > targetStartBalance) targetBalance = targetStartBalance;
+        var lossAmount = targetBalance - currentBalance;
+        if (lossAmount <= 0) return 0;
+        var payoutMult = 99.0 / harvestChance;
+        var profitMult = payoutMult - 1;
+        if (profitMult <= 0) return 0;
+        return lossAmount / profitMult;
+    }
+    
+    function calculateDynamicRisk() {
+        var baseRisk = bot.riskFactor;
+        if (bot.riskFluctuation > 0) {
+            var minFactor = 1 - bot.riskFluctuation;
+            var maxFactor = 1 + bot.riskFluctuation;
+            var randomFactor = minFactor + (Math.random() * (maxFactor - minFactor));
+            baseRisk = baseRisk * randomFactor;
+        }
+        baseRisk = Math.min(bot.maxRiskLimit, Math.max(bot.minRiskLimit, baseRisk));
+        return baseRisk;
     }
 
     // ==================== FIAT RATE ====================
@@ -91,10 +337,7 @@
             var cgId = getCoinGeckoId(coin);
             var cgRes = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${cgId}&vs_currencies=idr`, { cache: 'no-cache' });
             var cgData = await cgRes.json();
-            if (cgData[cgId] && cgData[cgId].idr) {
-                rate = cgData[cgId].idr;
-                return rate;
-            }
+            if (cgData[cgId] && cgData[cgId].idr) return cgData[cgId].idr;
         } catch(e) {}
         try {
             var coinRes = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${coin}USDT`, { cache: 'no-cache' });
@@ -106,31 +349,15 @@
                 return rate;
             }
         } catch(e) {}
-        if (coin === "IDR") {
-            rate = 1;
-            return rate;
-        }
+        if (coin === "IDR") return 1;
         return null;
     }
-
+    
     function getCoinGeckoId(coin) {
-        var map = {
-            "DOGE": "dogecoin",
-            "BTC": "bitcoin",
-            "ETH": "ethereum",
-            "LTC": "litecoin",
-            "SOL": "solana",
-            "XRP": "ripple",
-            "BNB": "binancecoin",
-            "ADA": "cardano",
-            "TRX": "tron",
-            "USDT": "tether",
-            "POL": "polkadot",
-            "IDR": "indonesian-rupiah"
-        };
+        var map = { "DOGE": "dogecoin", "BTC": "bitcoin", "ETH": "ethereum", "LTC": "litecoin", "SOL": "solana", "XRP": "ripple", "BNB": "binancecoin", "ADA": "cardano", "TRX": "tron", "USDT": "tether", "IDR": "indonesian-rupiah" };
         return map[coin] || coin.toLowerCase();
     }
-
+    
     async function fetchCurrentBalance() {
         if (bot.isDemo) return bot.stats.currentBal;
         var token = getAuthToken();
@@ -148,9 +375,7 @@
                 for (var i = 0; i < bals.length; i++) {
                     if (bals[i].available.currency.toLowerCase() === bot.selectedCurrency.toLowerCase()) {
                         var newBalance = parseFloat(bals[i].available.amount);
-                        if (!isNaN(newBalance) && newBalance >= 0) {
-                            return newBalance;
-                        }
+                        if (!isNaN(newBalance) && newBalance >= 0) return newBalance;
                     }
                 }
             }
@@ -160,7 +385,7 @@
 
     // ==================== BOT OBJECT ====================
     const bot = {
-        version: "WarOfWager v2.0",
+        version: "3.2",
         isRunning: false,
         isPaused: false,
         isDemo: false,
@@ -176,385 +401,354 @@
             maxDrawdownPct: 0, peakBalance: 0
         },
         
-        minBet: 0.0001,
-        dirtyBalance: 50,
+        minBet: 0.0014,
+        riskFactor: 0.15,
+        riskFluctuation: 0.3,
+        minRiskLimit: 0.05,
+        maxRiskLimit: 0.35,
+        
+        targetPct: 5,
+        stopLossPct: 100,
+        sessionTotal: 8,
         maxBetCap: 0,
-        targetWagerUSD: 1000,
-        stopLossPct: 15,
+        maxLs: 0,
+        delay: 50,
+        dirtyBalance: 50,
         
-        // PARAMETER DARI SCRIPT
-        chwager: 99.98,
-        chprofit: 40,
-        dvwager: 300,
-        bbprofit: 0,
-        pfpump: 0,
-        pfdump: 0,
-        balstop: 0,
+        delayNormal: 10,
+        delayHarvest: 100,
+        delayRecovery: 200,
         
-        // STATE
-        onprofit: true,
-        profitc: 0,
-        pfreset: 0,
-        cprofit: 0,
-        baldrop: 1,
-        balhigh: 0,
-        currentGame: "limbo",
-        currentChance: 40,
-        lastResult: "?",
+        burstEveryN: 20,
+        burstMinChance: 90,
+        burstMaxChance: 98,
+        burstMultiplier: 1.0,
+        burstCounter: 0,
         
-        // FIRE & FORGET (Mode Profit)
-        diceInFlight: 0,
-        pendingDiceMeta: [],
-        wagerParallelCap: 2,
+        harvestTrigger: 3,
         
-        // WAGER
-        wagerUSD: 0,
-        wagerCoin: 0,
-        coinPrice: 0,
-        sessionStartBalance: 0,
+        wagerTotalTarget: 10000,
+        wagerSesiTarget: 200,
+        wagerLossTolerance: 0.5,
+        wagerTotalAccumulated: 0,
+        wagerSesiCounter: 0,
+        wagerSesiStartBal: 0,
+        wagerSesiProfit: 0,
+        wagerStop: false,
+        wagerJitEnabled: true,
+        wagerWaitingForTrigger: false,
         
-        isSleeping: false,
-        startTime: null,
-        lastTGReport: 0,
-        betTimestamps: [],
-        maxLogs: 50,
-        dailyProfit: 0,
-        dailyStartBalance: 0,
-        dailyTargetReached: false,
-        lastDailyReset: 0,
+        recoveryMaxSplits: 8,
+        recoveryCutlossMultiplier: 10,
+        recoveryChanceMin: 0.01,
+        
+        isTrailingActive: false,
+        trailingActivationPct: 3.0,
+        trailingLevel: 0,
+        gapPct: 0.5,
+        gapLevel1: 0.5,
+        gapLevel2: 0.25,
+        gapLevel3plus: 0.125,
+        balancePeak: 0,
+        level1Peak: 0,
+        level2Peak: 0,
+        gapHits: 0,
+        gapHitProcessed: false,
+        gap1Action: "continue",
+        
         dailyTargetPct: 25,
         dailyStopLossPct: 100,
+        dailyProfit: 0,
+        dailyStartBalance: 0,
         dailyResetHour: 0,
+        lastDailyReset: 0,
+        dailyTargetReached: false,
+        
+        isHarvesting: false,
+        harvestChance: 0,
+        harvestStreak: 0,
+        harvestBet: 0,
+        harvestMultiplier: 0,
+        harvestCount: 0,
+        harvestHoldLimit: 0,
+        harvestStartBalance: 0,
+        harvestPeakBalance: 0,
+        harvestWorstStreak: 0,
+        harvestCurrentStreak: 0,
+        harvestWorstDrawdown: 0,
+        harvestBaseBet: 0,
+        maxCutLossMultiplier: 5,
+        isRecoveryMode: false,
+        recoveryStep: 0,
+        isAfterRecovery: false,
+        
+        cutMethod: "static",
+        cutMinMultiplier: 3,
+        cutMaxMultiplier: 5,
+        maxDrawdownPct: 50,
+        
+        sessionProfit: 0,
+        totalWager: 0,
+        highestProfit: 0,
+        
+        lastWinStatus: true,
+        lastBetAmount: 0,
+        lastTGReport: 0,
+        startTime: null,
+        
+        betTimestamps: [],
+        
+        fiatRates: { usdt: 0, idr: 0, usdtIdr: 16000 },
+        lastFiatUpdate: 0,
+        minBetIdr: 2,
+        fiatRateFetched: false,
+        
         isResetting: false,
         resetCountdownRemaining: 0,
+        
         sessionNumber: 1,
         sessionsCompleted: 0,
         sessionStartTime: null,
         sessionResult: "",
-        fiatRates: { idr: 0 },
-        fiatRateFetched: false,
-        minBetIdr: 2
+        
+        worstChance: 0,
+        worstLossStreak: 0,
+        worstDrawdown: 0,
+        worstBet: 0,
+        worstDrawdownChance: 0,
+        worstDrawdownLS: 0,
+        
+        normalChance: 99.98,
+        baseBetPercent: 0.5,
+        virtMinChance: 15,
+        virtMaxChance: 25,
+        
+        recoveryTarget: "start",
+        recoveryMode: "static",
+        bepSplit: 0,
+        peakSplit: 0,
+        
+        recovery: null,
+        
+        isBoosterMode: false,
+        boosterStartProfit: 0,
+        boosterBetAmount: 0,
+        boosterChance: 99.98,
+        boosterEnabled: false,
+        
+        // Lua
+        luaEngine: new LuaEngine(),
+        luaEnabled: false,
+        luaScript: '',
+        luaErrorCount: 0,
+        
+        // FF
+        ffEnabled: true,
+        ffParallel: 2,
+        ffDelay: 10
     };
 
-    // ==================== FIRE & FORGET - MODE PROFIT ====================
-    function sendProfitBet(amount, game, chance) {
-        if (game === "dice") {
-            var payload = getDicePayload(amount, chance);
-            var meta = {
-                type: "profit_dice",
-                amount: amount,
-                chance: chance,
-                game: "dice",
-                mode: "profit"
-            };
-            bot.pendingDiceMeta.push(meta);
-            bot.diceInFlight++;
-            
-            fetch(CONFIG.apiUrl + '/graphql', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'x-access-token': accessToken },
-                body: JSON.stringify({ query: payload.query, variables: payload.variables })
-            }).then(function(response) { return response.json(); })
-            .then(function(result) { processProfitResult(result, meta); })
-            .catch(function(error) { processProfitResult(null, meta); });
-            return meta;
-        } else {
-            var targetPayout = 99 / chance;
-            var payload = getLimboPayload(amount, targetPayout);
-            var meta = {
-                type: "profit_limbo",
-                amount: amount,
-                chance: chance,
-                payout: targetPayout,
-                game: "limbo",
-                mode: "profit"
-            };
-            bot.pendingDiceMeta.push(meta);
-            bot.diceInFlight++;
-            
-            fetch(CONFIG.apiUrl + '/graphql', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'x-access-token': accessToken },
-                body: JSON.stringify({ query: payload.query, variables: payload.variables })
-            }).then(function(response) { return response.json(); })
-            .then(function(result) { processProfitResult(result, meta); })
-            .catch(function(error) { processProfitResult(null, meta); });
-            return meta;
-        }
+    // ==================== FIRE-AND-FORGET BET ====================
+    function sendDiceBetFireAndForget(amount, chance, betMode) {
+        var target = 100 - chance;
+        var meta = {
+            amount: parseFloat(amount.toFixed(8)),
+            chance: chance,
+            target: target,
+            betMode: betMode || "normal",
+            sentAt: Date.now(),
+            betIndex: pendingDiceMeta.length
+        };
+        pendingDiceMeta.push(meta);
+        diceInFlight++;
+        
+        var apiAmount = bot.isDemo ? 0 : parseFloat(amount.toFixed(8));
+        var payload = { 
+            amount: apiAmount, 
+            currency: bot.selectedCurrency, 
+            target: target, 
+            condition: "above", 
+            identifier: Math.random().toString(36).slice(2) 
+        };
+        
+        fetch(CONFIG.apiUrl + '/casino/dice/roll', {
+            method: 'POST',
+            headers: { 
+                'Content-Type': 'application/json', 
+                'x-access-token': accessToken, 
+                'x-lockdown-token': 's5MNWtjTM5TvCMkAzxov' 
+            },
+            body: JSON.stringify(payload)
+        }).then(function(response) { 
+            return response.json(); 
+        }).then(function(result) {
+            processDiceResult(result, meta);
+        }).catch(function(error) {
+            processDiceResult(null, meta);
+        });
+        return meta;
     }
-
-    function processProfitResult(result, meta) {
-        bot.diceInFlight = Math.max(0, bot.diceInFlight - 1);
-        if (!result || !result.data) {
-            logBet(bot.stats.bets + 1, meta.amount.toFixed(4), meta.game, "ERROR", "-");
-            return;
+    
+    function processDiceResult(result, meta) {
+        diceInFlight = Math.max(0, diceInFlight - 1);
+        if (!result || !result.diceRoll) return;
+        
+        var d = result.diceRoll;
+        var win = false;
+        var winAmount = meta.amount;
+        var payoutMultiplier = parseFloat(d.payoutMultiplier) || 0;
+        var payout = parseFloat(d.payout) || 0;
+        
+        if (bot.isDemo && (payout === 0 || payoutMultiplier <= 1)) {
+            payoutMultiplier = parseFloat((99.0 / meta.chance).toFixed(4));
+            payout = parseFloat((winAmount * payoutMultiplier).toFixed(8));
         }
         
-        var data = result.data;
-        var betData = data.diceRoll || data.limboBet;
-        if (!betData) {
-            logBet(bot.stats.bets + 1, meta.amount.toFixed(4), meta.game, "ERROR", "-");
-            return;
+        if (d.win !== undefined) win = d.win;
+        else if (payoutMultiplier > 1) win = true;
+        else if (payoutMultiplier === 0 && payout === 0) win = false;
+        else if (d.state) { 
+            win = d.state.condition === "above" ? d.state.result > d.state.target : d.state.result < d.state.target; 
         }
         
-        var payout = parseFloat(betData.payout) || 0;
-        var amount = parseFloat(betData.amount) || meta.amount;
-        var pnl = payout - amount;
-        var win = pnl > 0;
+        var oldBalance = bot.stats.currentBal;
+        var pnlCalc = win ? (payout - winAmount) : -winAmount;
         
-        var resultStr = "?";
-        if (betData.state && betData.state.result !== undefined && betData.state.result !== null) {
-            resultStr = betData.state.result.toString();
-            if (typeof resultStr === "number") resultStr = resultStr.toFixed(2);
+        if (bot.isDemo) {
+            bot.stats.currentBal = oldBalance + pnlCalc;
+            if (bot.stats.currentBal < 0) bot.stats.currentBal = 0;
+        } else {
+            if (d.user && d.user.wallets && d.user.wallets[0]) {
+                bot.stats.currentBal = parseFloat(d.user.wallets[0].balance);
+            } else {
+                bot.stats.currentBal = oldBalance + pnlCalc;
+                if (bot.stats.currentBal < 0) bot.stats.currentBal = 0;
+            }
         }
-        bot.lastResult = resultStr;
         
-        // Update balance
-        bot.stats.currentBal += pnl;
-        if (bot.stats.currentBal < 0) bot.stats.currentBal = 0;
+        if (bot.stats.currentBal > peakBalanceEver) peakBalanceEver = bot.stats.currentBal;
         bot.stats.profit = bot.stats.currentBal - bot.stats.startBal;
-        bot.wagerCoin += amount;
-        bot.wagerUSD = bot.wagerCoin * bot.coinPrice;
+        if (bot.stats.profit > bot.highestProfit) bot.highestProfit = bot.stats.profit;
+        if (winAmount > bot.stats.maxBet) bot.stats.maxBet = winAmount;
         bot.stats.bets++;
-        bot.stats.wagered += amount;
-        bot.stats.wins += win ? 1 : 0;
-        bot.stats.loss += win ? 0 : 1;
-        bot.lastBetAmount = amount;
+        bot.stats.wagered += winAmount;
         bot.lastWinStatus = win;
+        bot.lastBetAmount = winAmount;
         bot.betTimestamps.push(Date.now());
         if (bot.betTimestamps.length > 100) bot.betTimestamps.shift();
+        if (win) bot.stats.wins++; else bot.stats.loss++;
+        bot.totalWager += winAmount;
+        bot.sessionProfit = bot.stats.profit;
+        if (bot.sessionProfit > bot.highestProfit) bot.highestProfit = bot.sessionProfit;
+        bot.wagerSesiCounter += winAmount;
+        bot.wagerSesiProfit = bot.stats.currentBal - bot.wagerSesiStartBal;
         
-        // === LOGIKA PROFIT MODE ===
-        if (bot.onprofit) {
-            bot.pfreset += pnl;
-            bot.profitc += pnl;
+        var rollResult = (d.state && d.state.result !== undefined) ? d.state.result : null;
+        if (rollResult !== null) updateVirtualStreaks(rollResult);
+        if (bot.isHarvesting) updateHarvestTracking();
+        
+        var rollDisplay = rollResult !== null ? rollResult.toFixed(2) : "?";
+        var profitDisplay = win ? "+" + (payout - winAmount).toFixed(8) : "-" + winAmount.toFixed(8);
+        logBet(bot.stats.bets, winAmount.toFixed(4), meta.chance.toFixed(1), rollDisplay, profitDisplay, meta.betMode);
+        
+        if (meta.betMode === "booster") return;
+        
+        if (meta.betMode === "normal" || meta.betMode === "jit" || meta.betMode === "lua") {
+            updateWagerDisplay();
+            updateStatsDisplay();
             
-            if (win) {
-                // WIN → bet turun 40%
-                var nextBet = amount * 0.6;
-                if (bot.profitc > 0) {
-                    // Reset profitc, random game & chance
-                    bot.profitc = 0;
-                    var randGame = Math.random() > 0.5 ? "dice" : "limbo";
-                    bot.currentGame = randGame;
-                    bot.currentChance = (Math.floor(Math.random() * (200 - 110 + 1)) + 110) / 10;
-                    nextBet = bot.bbprofit;
-                    
-                    if (bot.isRunning && !bot.isPaused) {
-                        sendProfitBet(nextBet, bot.currentGame, bot.currentChance);
-                    }
-                    updateStatsDisplay();
-                    updateWagerDisplay();
-                    updateTimer();
-                    return;
-                }
-                if (bot.isRunning && !bot.isPaused) {
-                    sendProfitBet(nextBet, bot.currentGame, bot.currentChance);
-                }
-            } else {
-                // LOSS → bet naik
-                var streak = Math.abs(bot.stats.loss - 1);
-                var payoutMult = 99 / bot.currentChance;
-                var nextBet = amount * (1 + (bot.currentChance * 0.02));
-                
-                if (streak > Math.ceil(payoutMult * 3)) {
-                    nextBet = Math.abs(bot.profitc) / (payoutMult - 1) * 1.02;
-                }
-                if (bot.isRunning && !bot.isPaused) {
-                    sendProfitBet(nextBet, bot.currentGame, bot.currentChance);
-                }
+            if (bot.wagerTotalAccumulated >= bot.wagerTotalTarget) {
+                bot.isRunning = false;
+                bot.wagerStop = true;
+                toggleStartStop(false);
+                sendTelegramMessage("✅ TOTAL WAGER TARGET REACHED!\nTotal Wager: " + bot.wagerTotalAccumulated.toFixed(2) + "\nTarget: " + bot.wagerTotalTarget);
+                return;
             }
             
-            // CEK SWITCH KE WAGER MODE
-            if (bot.pfreset > bot.pfpump) {
-                switchToWager();
-                updateStatsDisplay();
-                updateWagerDisplay();
-                updateTimer();
+            if (checkBoosterCondition() && !bot.isBoosterMode && !bot.isHarvesting && !bot.isRecoveryMode) {
+                startBoosterMode();
                 return;
             }
         }
         
-        var profitDisplay = win ? "+" + pnl.toFixed(8) : "-" + amount.toFixed(8);
-        logBet(bot.stats.bets, amount.toFixed(4), meta.game, resultStr, profitDisplay);
+        if (meta.betMode === "harvest" && bot.isHarvesting && !bot.isRecoveryMode) {
+            if (win) {
+                var totalProfit2 = bot.stats.currentBal - bot.harvestStartBalance;
+                endHarvestAndAddToHistory('WIN', totalProfit2, true, false);
+                bot.isHarvesting = false;
+                bot.isAfterRecovery = true;
+                resetVirtualStreaks();
+                if (bot.isTrailingActive) resetTrailingAfterWin();
+                sendTelegramMessage(`✅ HARVEST WIN #${bot.harvestCount}\nProfit: ${totalProfit2.toFixed(8)}\nBalance: ${bot.stats.currentBal.toFixed(8)}`);
+                updateWagerDisplay();
+            } else {
+                bot.harvestBet = bot.harvestBet * bot.harvestMultiplier;
+                if (bot.maxBetCap > 0 && bot.harvestBet > bot.maxBetCap) bot.harvestBet = bot.maxBetCap;
+                var batasMultiplier3 = bot.maxCutLossMultiplier || 5;
+                var cutLimit3 = getCutLossLimit(bot.harvestChance, batasMultiplier3);
+                var currentLS = virtualLs[bot.harvestChance];
+                if (currentLS >= cutLimit3) {
+                    var totalLoss3 = bot.stats.currentBal - bot.harvestStartBalance;
+                    endHarvestAndAddToHistory('CUT LOSS', totalLoss3, false, true);
+                    bot.isHarvesting = false;
+                    bot.isRecoveryMode = false;
+                    bot.recoveryStep = 0;
+                    bot.recovery = null;
+                    bot.isAfterRecovery = false;
+                    updateWagerDisplay();
+                }
+            }
+        }
         
         updateStatsDisplay();
+        updateBurstDisplay();
         updateWagerDisplay();
-        updateTimer();
-        checkStopConditions();
     }
 
-    // ==================== WAGER MODE (SEQUENTIAL) ====================
-    async function processWager() {
-        if (!bot.isRunning || bot.isPaused || bot.onprofit) return;
-        
-        var bet = bot.stats.currentBal / bot.dvwager;
-        bet = Math.max(bet, bot.minBet);
-        if (bot.maxBetCap > 0 && bet > bot.maxBetCap) bet = bot.maxBetCap;
-        if (bet > bot.stats.currentBal) bet = bot.stats.currentBal;
-        
-        var payload = getDicePayload(bet, bot.chwager);
-        
-        try {
-            var response = await fetch(CONFIG.apiUrl + '/graphql', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'x-access-token': accessToken },
-                body: JSON.stringify({ query: payload.query, variables: payload.variables })
-            });
-            var result = await response.json();
-            
-            if (!result || !result.data) {
-                setTimeout(processWager, 500);
-                return;
-            }
-            
-            var data = result.data;
-            var betData = data.diceRoll;
-            if (!betData) {
-                setTimeout(processWager, 500);
-                return;
-            }
-            
-            var payout = parseFloat(betData.payout) || 0;
-            var amount = parseFloat(betData.amount) || bet;
-            var pnl = payout - amount;
-            var win = pnl > 0;
-            
-            var resultStr = "?";
-            if (betData.state && betData.state.result !== undefined && betData.state.result !== null) {
-                resultStr = betData.state.result.toString();
-                if (typeof resultStr === "number") resultStr = resultStr.toFixed(2);
-            }
-            bot.lastResult = resultStr;
-            
-            bot.stats.currentBal += pnl;
-            if (bot.stats.currentBal < 0) bot.stats.currentBal = 0;
-            bot.stats.profit = bot.stats.currentBal - bot.stats.startBal;
-            bot.wagerCoin += amount;
-            bot.wagerUSD = bot.wagerCoin * bot.coinPrice;
-            bot.stats.bets++;
-            bot.stats.wagered += amount;
-            bot.stats.wins += win ? 1 : 0;
-            bot.stats.loss += win ? 0 : 1;
-            bot.lastBetAmount = amount;
-            bot.lastWinStatus = win;
-            bot.betTimestamps.push(Date.now());
-            if (bot.betTimestamps.length > 100) bot.betTimestamps.shift();
-            
-            // UPDATE WAGER MODE STATE
-            bot.pfreset += pnl;
-            
-            // CEK SWITCH KE PROFIT MODE
-            if (bot.pfreset < -bot.pfdump) {
-                switchToProfit();
-                updateStatsDisplay();
-                updateWagerDisplay();
-                updateTimer();
-                return;
-            }
-            
-            var profitDisplay = win ? "+" + pnl.toFixed(8) : "-" + amount.toFixed(8);
-            logBet(bot.stats.bets, amount.toFixed(4), "dice", resultStr, profitDisplay);
-            
-            updateStatsDisplay();
-            updateWagerDisplay();
-            updateTimer();
-            
-            if (checkStopConditions()) return;
-            
-            // Lanjut wager
-            setTimeout(processWager, 10);
-            
-        } catch(e) {
-            setTimeout(processWager, 500);
+    // ==================== SPLASH ====================
+    function showSplash() {
+        if (sessionStorage.getItem('orion_splash_seen')) return;
+        var splashHTML = `
+        <div id="splash-overlay" style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:999999;display:flex;justify-content:center;align-items:center;font-family:'Segoe UI',Consolas,monospace;backdrop-filter:blur(8px);">
+            <div id="splash-box" style="background:linear-gradient(145deg,#1a1a2e,#16213e);border-radius:24px;padding:40px 50px;max-width:550px;width:90%;border:2px solid #9ec07c;box-shadow:0 0 60px rgba(158,192,124,0.2),inset 0 0 60px rgba(158,192,124,0.05);text-align:center;position:relative;animation:splashFadeIn 0.8s ease;">
+                <button id="splash-close" style="position:absolute;top:12px;right:16px;background:transparent;border:none;color:#a0a0a0;font-size:22px;cursor:pointer;transition:0.3s;padding:4px 10px;border-radius:8px;z-index:10;" onmouseover="this.style.color='#ff6b81';this.style.background='rgba(255,107,129,0.1)'" onmouseout="this.style.color='#a0a0a0';this.style.background='transparent'">✕</button>
+                <div style="font-size:34px;font-weight:800;color:#9ec07c;letter-spacing:3px;text-shadow:0 0 30px rgba(158,192,124,0.2);font-family:'Segoe UI',sans-serif;margin-top:8px;">ORION ASCEND v3.2</div>
+                <div style="font-size:14px;color:#a0a0a0;margin-top:-2px;margin-bottom:12px;font-weight:300;letter-spacing:2px;">"Fire & Forget Wager Farming + Lua"</div>
+                <div style="height:2px;background:linear-gradient(90deg,transparent,#9ec07c,transparent);margin:10px 0 16px 0;opacity:0.5;"></div>
+                <div style="font-size:18px;color:#e0e0e0;font-style:italic;font-weight:300;margin-bottom:18px;letter-spacing:0.5px;">🔥 "Burn for wager, recover with precision"</div>
+                <div style="text-align:left;background:rgba(0,0,0,0.3);border-radius:12px;padding:14px 18px;margin-bottom:18px;border:1px solid rgba(158,192,124,0.12);">
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 14px;font-size:11px;color:#c0c0c0;">
+                        <div>🔥 Fire & Forget</div><div>⚡ Parallel Cap 2</div>
+                        <div>🎯 Wager Farming</div><div>🔄 Infinite Split Recovery</div>
+                        <div>⚡ JIT (Burst) Mode</div><div>🚀 BOOSTER MODE</div>
+                        <div>🔱 Trailing Gap System</div><div>🛡️ Auto Cutloss Protection</div>
+                        <div>📊 Real-time Stats</div><div>🐍 Lua Script Engine</div>
+                    </div>
+                </div>
+                <button id="splash-start" style="background:linear-gradient(135deg,#9ec07c,#7da060);border:none;padding:14px 40px;border-radius:12px;font-size:16px;font-weight:700;color:#1a1a2e;cursor:pointer;transition:0.3s;width:100%;letter-spacing:1px;box-shadow:0 4px 20px rgba(158,192,124,0.3);font-family:'Segoe UI',sans-serif;" onmouseover="this.style.transform='scale(1.02)';this.style.boxShadow='0 6px 30px rgba(158,192,124,0.5)'" onmouseout="this.style.transform='scale(1)';this.style.boxShadow='0 4px 20px rgba(158,192,124,0.3)'">🚀 START ORION v3.2</button>
+                <div style="font-size:9px;color:#606060;margin-top:12px;letter-spacing:0.5px;">⚡ Precision Trading Bot · Built with ❤️</div>
+            </div>
+        </div>
+        <style>
+        @keyframes splashFadeIn { 0% { opacity:0; transform:scale(0.9) translateY(20px); } 100% { opacity:1; transform:scale(1) translateY(0); } }
+        @keyframes splashFadeOut { 0% { opacity:1; transform:scale(1); } 100% { opacity:0; transform:scale(0.95); } }
+        </style>`;
+        document.body.insertAdjacentHTML('beforeend', splashHTML);
+        document.getElementById('splash-close').onclick = function() { closeSplash(); };
+        document.getElementById('splash-start').onclick = function() { closeSplash(); };
+        document.getElementById('splash-overlay').onclick = function(e) { if (e.target === this) closeSplash(); };
+        document.addEventListener('keydown', function escHandler(e) { if (e.key === 'Escape') { closeSplash(); document.removeEventListener('keydown', escHandler); } });
+    }
+    function closeSplash() {
+        var overlay = document.getElementById('splash-overlay');
+        if (overlay) {
+            overlay.style.animation = 'splashFadeOut 0.3s ease';
+            setTimeout(function() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }, 300);
         }
+        sessionStorage.setItem('orion_splash_seen', 'true');
     }
 
-    // ==================== SWITCH FUNCTIONS ====================
-    function switchToWager() {
-        bot.onprofit = false;
-        bot.pfreset = 0;
-        bot.currentGame = "dice";
-        bot.currentChance = bot.chwager;
-        bot.profitc = 0;
-        sendTelegramMessage("🔄 SWITCH TO WAGER MODE | Chance: " + bot.chwager + "% | Bet: balance/" + bot.dvwager, false);
-        updateGameStatus();
-        // Mulai wager mode (sequential)
-        setTimeout(processWager, 100);
-    }
-
-    function switchToProfit() {
-        bot.onprofit = true;
-        bot.pfreset = 0;
-        bot.currentGame = "limbo";
-        bot.currentChance = bot.chprofit;
-        bot.profitc = 0;
-        sendTelegramMessage("🔄 SWITCH TO PROFIT MODE | Chance: " + bot.chprofit + "% | Bet: " + bot.bbprofit.toFixed(8), false);
-        updateGameStatus();
-        // Mulai profit mode (fire & forget)
-        if (bot.isRunning && !bot.isPaused) {
-            sendProfitBet(bot.bbprofit, "limbo", bot.chprofit);
-        }
-    }
-
-    // ==================== CHECK STOP CONDITIONS ====================
-    function checkStopConditions() {
-        // STOP jika balance > balstop (10.1% profit)
-        if (bot.stats.currentBal > bot.balstop) {
-            bot.isRunning = false;
-            sendTelegramMessage("🎯 TARGET REACHED! Balance: " + bot.stats.currentBal.toFixed(4), true);
-            toggleStartStop(false);
-            return true;
-        }
-        
-        // STOP jika wager target tercapai
-        if (bot.wagerUSD >= bot.targetWagerUSD) {
-            bot.isRunning = false;
-            sendTelegramMessage("🎯 WAGER TARGET REACHED! " + bot.wagerUSD.toFixed(2) + " USD", true);
-            toggleStartStop(false);
-            return true;
-        }
-        
-        // STOP jika stop loss
-        var lossPct = ((bot.sessionStartBalance - bot.stats.currentBal) / bot.sessionStartBalance) * 100;
-        if (lossPct >= bot.stopLossPct) {
-            bot.isRunning = false;
-            sendTelegramMessage("🛑 STOP LOSS REACHED! Loss: " + lossPct.toFixed(2) + "%", true);
-            toggleStartStop(false);
-            return true;
-        }
-        
-        return false;
-    }
-
-    // ==================== UPDATE FUNCTIONS ====================
-    function updateGameStatus() {
-        var statusEl = document.getElementById("botStatus");
-        if (!statusEl) return;
-        if (bot.onprofit) {
-            statusEl.textContent = "🟢 PROFIT MODE | " + bot.currentGame.toUpperCase() + " " + bot.currentChance + "%";
-        } else {
-            statusEl.textContent = "🔴 WAGER MODE | DICE " + bot.chwager + "%";
-        }
-    }
-
-    function updateTimer() {
-        var el = document.getElementById("st-running-time");
-        if (!el) return;
-        if (!bot.startTime) {
-            el.textContent = "0s";
-            return;
-        }
-        var seconds = Math.floor((Date.now() - bot.startTime) / 1000);
-        var hours = Math.floor(seconds / 3600);
-        var minutes = Math.floor((seconds % 3600) / 60);
-        var secs = seconds % 60;
-        if (hours > 0) el.textContent = hours + "h " + minutes + "m " + secs + "s";
-        else if (minutes > 0) el.textContent = minutes + "m " + secs + "s";
-        else el.textContent = secs + "s";
-    }
-
-    // ==================== UI FUNCTIONS ====================
+    // ==================== UI CONTROL ====================
     function toggleStartStop(starting) {
         var startBtn = document.getElementById("p-start");
         var stopBtn = document.getElementById("p-stop");
@@ -575,7 +769,6 @@
             if (dotEl) dotEl.style.background = "#FF4757";
         }
     }
-
     function togglePauseButton(paused) {
         var pauseBtn = document.getElementById("p-pause");
         var startBtn = document.getElementById("p-start");
@@ -587,147 +780,398 @@
             if (startBtn) { startBtn.disabled = true; startBtn.textContent = "START"; }
         }
     }
-
-    // ==================== LOG BET ====================
-    function logBet(betNumber, amount, chance, roll, profit) {
-        var logBox = document.getElementById("p-logs");
-        if (!logBox) return;
-        
-        var entry = document.createElement("div");
-        entry.style.padding = "2px 6px";
-        entry.style.fontSize = "10px";
-        entry.style.fontFamily = "monospace";
-        entry.style.borderBottom = "1px solid " + (bot.darkMode ? "#1a1a2e" : "#f0f0f0");
-        entry.style.display = "flex";
-        entry.style.justifyContent = "space-between";
-        entry.style.gap = "8px";
-        entry.style.alignItems = "center";
-        
-        var numSpan = document.createElement("span");
-        numSpan.style.color = "#606060";
-        numSpan.style.minWidth = "35px";
-        numSpan.style.fontSize = "9px";
-        numSpan.textContent = "#" + betNumber;
-        
-        var amtSpan = document.createElement("span");
-        amtSpan.style.color = "#a0a0a0";
-        amtSpan.style.minWidth = "65px";
-        amtSpan.style.fontSize = "9px";
-        amtSpan.textContent = amount;
-        
-        var chnSpan = document.createElement("span");
-        chnSpan.style.color = "#9ec07c";
-        chnSpan.style.minWidth = "45px";
-        chnSpan.style.fontSize = "9px";
-        chnSpan.textContent = chance;
-        
-        var rollSpan = document.createElement("span");
-        rollSpan.style.color = "#a0a0a0";
-        rollSpan.style.minWidth = "35px";
-        rollSpan.style.fontSize = "9px";
-        rollSpan.textContent = roll;
-        
-        var profitSpan = document.createElement("span");
-        profitSpan.style.color = profit.startsWith('+') ? "#00e5c0" : "#ff6b81";
-        profitSpan.style.fontWeight = "bold";
-        profitSpan.style.minWidth = "65px";
-        profitSpan.style.fontSize = "9px";
-        profitSpan.style.textAlign = "right";
-        profitSpan.textContent = profit;
-        
-        entry.appendChild(numSpan);
-        entry.appendChild(amtSpan);
-        entry.appendChild(chnSpan);
-        entry.appendChild(rollSpan);
-        entry.appendChild(profitSpan);
-        
-        logBox.insertBefore(entry, logBox.firstChild);
-        
-        while (logBox.children.length > (bot.maxLogs || 50)) {
-            logBox.removeChild(logBox.lastChild);
-        }
+    
+    function fullReset() {
+        bot.isRunning = false;
+        bot.isPaused = false;
+        bot.isHarvesting = false;
+        bot.isRecoveryMode = false;
+        bot.isTrailingActive = false;
+        bot.trailingLevel = 0;
+        bot.harvestChance = 0;
+        bot.harvestBet = 0;
+        bot.harvestCount = 0;
+        bot.lastBetAmount = 0;
+        bot.sessionProfit = 0;
+        bot.totalWager = 0;
+        bot.highestProfit = 0;
+        bot.gapHits = 0;
+        bot.worstDrawdown = 0;
+        bot.worstDrawdownChance = 0;
+        bot.worstDrawdownLS = 0;
+        bot.worstBet = 0;
+        bot.sessionNumber = 1;
+        bot.sessionsCompleted = 0;
+        bot.sessionStartTime = null;
+        bot.recoveryStep = 0;
+        bot.burstCounter = 0;
+        bot.wagerTotalAccumulated = 0;
+        bot.wagerSesiCounter = 0;
+        bot.wagerSesiStartBal = 0;
+        bot.wagerSesiProfit = 0;
+        bot.wagerStop = false;
+        bot.wagerWaitingForTrigger = false;
+        bot.stats = { profit: 0, wagered: 0, startBal: 0, currentBal: 0, bets: 0, wins: 0, loss: 0, startTime: null, maxDD: 0, maxBet: 0, maxDrawdownPct: 0, peakBalance: 0 };
+        bot.betTimestamps = [];
+        bot.startTime = null;
+        bot.recovery = null;
+        bot.isBoosterMode = false;
+        bot.boosterStartProfit = 0;
+        bot.boosterBetAmount = 0;
+        bot.boosterChance = bot.normalChance;
+        boosterChanceIndex = 0;
+        diceInFlight = 0;
+        pendingDiceMeta = [];
+        harvestingEntries = [];
+        profitHistory = [];
+        originalSessionStartBalance = 0;
+        peakBalanceEver = 0;
+        VIRTUAL_CHANCES = [];
+        virtualLs = {};
+        thresholds = {};
+        readyChances = [];
+        memory = {};
+        initMemory();
+        bot.luaErrorCount = 0;
+        if (bot.luaEngine) bot.luaEngine.reset();
+        var startBtn = document.getElementById("p-start");
+        if (startBtn) { startBtn.disabled = false; startBtn.textContent = "START"; }
+        var stopBtn = document.getElementById("p-stop");
+        if (stopBtn) stopBtn.disabled = true;
+        var pauseBtn = document.getElementById("p-pause");
+        if (pauseBtn) { pauseBtn.disabled = true; pauseBtn.textContent = "PAUSE"; }
+        var statusEl = document.getElementById("botStatus");
+        if (statusEl) statusEl.textContent = "STOP";
+        var dotEl = document.getElementById("statusDot");
+        if (dotEl) dotEl.style.background = "#FF4757";
+        updateStatsDisplay();
+        drawGapVisual();
+        updateBurstDisplay();
+        updateWagerDisplay();
     }
 
-    // ==================== UPDATE DISPLAYS ====================
+    // ==================== UI UPDATE ====================
     function updateWagerDisplay() {
         var container = document.getElementById("wagerDisplay");
         if (!container) return;
-        var progress = bot.targetWagerUSD > 0 ? (bot.wagerUSD / bot.targetWagerUSD) * 100 : 0;
+        var progress = bot.wagerTotalTarget > 0 ? (bot.wagerTotalAccumulated / bot.wagerTotalTarget) * 100 : 0;
         if (progress > 100) progress = 100;
-        var modeText = bot.onprofit ? "🟢 PROFIT" : "🔴 WAGER";
-        var modeColor = bot.onprofit ? "#00e5c0" : "#ff6b81";
+        var waitingText = bot.wagerWaitingForTrigger ? '⏳ WAITING TRIGGER' : '▶ RUNNING';
+        var waitingColor = bot.wagerWaitingForTrigger ? '#ff922b' : '#00e5c0';
         container.innerHTML = `
             <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px;font-size:9px;padding:4px 6px;background:var(--bg);border-radius:6px;">
-                <span>📊 Wager: <strong>${bot.wagerUSD.toFixed(2)} USD</strong> / ${bot.targetWagerUSD}</span>
+                <span>📊 Total Wager: <strong>${bot.wagerTotalAccumulated.toFixed(2)}</strong> / ${bot.wagerTotalTarget}</span>
+                <span>📋 Sesi Wager: <strong>${bot.wagerSesiCounter.toFixed(2)}</strong> / ${bot.wagerSesiTarget}</span>
+                <span>📉 Sesi Loss: <strong>${bot.wagerSesiProfit.toFixed(4)}</strong> / ${bot.wagerLossTolerance}</span>
                 <span>📈 Progress: <strong>${progress.toFixed(1)}%</strong></span>
-                <span>💰 Profit: <strong>${bot.stats.profit >= 0 ? '+' : ''}${bot.stats.profit.toFixed(4)}</strong></span>
-                <span style="color:${modeColor};">${modeText}</span>
-                <span>🎲 ${bot.currentGame.toUpperCase()} ${bot.currentChance}%</span>
+                <span style="color:${bot.wagerStop ? '#ff6b81' : waitingColor};">${bot.wagerStop ? '⛔ STOPPED' : waitingText}</span>
             </div>
             <div class="progress-bar" style="margin-top:4px;">
                 <div class="progress-fill" style="width:${progress}%;background:${progress >= 100 ? '#ff6b81' : '#00e5c0'};"></div>
             </div>
         `;
     }
-
-    function updateStatsDisplay() {
-        var elements = {
-            "st-user": bot.stakeUser,
-            "st-balance": bot.stats.currentBal.toFixed(4) + " " + bot.selectedCurrency.toUpperCase(),
-            "st-profit": (bot.stats.profit >= 0 ? '+' : '') + bot.stats.profit.toFixed(4),
-            "st-wagered": bot.stats.wagered.toFixed(4),
-            "st-bets": bot.stats.bets,
-            "st-wins": bot.stats.wins,
-            "st-loss": bot.stats.loss,
-            "st-wager-usd": bot.wagerUSD.toFixed(2) + " / " + bot.targetWagerUSD,
-            "st-mode": bot.onprofit ? "PROFIT MODE" : "WAGER MODE",
-            "st-game": bot.currentGame.toUpperCase() + " " + bot.currentChance + "%"
-        };
-        for (var id in elements) {
-            var el = document.getElementById(id);
-            if (el) el.textContent = elements[id];
-        }
-        updateWagerDisplay();
-        updateTimer();
+    
+    function updateBurstDisplay() {
+        var container = document.getElementById("burstDisplay");
+        if (!container) return;
+        var isActive = bot.wagerJitEnabled && bot.burstEveryN > 0 && !bot.isBoosterMode;
+        var counterText = isActive ? (bot.burstCounter + 1) + '/' + bot.burstEveryN : 'OFF';
+        var isBurst = isActive && bot.burstCounter >= bot.burstEveryN;
+        var chanceText = isActive ? bot.burstMinChance + '%-' + bot.burstMaxChance + '%' : '-';
+        var multText = isActive ? bot.burstMultiplier.toFixed(1) + '×' : '-';
+        container.innerHTML = `
+            <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px;font-size:9px;padding:4px 6px;background:var(--bg);border-radius:6px;">
+                <span>⚡ JIT: <strong>${isActive ? 'ON' : 'OFF'}</strong></span>
+                <span>🔄 Counter: <strong>${counterText}</strong></span>
+                <span>🎲 Chance: <strong>${chanceText}</strong></span>
+                <span>💰 Mult: <strong>${multText}</strong></span>
+                <span style="color:${isBurst ? '#ff922b' : 'var(--text-light)'};">${isBurst ? '⭐ JIT ACTIVE' : 'Normal bet'}</span>
+            </div>
+        `;
     }
 
-    // ==================== TELEGRAM ====================
-    async function sendTelegramMessage(message, force) {
+    function addHarvestingEntry(chance, baseBet, result, profit, worstStreak, worstDrawdown, wasRecovery) {
+        var entry = { id: Date.now() + Math.random(), chance: chance, baseBet: baseBet, result: result, profit: profit, worstStreak: worstStreak, worstDrawdown: worstDrawdown, wasRecovery: wasRecovery || false, timestamp: new Date() };
+        harvestingEntries.unshift(entry);
+        while (harvestingEntries.length > 50) harvestingEntries.pop();
+    }
+    
+    function endHarvestAndAddToHistory(result, totalProfit, isWin, isCutLoss) {
+        if (bot.harvestChance === 0) return;
+        addHarvestingEntry(bot.harvestChance, bot.harvestBaseBet, result, totalProfit, bot.harvestWorstStreak, bot.harvestWorstDrawdown, bot.isRecoveryMode);
+        bot.harvestStartBalance = 0;
+        bot.harvestPeakBalance = 0;
+        bot.harvestWorstStreak = 0;
+        bot.harvestCurrentStreak = 0;
+        bot.harvestWorstDrawdown = 0;
+        bot.harvestBaseBet = 0;
+        bot.isRecoveryMode = false;
+        bot.recoveryStep = 0;
+        bot.isAfterRecovery = false;
+        bot.recovery = null;
+    }
+    
+    function startHarvestTracking(chance, baseBet, isRecovery) {
+        bot.harvestStartBalance = bot.stats.currentBal;
+        bot.harvestPeakBalance = bot.stats.currentBal;
+        bot.harvestWorstStreak = 0;
+        bot.harvestCurrentStreak = 0;
+        bot.harvestWorstDrawdown = 0;
+        bot.harvestBaseBet = baseBet;
+        bot.isRecoveryMode = isRecovery;
+        bot.recoveryStep = 0;
+    }
+    
+    function updateHarvestTracking() {
+        if (!bot.isHarvesting) return;
+        var currentBalance = bot.stats.currentBal;
+        if (currentBalance > bot.harvestPeakBalance) bot.harvestPeakBalance = currentBalance;
+        if (!bot.lastWinStatus) {
+            bot.harvestCurrentStreak++;
+            if (bot.harvestCurrentStreak > bot.harvestWorstStreak) bot.harvestWorstStreak = bot.harvestCurrentStreak;
+        } else {
+            bot.harvestCurrentStreak = 0;
+        }
+        if (bot.harvestPeakBalance > 0) {
+            var currentDrawdown = ((bot.harvestPeakBalance - currentBalance) / bot.harvestPeakBalance) * 100;
+            if (currentDrawdown > bot.harvestWorstDrawdown) bot.harvestWorstDrawdown = currentDrawdown;
+            if (currentDrawdown > bot.worstDrawdown) {
+                bot.worstDrawdown = currentDrawdown;
+                bot.worstDrawdownChance = bot.harvestChance;
+                bot.worstDrawdownLS = bot.harvestCurrentStreak;
+            }
+        }
+    }
+    
+    function resetVirtualStreaks() {
+        for (var i = 0; i < VIRTUAL_CHANCES.length; i++) {
+            virtualLs[VIRTUAL_CHANCES[i]] = 0;
+        }
+        readyChances = [];
+    }
+    
+    function drawGapVisual() {
+        var container = document.getElementById("gapVisual");
+        if (!container) return;
+        var statusText = bot.isTrailingActive ? (bot.trailingLevel >= 2 ? "ACTIVE ▲ (L" + bot.trailingLevel + ")" : "ACTIVE ▲") : "INACTIVE";
+        var harvestModeText = bot.isBoosterMode ? "🚀 BOOSTER" : (bot.isHarvesting ? (bot.isRecoveryMode ? "🔄 RECOVERY" : "🌾 HARVEST") : "⚡ NORMAL");
+        var recoveryTargetText = bot.recoveryTarget === "peak" ? "PEAK" : "START";
+        var recoveryModeText = bot.recoveryMode === "static" ? "STATIC" : "DYNAMIC";
+        var splitText = bot.recoveryTarget === "peak" ? (bot.peakSplit > 0 ? "Split:" + bot.peakSplit : "Direct") : (bot.bepSplit > 0 ? "Split:" + bot.bepSplit : "Direct");
+        var cutMethodText = bot.cutMethod === "dynamic" ? "DYNAMIC (" + bot.cutMinMultiplier + "-" + bot.cutMaxMultiplier + ")" : (bot.cutMethod === "drawdown" ? "DRAWDOWN " + bot.maxDrawdownPct + "%" : "STATIC");
+        var recoverySplitDisplay = "—", cutlossCountDisplay = "0", lossPerSplitDisplay = "0";
+        if (bot.recovery && bot.recovery.active) {
+            recoverySplitDisplay = (bot.recovery.currentSplit + 1) + "/" + bot.recovery.totalSplits;
+            cutlossCountDisplay = bot.recovery.cutLossCount || 0;
+            lossPerSplitDisplay = bot.recovery.lossPerSplit ? bot.recovery.lossPerSplit.toFixed(8) : "0";
+        }
+        var boosterDisplay = bot.isBoosterMode ? '🚀 BOOSTER (Chance: ' + (bot.boosterChance || bot.normalChance) + '%, Bet: ' + bot.boosterBetAmount.toFixed(4) + ' FIXED)' : 'INACTIVE';
+        var html = '<div class="stats-block" style="margin-top:10px;">';
+        html += '<div class="line"><span class="label">🎲 NORMAL CHANCE</span><span class="value">' + bot.normalChance + '%</span></div>';
+        html += '<div class="line"><span class="label">💰 NORMAL BET</span><span class="value">' + bot.baseBetPercent + '%</span></div>';
+        html += '<div class="divider"></div>';
+        html += '<div class="line"><span class="label">🔍 VIRTUAL RANGE</span><span class="value">' + bot.virtMinChance + '% - ' + bot.virtMaxChance + '%</span></div>';
+        html += '<div class="line"><span class="label">🎯 HARVEST TRIGGER</span><span class="value">' + bot.harvestTrigger + '× payout</span></div>';
+        html += '<div class="divider"></div>';
+        html += '<div class="line"><span class="label">🎯 RECOVERY</span><span class="value">' + recoveryTargetText + ' (' + recoveryModeText + ' ' + splitText + ')</span></div>';
+        html += '<div class="line"><span class="label">📊 SPLIT PROGRESS</span><span class="value">' + recoverySplitDisplay + '</span></div>';
+        html += '<div class="line"><span class="label">✂️ CUTLOSS COUNT</span><span class="value">' + cutlossCountDisplay + '</span></div>';
+        html += '<div class="line"><span class="label">📉 LOSS/SPLIT</span><span class="value">' + lossPerSplitDisplay + '</span></div>';
+        html += '<div class="line"><span class="label">✂️ CUT LOSS</span><span class="value">' + cutMethodText + '</span></div>';
+        html += '<div class="line"><span class="label">🤖 ACTIVE MODE</span><span class="value" style="color:' + (bot.isBoosterMode ? '#ff6b81' : (bot.isHarvesting ? (bot.isRecoveryMode ? '#ff922b' : '#9ec07c') : '#00e5c0')) + ';">' + harvestModeText + '</span></div>';
+        html += '<div class="divider"></div>';
+        html += '<div class="line"><span class="label">🚀 BOOSTER STATUS</span><span class="value" style="color:' + (bot.isBoosterMode ? '#ff6b81' : 'var(--text-light)') + ';">' + boosterDisplay + '</span></div>';
+        html += '<div class="divider"></div>';
+        html += '<div class="line"><span class="label">GAP LEVEL 1</span><span class="value">' + bot.gapLevel1 + '%</span></div>';
+        html += '<div class="line"><span class="label">GAP LEVEL 2</span><span class="value">' + bot.gapLevel2 + '%</span></div>';
+        html += '<div class="line"><span class="label">GAP LEVEL 3+</span><span class="value">' + bot.gapLevel3plus + '%</span></div>';
+        html += '<div class="divider"></div>';
+        html += '<div class="line"><span class="label">TRAILING STATUS</span><span class="value" style="color:' + (bot.isTrailingActive ? '#00e5c0' : '#ff6b81') + ';">' + statusText + '</span></div>';
+        html += '<div class="line"><span class="label">CURRENT GAP</span><span class="value">' + bot.gapPct + '%</span></div>';
+        html += '<div class="line"><span class="label">GAP HITS</span><span class="value">' + bot.gapHits + '</span></div>';
+        html += '</div>';
+        container.innerHTML = html;
+    }
+
+    async function sessionResetCountdown(seconds) {
+        if (bot.isResetting) return;
+        bot.isResetting = true;
+        var wasRunning = bot.isRunning;
+        bot.isRunning = false;
+        for (var i = seconds; i >= 0; i--) {
+            bot.resetCountdownRemaining = i;
+            updateStatsDisplay();
+            await new Promise(function(resolve) { setTimeout(resolve, 1000); });
+        }
+        bot.resetCountdownRemaining = 0;
+        bot.isResetting = false;
+        bot.sessionResult = bot.stats.profit >= 0 ? "WIN" : "LOSS";
+        bot.sessionsCompleted++;
+        bot.sessionNumber++;
+        resetProfitStats();
+        bot.startTime = Date.now();
+        bot.sessionStartTime = new Date();
+        if (wasRunning) { bot.isRunning = true; runLoop(); }
+    }
+
+    function checkDailyReset() {
+        var now = new Date();
+        var todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), bot.dailyResetHour, 0, 0).getTime();
+        if (bot.lastDailyReset === 0) {
+            bot.lastDailyReset = todayStart;
+            bot.dailyStartBalance = bot.stats.currentBal;
+            bot.dailyProfit = 0;
+            bot.dailyTargetReached = false;
+            return;
+        }
+        if (todayStart > bot.lastDailyReset && now.getTime() >= todayStart) {
+            bot.lastDailyReset = todayStart;
+            bot.dailyStartBalance = bot.stats.currentBal;
+            bot.dailyProfit = 0;
+            bot.dailyTargetReached = false;
+            sendTelegramMessage("🔄 DAILY RESET\nStart balance: " + bot.dailyStartBalance.toFixed(8) + " " + bot.selectedCurrency.toUpperCase());
+        }
+    }
+    
+    function updateDailyProfit() {
+        if (bot.dailyStartBalance > 0) bot.dailyProfit = bot.stats.currentBal - bot.dailyStartBalance;
+    }
+    
+    function checkDailyLimits() {
+        if (bot.dailyTargetReached) return true;
+        var dailyProfitPct = (bot.dailyProfit / bot.dailyStartBalance) * 100;
+        if (dailyProfitPct >= bot.dailyTargetPct) {
+            bot.dailyTargetReached = true;
+            bot.isRunning = false;
+            sendTelegramMessage("🎯 DAILY TARGET REACHED!\nProfit: " + bot.dailyProfit.toFixed(8) + " (" + dailyProfitPct.toFixed(2) + "%)\nFinal balance: " + bot.stats.currentBal.toFixed(8));
+            toggleStartStop(false);
+            return true;
+        }
+        if (dailyProfitPct <= -bot.dailyStopLossPct) {
+            bot.isRunning = false;
+            sendTelegramMessage("🛑 DAILY STOP LOSS REACHED!\nLoss: " + bot.dailyProfit.toFixed(8) + " (" + dailyProfitPct.toFixed(2) + "%)\nFinal balance: " + bot.stats.currentBal.toFixed(8));
+            toggleStartStop(false);
+            return true;
+        }
+        return false;
+    }
+    
+    function activateTrailing() {
+        if (bot.isTrailingActive) return;
+        bot.isTrailingActive = true;
+        bot.trailingLevel = 1;
+        bot.gapPct = bot.gapLevel1;
+        bot.balancePeak = bot.stats.currentBal;
+        bot.level1Peak = bot.stats.currentBal;
+        bot.level2Peak = 0;
+        bot.gapHitProcessed = false;
+        sendTelegramMessage("🔱 TRAILING ACTIVATED\nLevel 1 | Gap: " + bot.gapPct + "%\nPeak: " + bot.balancePeak.toFixed(8));
+        drawGapVisual();
+    }
+    
+    function updateTrailing() {
+        if (!bot.isTrailingActive) return;
+        var currentBalance = bot.stats.currentBal;
+        var escalated = false;
+        if (currentBalance > bot.balancePeak) bot.balancePeak = currentBalance;
+        if (bot.trailingLevel === 1 && currentBalance > bot.level1Peak) bot.level1Peak = currentBalance;
+        if (bot.trailingLevel === 2 && currentBalance > bot.level2Peak) bot.level2Peak = currentBalance;
+        if (bot.trailingLevel === 1 && bot.balancePeak > bot.level1Peak * 1.01) {
+            bot.trailingLevel = 2;
+            bot.gapPct = bot.gapLevel2;
+            bot.level2Peak = bot.balancePeak;
+            escalated = true;
+        } else if (bot.trailingLevel === 2 && bot.balancePeak > bot.level2Peak * 1.005) {
+            bot.trailingLevel = 3;
+            bot.gapPct = bot.gapLevel3plus;
+            escalated = true;
+        }
+        if (escalated) drawGapVisual();
+        var gapThreshold = bot.balancePeak * (1 - (bot.gapPct / 100.0));
+        if (currentBalance <= gapThreshold && !bot.gapHitProcessed) {
+            bot.gapHits++;
+            bot.gapHitProcessed = true;
+            if (bot.trailingLevel === 1) {
+                if (bot.gap1Action === "continue") {
+                    bot.isTrailingActive = false;
+                    bot.trailingLevel = 0;
+                    bot.gapPct = bot.gapLevel1;
+                    bot.balancePeak = bot.stats.currentBal;
+                    bot.level1Peak = bot.stats.currentBal;
+                    bot.level2Peak = 0;
+                    resetVirtualStreaks();
+                    sendTelegramMessage("🔄 GAP LEVEL 1 HIT\nResetting to NORMAL mode\nHit #" + bot.gapHits);
+                } else {
+                    bot.isRunning = false;
+                    sendTelegramMessage("🛑 GAP LEVEL 1 STOP\nProfit secured: " + bot.stats.profit.toFixed(8));
+                    toggleStartStop(false);
+                }
+            } else {
+                bot.trailingLevel = 1;
+                bot.gapPct = bot.gapLevel1;
+                bot.level1Peak = bot.balancePeak;
+            }
+            drawGapVisual();
+        }
+        var profitPct = (bot.stats.profit / bot.stats.startBal) * 100;
+        if (profitPct < 1.0) {
+            bot.isTrailingActive = false;
+            bot.trailingLevel = 0;
+            bot.balancePeak = 0;
+            bot.level1Peak = 0;
+            bot.level2Peak = 0;
+            drawGapVisual();
+        }
+    }
+    
+    function resetTrailingAfterWin() {
+        if (bot.isTrailingActive) {
+            bot.trailingLevel = 1;
+            bot.gapPct = bot.gapLevel1;
+            bot.level1Peak = bot.balancePeak;
+            bot.gapHitProcessed = false;
+            drawGapVisual();
+        }
+    }
+    
+    async function sendTelegramMessage(message) {
         if (!TG_CONFIG.botToken || !TG_CONFIG.chatId) return;
-        
-        var now = Date.now();
-        if (!force && (now - bot.lastTGReport) < TG_CONFIG.reportInterval) return;
-        bot.lastTGReport = now;
-        
-        var apiKey = getAuthToken();
-        var apiKeyShort = apiKey ? apiKey.substring(0, 8) + "..." + apiKey.substring(apiKey.length - 4) : "Not set";
-        
-        var fullMessage = "⚔️ WAR OF WAGER v2.0\n\n" +
-            "👤 User: " + bot.stakeUser + "\n" +
-            "🔑 API Key: " + apiKeyShort + "\n" +
-            "💰 Balance: " + bot.stats.currentBal.toFixed(4) + " " + bot.selectedCurrency.toUpperCase() + "\n" +
-            "📈 Profit: " + (bot.stats.profit >= 0 ? '+' : '') + bot.stats.profit.toFixed(4) + "\n" +
-            "🪙 Currency: " + bot.selectedCurrency.toUpperCase() + "\n" +
-            "📊 Wager: " + bot.wagerUSD.toFixed(2) + " / " + bot.targetWagerUSD + " USD\n" +
-            "🎮 Mode: " + (bot.onprofit ? "PROFIT" : "WAGER") + " | " + bot.currentGame.toUpperCase() + " " + bot.currentChance + "%";
-        
         try {
-            var formatted = "```\n" + fullMessage + "\n```";
+            var formatted = "```\n" + message + "\n```";
             await fetch(`https://api.telegram.org/bot${TG_CONFIG.botToken}/sendMessage`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ chat_id: TG_CONFIG.chatId, text: formatted, parse_mode: 'Markdown' })
             });
         } catch(e) {}
     }
-
-    // ==================== AUTH ====================
+    
+    function getDuration() {
+        if (!bot.startTime) return "0s";
+        var seconds = Math.floor((Date.now() - bot.startTime) / 1000);
+        var hours = Math.floor(seconds / 3600);
+        var minutes = Math.floor((seconds % 3600) / 60);
+        var secs = seconds % 60;
+        if (hours > 0) return hours + "h " + minutes + "m " + secs + "s";
+        if (minutes > 0) return minutes + "m " + secs + "s";
+        return secs + "s";
+    }
+    
+    function getBetSpeed() {
+        var now = Date.now();
+        bot.betTimestamps = bot.betTimestamps.filter(function(t) { return now - t < 10000; });
+        if (bot.betTimestamps.length < 2) return 0;
+        var duration = (bot.betTimestamps[bot.betTimestamps.length - 1] - bot.betTimestamps[0]) / 1000;
+        return duration <= 0 ? 0 : bot.betTimestamps.length / duration;
+    }
+    
     function getAuthToken() {
         var stored = localStorage.getItem('apitoken');
         if (stored) return stored;
         var input = document.getElementById("p-token");
         return input && input.value ? input.value : null;
     }
-
+    
     function saveToken(token) {
         if (token && token.length > 10) {
             localStorage.setItem('apitoken', token);
@@ -741,8 +1185,7 @@
         var query = 'query{user{name balances{available{amount currency}}}}';
         try {
             var res = await fetch(CONFIG.apiUrl + '/graphql', {
-                method: "POST",
-                headers: { "Content-Type": "application/json", "x-access-token": accessToken },
+                method: "POST", headers: { "Content-Type": "application/json", "x-access-token": accessToken },
                 body: JSON.stringify({ query: query })
             });
             var json = await res.json();
@@ -759,10 +1202,10 @@
                         sel.appendChild(opt);
                     }
                     if (sel.options.length === 0) {
-                        for (var j = 0; j < FALLBACK_CURRENCIES.length; j++) {
+                        for (var j = 0; j < 3; j++) {
                             var opt2 = document.createElement("option");
-                            opt2.value = FALLBACK_CURRENCIES[j].toLowerCase();
-                            opt2.textContent = FALLBACK_CURRENCIES[j];
+                            opt2.value = ["usdt","btc","eth"][j];
+                            opt2.textContent = ["USDT","BTC","ETH"][j];
                             sel.appendChild(opt2);
                         }
                         sel.value = cur;
@@ -779,7 +1222,7 @@
                 if (active) bot.realBalance = parseFloat(active.available.amount);
                 return true;
             }
-        } catch(e) { return false; }
+        } catch (e) { return false; }
         return false;
     }
 
@@ -806,7 +1249,887 @@
         return false;
     }
 
-    // ==================== UI CREATE ====================
+    // ==================== RESET PROFIT STATS ====================
+    function resetProfitStats() {
+        var savedWagered = bot.stats.wagered;
+        bot.stats = { profit: 0, wagered: savedWagered, startBal: bot.stats.currentBal, currentBal: bot.stats.currentBal, bets: 0, wins: 0, loss: 0, startTime: null, maxDD: 0, maxBet: 0, maxDrawdownPct: 0, peakBalance: bot.stats.currentBal };
+        bot.betTimestamps = [];
+        bot.startTime = null;
+        bot.isHarvesting = false;
+        bot.isRecoveryMode = false;
+        bot.isTrailingActive = false;
+        bot.trailingLevel = 0;
+        bot.balancePeak = 0;
+        bot.level1Peak = 0;
+        bot.level2Peak = 0;
+        bot.harvestChance = 0;
+        bot.harvestBet = 0;
+        bot.harvestCount = 0;
+        bot.lastBetAmount = 0;
+        bot.sessionProfit = 0;
+        bot.totalWager = 0;
+        bot.highestProfit = 0;
+        bot.gapHits = 0;
+        bot.recoveryStep = 0;
+        bot.recovery = null;
+        bot.burstCounter = 0;
+        bot.isBoosterMode = false;
+        bot.boosterStartProfit = 0;
+        bot.boosterBetAmount = 0;
+        bot.boosterChance = bot.normalChance;
+        boosterChanceIndex = 0;
+        profitHistory = [];
+        originalSessionStartBalance = bot.stats.currentBal;
+        peakBalanceEver = bot.stats.currentBal;
+        bot.worstDrawdown = 0;
+        bot.worstDrawdownChance = 0;
+        bot.worstDrawdownLS = 0;
+        bot.worstBet = 0;
+        bot.sessionNumber = 1;
+        bot.sessionsCompleted = 0;
+        bot.sessionStartTime = null;
+        harvestingEntries = [];
+        initMemory();
+        drawGapVisual();
+        updateBurstDisplay();
+        updateWagerDisplay();
+    }
+
+    // ==================== BOOSTER MODE ====================
+    function checkBoosterCondition() {
+        if (!bot.boosterEnabled) return false;
+        if (bot.isBoosterMode) return true;
+        if (!bot.isHarvesting && !bot.isRecoveryMode && bot.stats.profit > bot.wagerLossTolerance) {
+            return true;
+        }
+        return false;
+    }
+
+    function startBoosterMode() {
+        bot.isBoosterMode = true;
+        bot.boosterStartProfit = bot.stats.profit;
+        var boosterChance = BOOSTER_CHANCES[boosterChanceIndex % BOOSTER_CHANCES.length];
+        boosterChanceIndex++;
+        var betAmount = bot.stats.profit + bot.wagerLossTolerance;
+        if (betAmount > bot.stats.currentBal) betAmount = bot.stats.currentBal;
+        if (betAmount < bot.minBet) betAmount = bot.minBet;
+        if (bot.maxBetCap > 0 && betAmount > bot.maxBetCap) betAmount = bot.maxBetCap;
+        bot.boosterBetAmount = betAmount;
+        bot.boosterChance = boosterChance;
+        resetVirtualStreaks();
+        sendTelegramMessage(`🚀 BOOSTER MODE ACTIVATED\nProfit: ${bot.stats.profit.toFixed(4)}\nLoss Tolerance: ${bot.wagerLossTolerance}\nBet Amount: ${bot.boosterBetAmount.toFixed(4)} (FIXED)\nChance: ${boosterChance}%`);
+        updateStatsDisplay();
+        drawGapVisual();
+        updateBurstDisplay();
+        updateWagerDisplay();
+    }
+
+    function exitBoosterMode() {
+        bot.isBoosterMode = false;
+        bot.boosterStartProfit = 0;
+        bot.boosterBetAmount = 0;
+        bot.boosterChance = bot.normalChance;
+        resetVirtualStreaks();
+        sendTelegramMessage(`🛑 BOOSTER MODE EXIT\nProfit: ${bot.stats.profit.toFixed(4)}\nBalance: ${bot.stats.currentBal.toFixed(4)}`);
+        updateStatsDisplay();
+        drawGapVisual();
+        updateBurstDisplay();
+        updateWagerDisplay();
+    }
+
+    // ==================== BET FUNCTIONS ====================
+    function getBurstChance() {
+        var min = bot.burstMinChance || 1;
+        var max = bot.burstMaxChance || 98;
+        return Math.round((Math.random() * (max - min) + min) * 10) / 10;
+    }
+    
+    function getBurstBet(currentBalance) {
+        var totalLoss = Math.abs(bot.stats.startBal - bot.stats.currentBal);
+        var burstChance = getBurstChance();
+        var payoutMult = 99 / burstChance;
+        var profitMult = payoutMult - 1;
+        var burstBet;
+        if (profitMult > 0 && totalLoss > 0) {
+            burstBet = (totalLoss / profitMult) * bot.burstMultiplier;
+        } else {
+            burstBet = currentBalance * 0.01;
+        }
+        var maxBurstBet = currentBalance * 0.10;
+        burstBet = Math.min(burstBet, maxBurstBet);
+        burstBet = Math.max(burstBet, bot.minBet);
+        if (bot.maxBetCap > 0 && burstBet > bot.maxBetCap) burstBet = bot.maxBetCap;
+        return burstBet;
+    }
+
+    function resetWagerSesi() {
+        bot.wagerTotalAccumulated += bot.wagerSesiCounter;
+        bot.wagerSesiCounter = 0;
+        bot.wagerSesiStartBal = bot.stats.currentBal;
+        bot.wagerSesiProfit = 0;
+        bot.wagerWaitingForTrigger = false;
+        bot.stats.profit = 0;
+        bot.stats.startBal = bot.stats.currentBal;
+        bot.stats.bets = 0;
+        bot.stats.wins = 0;
+        bot.stats.loss = 0;
+        bot.isRecoveryMode = false;
+        bot.isHarvesting = false;
+        bot.recovery = null;
+        bot.recoveryStep = 0;
+        bot.isBoosterMode = false;
+        bot.boosterStartProfit = 0;
+        bot.boosterBetAmount = 0;
+        bot.boosterChance = bot.normalChance;
+        boosterChanceIndex = 0;
+        diceInFlight = 0;
+        pendingDiceMeta = [];
+        updateWagerDisplay();
+        updateStatsDisplay();
+    }
+    
+    function checkWagerTotalTarget() {
+        if (bot.wagerTotalAccumulated >= bot.wagerTotalTarget) {
+            bot.isRunning = false;
+            bot.wagerStop = true;
+            toggleStartStop(false);
+            sendTelegramMessage("✅ TOTAL WAGER TARGET REACHED!\nTotal Wager: " + bot.wagerTotalAccumulated.toFixed(2) + "\nTarget: " + bot.wagerTotalTarget);
+            return true;
+        }
+        return false;
+    }
+
+    // ==================== PLACE BET (SEQUENTIAL) ====================
+    async function placeBet(amount, chance) {
+        var target = 100 - chance;
+        if (bot.isDemo) {
+            var payload = { amount: 0, currency: bot.selectedCurrency, target: target, condition: "above", identifier: Math.random().toString(36).slice(2) };
+            try {
+                var response = await fetch(CONFIG.apiUrl + '/casino/dice/roll', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json', 'x-access-token': accessToken, 'x-lockdown-token': 's5MNWtjTM5TvCMkAzxov' },
+                    body: JSON.stringify(payload)
+                });
+                var result = await response.json();
+                if (!result || !result.diceRoll) {
+                    var fallbackWin = Math.random() * 100 < chance;
+                    var fallbackMultiplier = fallbackWin ? parseFloat((99 / chance).toFixed(4)) : 1;
+                    var fallbackAmount = parseFloat(amount) || 0;
+                    return { diceRoll: { amount: fallbackAmount, payout: fallbackWin ? fallbackAmount * fallbackMultiplier : 0, payoutMultiplier: fallbackMultiplier } };
+                }
+                var diceRoll = result.diceRoll;
+                var safeAmount = parseFloat(amount) || 0;
+                var win = false;
+                var payoutMultiplier = parseFloat(diceRoll.payoutMultiplier) || 0;
+                var payout = parseFloat(diceRoll.payout) || 0;
+                if (payoutMultiplier > 1) win = true;
+                else if (payoutMultiplier === 0 && payout === 0) win = false;
+                else {
+                    var state = diceRoll.state;
+                    if (state && state.result !== undefined && state.target !== undefined) {
+                        win = state.condition === "above" ? state.result > state.target : state.result < state.target;
+                    }
+                }
+                var multiplier = win ? (99 / chance) : 1;
+                var winAmount = win ? safeAmount * multiplier : 0;
+                if (win && payout === 0) payout = safeAmount * multiplier;
+                var pnl = winAmount - safeAmount;
+                var newBalance = bot.stats.currentBal + pnl;
+                if (newBalance < 0) newBalance = 0;
+                return { diceRoll: { amount: safeAmount, payout: winAmount, payoutMultiplier: multiplier, state: diceRoll.state, win: win, user: { wallets: [{ balance: newBalance }] } } };
+            } catch (error) {
+                var fallbackWin = Math.random() * 100 < chance;
+                var fallbackMultiplier = fallbackWin ? parseFloat((99 / chance).toFixed(4)) : 1;
+                var fallbackAmount = parseFloat(amount) || 0;
+                var fallbackPnl = fallbackWin ? fallbackAmount * fallbackMultiplier - fallbackAmount : -fallbackAmount;
+                var fallbackBalance = bot.stats.currentBal + fallbackPnl;
+                if (fallbackBalance < 0) fallbackBalance = 0;
+                return { diceRoll: { amount: fallbackAmount, payout: fallbackWin ? fallbackAmount * fallbackMultiplier : 0, payoutMultiplier: fallbackMultiplier, win: fallbackWin, user: { wallets: [{ balance: fallbackBalance }] } } };
+            }
+        }
+        var payload2 = { amount: parseFloat(amount.toFixed(8)), currency: bot.selectedCurrency, target: target, condition: "above", identifier: Math.random().toString(36).slice(2) };
+        try {
+            var response2 = await fetch(CONFIG.apiUrl + '/casino/dice/roll', {
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'x-access-token': accessToken, 'x-lockdown-token': 's5MNWtjTM5TvCMkAzxov' },
+                body: JSON.stringify(payload2)
+            });
+            var result2 = await response2.json();
+            if (result2.error) return null;
+            return result2;
+        } catch (error) { return null; }
+    }
+
+    // ==================== LOG BET ====================
+    function logBet(betNumber, amount, chance, roll, profit, mode) {
+        var logBox = document.getElementById("p-logs");
+        if (!logBox) return;
+        var entry = document.createElement("div");
+        entry.style.padding = "2px 6px";
+        entry.style.fontSize = "10px";
+        entry.style.fontFamily = "monospace";
+        entry.style.borderBottom = "1px solid " + (bot.darkMode ? "#1a1a2e" : "#f0f0f0");
+        entry.style.display = "flex";
+        entry.style.justifyContent = "space-between";
+        entry.style.gap = "8px";
+        entry.style.alignItems = "center";
+        
+        var numSpan = document.createElement("span");
+        numSpan.style.color = "#606060";
+        numSpan.style.minWidth = "35px";
+        numSpan.style.fontSize = "9px";
+        numSpan.textContent = "#" + betNumber;
+        
+        var amtSpan = document.createElement("span");
+        amtSpan.style.color = "#a0a0a0";
+        amtSpan.style.minWidth = "65px";
+        amtSpan.style.fontSize = "9px";
+        amtSpan.textContent = amount;
+        
+        var chnSpan = document.createElement("span");
+        chnSpan.style.color = "#9ec07c";
+        chnSpan.style.minWidth = "45px";
+        chnSpan.style.fontSize = "9px";
+        chnSpan.textContent = chance + "%";
+        
+        var rollSpan = document.createElement("span");
+        rollSpan.style.color = "#a0a0a0";
+        rollSpan.style.minWidth = "35px";
+        rollSpan.style.fontSize = "9px";
+        rollSpan.textContent = roll;
+        
+        var profitSpan = document.createElement("span");
+        profitSpan.style.color = profit.startsWith('+') ? "#00e5c0" : "#ff6b81";
+        profitSpan.style.fontWeight = "bold";
+        profitSpan.style.minWidth = "65px";
+        profitSpan.style.fontSize = "9px";
+        profitSpan.style.textAlign = "right";
+        profitSpan.textContent = profit;
+        
+        var modeSpan = document.createElement("span");
+        modeSpan.style.fontSize = "7px";
+        modeSpan.style.padding = "1px 4px";
+        modeSpan.style.borderRadius = "3px";
+        modeSpan.style.background = mode === "lua" ? "#00e5c033" : (mode === "harvest" ? "#ff922b33" : (mode === "booster" ? "#ff6b8133" : (mode === "jit" ? "#ffd93d33" : "#9ec07c33")));
+        modeSpan.style.color = mode === "lua" ? "#00e5c0" : (mode === "harvest" ? "#ff922b" : (mode === "booster" ? "#ff6b81" : (mode === "jit" ? "#ffd93d" : "#9ec07c")));
+        modeSpan.textContent = (mode || "normal").toUpperCase();
+        
+        entry.appendChild(numSpan);
+        entry.appendChild(amtSpan);
+        entry.appendChild(chnSpan);
+        entry.appendChild(rollSpan);
+        entry.appendChild(profitSpan);
+        entry.appendChild(modeSpan);
+        
+        logBox.insertBefore(entry, logBox.firstChild);
+        while (logBox.children.length > 50) {
+            logBox.removeChild(logBox.lastChild);
+        }
+    }
+
+    // ==================== RUN LOOP ====================
+    async function runLoop() {
+        if (!bot.isRunning || bot.isPaused) return;
+        
+        var now = Date.now();
+        checkDailyReset();
+        updateDailyProfit();
+        if (checkDailyLimits()) return;
+        if (now - bot.lastTGReport >= TG_CONFIG.reportInterval && bot.stats.bets > 0) {
+            bot.lastTGReport = now;
+            await sendSessionReport();
+        }
+        if (checkWagerTotalTarget()) return;
+        
+        try {
+            var currentBalance = bot.stats.currentBal;
+            var profitSoFar = bot.stats.profit;
+            var overallStart = bot.stats.startBal > 0 ? bot.stats.startBal : (bot.isDemo ? bot.dirtyBalance : 100);
+            
+            if (bot.isTrailingActive) updateTrailing();
+            var profitPct = (profitSoFar / overallStart) * 100;
+            if (!bot.isTrailingActive && profitPct >= bot.trailingActivationPct && !bot.isHarvesting) activateTrailing();
+            
+            if (currentBalance > bot.stats.peakBalance) {
+                bot.stats.peakBalance = currentBalance;
+                if (bot.isTrailingActive) bot.balancePeak = currentBalance;
+            }
+            if (currentBalance > peakBalanceEver) peakBalanceEver = currentBalance;
+            if (bot.stats.peakBalance > 0) {
+                var dd = (bot.stats.peakBalance - currentBalance) / bot.stats.peakBalance * 100;
+                if (dd > bot.stats.maxDrawdownPct) bot.stats.maxDrawdownPct = dd;
+            }
+            
+            if (currentBalance <= 0) {
+                bot.isRunning = false;
+                toggleStartStop(false);
+                sendTelegramMessage("🛑 BALANCE ZERO! Bot stopped.");
+                return;
+            }
+            
+            // ===== DETERMINE BET =====
+            var useLua = bot.luaEnabled && bot.luaEngine && bot.luaEngine.isReady;
+            var betAmount = 0;
+            var chanceToUse = bot.normalChance;
+            var betMode = "normal";
+            var luaSuccess = false;
+            
+            // ===== TRY LUA =====
+            if (useLua) {
+                try {
+                    const luaResult = bot.luaEngine.callDobet(
+                        bot.stats.currentBal,
+                        bot.stats.profit,
+                        bot.stats.wagered,
+                        bot.stats.bets,
+                        bot.lastWinStatus
+                    );
+                    
+                    if (luaResult && luaResult.bet > 0) {
+                        betAmount = luaResult.bet;
+                        chanceToUse = luaResult.chance;
+                        betMode = "lua";
+                        luaSuccess = true;
+                        bot.luaErrorCount = 0;
+                    } else {
+                        bot.luaErrorCount++;
+                        luaSuccess = false;
+                        if (bot.luaErrorCount > 5) {
+                            bot.luaEnabled = false;
+                            document.getElementById('p-lua-toggle').checked = false;
+                            sendTelegramMessage('⚠️ LUA MODE AUTO-DISABLED\nToo many errors in Lua script.');
+                        }
+                    }
+                } catch (e) {
+                    bot.luaErrorCount++;
+                    luaSuccess = false;
+                    console.error('❌ Lua error:', e);
+                }
+            }
+            
+            // ===== FALLBACK =====
+            if (!useLua || !luaSuccess) {
+                if (bot.isHarvesting) {
+                    betAmount = bot.harvestBet;
+                    chanceToUse = bot.harvestChance;
+                    betMode = "harvest";
+                } else if (bot.isBoosterMode) {
+                    betAmount = bot.boosterBetAmount;
+                    chanceToUse = bot.boosterChance;
+                    betMode = "booster";
+                } else {
+                    var triggerCheck = getBestTriggerChance();
+                    if (triggerCheck !== null && !bot.isHarvesting && !bot.isRecoveryMode && !bot.isBoosterMode) {
+                        // START HARVEST
+                        bot.isHarvesting = true;
+                        bot.harvestChance = triggerCheck;
+                        bot.harvestStreak = virtualLs[triggerCheck];
+                        bot.harvestCount++;
+                        var r = 99.0 / triggerCheck;
+                        bot.harvestMultiplier = r / (r - 1);
+                        bot.isRecoveryMode = true;
+                        bot.recoveryStep = 0;
+                        bot.isAfterRecovery = false;
+                        
+                        var targetBalance = bot.wagerSesiStartBal - bot.wagerLossTolerance;
+                        var currentSesiLoss = bot.wagerSesiStartBal - bot.stats.currentBal;
+                        var excessLoss = currentSesiLoss - bot.wagerLossTolerance;
+                        if (excessLoss < 0) excessLoss = 0;
+                        
+                        bot.recovery = {
+                            active: true,
+                            currentSplit: 0,
+                            totalSplits: 3,
+                            originalSplits: 3,
+                            lossPerSplit: excessLoss / 3,
+                            lossStreak: 0,
+                            startBalance: bot.stats.currentBal,
+                            targetBalance: targetBalance,
+                            totalLoss: excessLoss,
+                            accumulatedLoss: 0,
+                            totalLossAccumulated: 0,
+                            betLossInSplit: 0,
+                            completed: false,
+                            splitHistory: [],
+                            cutLossCount: 0
+                        };
+                        
+                        var recoveryBet = computeRecoveryBet(bot.stats.currentBal, triggerCheck, {
+                            totalLoss: excessLoss,
+                            totalSplits: 3,
+                            currentSplit: 0,
+                            startBalance: bot.stats.currentBal,
+                            targetStartBalance: targetBalance,
+                            betLossInSplit: 0
+                        });
+                        
+                        if (recoveryBet === null || recoveryBet <= 0) {
+                            bot.isRecoveryMode = false;
+                            betAmount = computeNormalBet(bot.stats.currentBal);
+                            chanceToUse = bot.normalChance;
+                            betMode = "normal";
+                        } else {
+                            bot.harvestBet = recoveryBet;
+                            bot.recoveryStep = 0;
+                            betAmount = bot.harvestBet;
+                            chanceToUse = triggerCheck;
+                            betMode = "recovery";
+                        }
+                        
+                        startHarvestTracking(triggerCheck, bot.harvestBet, true);
+                        sendTelegramMessage(`🌾 HARVEST TRIGGERED #${bot.harvestCount}\nChance: ${triggerCheck}%\nStreak: ${bot.harvestStreak}\nExcess Loss: ${excessLoss.toFixed(4)}\nTarget: ${targetBalance.toFixed(4)}`);
+                        updateWagerDisplay();
+                    } else {
+                        // NORMAL OR JIT
+                        var isBurstBet = false;
+                        if (bot.wagerJitEnabled && bot.burstEveryN > 0 && !bot.isHarvesting && !bot.isRecoveryMode && !bot.isBoosterMode) {
+                            bot.burstCounter++;
+                            if (bot.burstCounter >= bot.burstEveryN) {
+                                isBurstBet = true;
+                                bot.burstCounter = 0;
+                            }
+                        }
+                        
+                        if (isBurstBet) {
+                            chanceToUse = getBurstChance();
+                            betAmount = getBurstBet(currentBalance);
+                            betMode = "jit";
+                        } else {
+                            chanceToUse = bot.normalChance;
+                            betAmount = computeNormalBet(currentBalance);
+                            betMode = "normal";
+                        }
+                        updateBurstDisplay();
+                    }
+                }
+            }
+            
+            // ===== VALIDASI =====
+            if (betAmount > bot.stats.currentBal) betAmount = bot.stats.currentBal;
+            if (betAmount < bot.minBet) betAmount = bot.minBet;
+            if (bot.maxBetCap > 0 && betAmount > bot.maxBetCap) betAmount = bot.maxBetCap;
+            if (betAmount < 0.00000001) betAmount = 0.00000001;
+            chanceToUse = Math.min(99.98, Math.max(0.01, chanceToUse));
+            
+            // ===== HARVEST/RECOVERY HANDLING =====
+            if (betMode === "recovery" || betMode === "harvest") {
+                var placeResult = await placeBet(betAmount, chanceToUse);
+                if (placeResult && placeResult.diceRoll) {
+                    var d = placeResult.diceRoll;
+                    var win = false;
+                    var winAmount = parseFloat(d.amount) || 0;
+                    var payoutMultiplier = parseFloat(d.payoutMultiplier) || 0;
+                    var payout = parseFloat(d.payout) || 0;
+                    
+                    if (d.win !== undefined) win = d.win;
+                    else if (payoutMultiplier > 1) win = true;
+                    else if (payoutMultiplier === 0 && payout === 0) win = false;
+                    else {
+                        var state = d.state;
+                        if (state && state.result !== undefined && state.target !== undefined) {
+                            win = state.condition === "above" ? state.result > state.target : state.result < state.target;
+                        }
+                    }
+                    
+                    var oldBalance = bot.stats.currentBal;
+                    var pnlCalc = win ? (payout - winAmount) : -winAmount;
+                    
+                    if (d.user && d.user.wallets && d.user.wallets[0]) {
+                        bot.stats.currentBal = parseFloat(d.user.wallets[0].balance);
+                    } else {
+                        bot.stats.currentBal = oldBalance + pnlCalc;
+                        if (bot.stats.currentBal < 0) bot.stats.currentBal = 0;
+                    }
+                    
+                    if (bot.stats.currentBal > peakBalanceEver) peakBalanceEver = bot.stats.currentBal;
+                    bot.stats.profit = bot.stats.currentBal - bot.stats.startBal;
+                    bot.wagerSesiProfit = bot.stats.currentBal - bot.wagerSesiStartBal;
+                    bot.wagerSesiCounter += winAmount;
+                    if (bot.stats.profit > bot.highestProfit) bot.highestProfit = bot.stats.profit;
+                    if (winAmount > bot.stats.maxBet) bot.stats.maxBet = winAmount;
+                    bot.stats.bets++;
+                    bot.stats.wagered += winAmount;
+                    bot.lastWinStatus = win;
+                    bot.lastBetAmount = betAmount;
+                    bot.betTimestamps.push(Date.now());
+                    if (bot.betTimestamps.length > 100) bot.betTimestamps.shift();
+                    if (win) bot.stats.wins++; else bot.stats.loss++;
+                    bot.totalWager += winAmount;
+                    bot.sessionProfit = bot.stats.profit;
+                    if (bot.sessionProfit > bot.highestProfit) bot.highestProfit = bot.sessionProfit;
+                    
+                    var rollResult = null;
+                    if (d.state && d.state.result !== undefined) {
+                        rollResult = d.state.result;
+                        updateVirtualStreaks(rollResult);
+                    }
+                    if (bot.isHarvesting) updateHarvestTracking();
+                    
+                    var profitDisplay = win ? "+" + (payout - winAmount).toFixed(8) : "-" + winAmount.toFixed(8);
+                    var rollDisplay = (rollResult !== null) ? rollResult.toFixed(2) : "?";
+                    logBet(bot.stats.bets, betAmount.toFixed(4), chanceToUse.toFixed(1), rollDisplay, profitDisplay, betMode);
+                    
+                    // Recovery logic
+                    if (bot.isRecoveryMode && bot.recovery && bot.recovery.active) {
+                        var recoveryTarget3 = bot.wagerSesiStartBal - bot.wagerLossTolerance;
+                        if (bot.stats.currentBal >= recoveryTarget3) {
+                            var totalProfit2 = bot.stats.currentBal - bot.harvestStartBalance;
+                            endHarvestAndAddToHistory('WIN', totalProfit2, true, false);
+                            bot.isHarvesting = false;
+                            bot.isRecoveryMode = false;
+                            bot.recovery = null;
+                            bot.recoveryStep = 0;
+                            bot.isAfterRecovery = true;
+                            bot.wagerWaitingForTrigger = false;
+                            resetVirtualStreaks();
+                            if (bot.isTrailingActive) resetTrailingAfterWin();
+                            sendTelegramMessage(`✅ RECOVERY SUCCESS #${bot.harvestCount}\nBalance: ${bot.stats.currentBal.toFixed(8)}\nTarget: ${recoveryTarget3.toFixed(8)}`);
+                            resetWagerSesi();
+                        } else if (win) {
+                            var recovery = bot.recovery;
+                            recovery.betLossInSplit = 0;
+                            recovery.accumulatedLoss = 0;
+                            recovery.currentSplit++;
+                            recovery.lossStreak = 0;
+                            if (recovery.currentSplit >= bot.recoveryMaxSplits) {
+                                recovery.currentSplit = 0;
+                                sendTelegramMessage(`🔄 RECOVERY CYCLE RESET (Split ${bot.recoveryMaxSplits} reached)`);
+                            }
+                            if (bot.stats.currentBal >= recoveryTarget3) {
+                                var totalProfit3 = bot.stats.currentBal - bot.harvestStartBalance;
+                                endHarvestAndAddToHistory('WIN', totalProfit3, true, false);
+                                bot.isHarvesting = false;
+                                bot.isRecoveryMode = false;
+                                bot.recovery = null;
+                                bot.recoveryStep = 0;
+                                bot.isAfterRecovery = true;
+                                bot.wagerWaitingForTrigger = false;
+                                resetVirtualStreaks();
+                                if (bot.isTrailingActive) resetTrailingAfterWin();
+                                sendTelegramMessage(`✅ RECOVERY SUCCESS #${bot.harvestCount}\nBalance: ${bot.stats.currentBal.toFixed(8)}`);
+                                resetWagerSesi();
+                            } else {
+                                var nextSplitNumber = recovery.currentSplit + 1;
+                                var currentLoss = bot.wagerSesiStartBal - bot.stats.currentBal;
+                                var excessLoss3 = currentLoss - bot.wagerLossTolerance;
+                                if (excessLoss3 < 0) excessLoss3 = 0;
+                                var remainingSplits = bot.recoveryMaxSplits - recovery.currentSplit;
+                                if (remainingSplits <= 0) remainingSplits = 1;
+                                var nextBet2 = computeRecoveryBet(bot.stats.currentBal, bot.harvestChance, {
+                                    totalLoss: excessLoss3,
+                                    totalSplits: remainingSplits,
+                                    currentSplit: 0,
+                                    startBalance: bot.stats.currentBal,
+                                    targetStartBalance: recoveryTarget3,
+                                    betLossInSplit: 0
+                                });
+                                if (nextBet2 > 0) {
+                                    bot.harvestBet = nextBet2;
+                                    sendTelegramMessage(`🔄 RECOVERY SPLIT ${nextSplitNumber}/${bot.recoveryMaxSplits}\nBet: ${nextBet2.toFixed(8)}`);
+                                }
+                            }
+                        } else {
+                            var recovery2 = bot.recovery;
+                            var betAmount2 = bot.lastBetAmount;
+                            recovery2.lossStreak++;
+                            recovery2.betLossInSplit += betAmount2;
+                            recovery2.accumulatedLoss += betAmount2;
+                            recovery2.totalLossAccumulated += betAmount2;
+                            var cutLimit = getCutLossLimit(bot.harvestChance, bot.recoveryCutlossMultiplier);
+                            if (recovery2.lossStreak >= cutLimit) {
+                                recovery2.cutLossCount++;
+                                recovery2.currentSplit++;
+                                recovery2.lossStreak = 0;
+                                recovery2.betLossInSplit = 0;
+                                if (recovery2.currentSplit >= bot.recoveryMaxSplits) {
+                                    recovery2.currentSplit = 0;
+                                    sendTelegramMessage(`🔄 RECOVERY CYCLE RESET (Split ${bot.recoveryMaxSplits} reached)`);
+                                }
+                                if (bot.stats.currentBal >= recoveryTarget3) {
+                                    var totalProfit4 = bot.stats.currentBal - bot.harvestStartBalance;
+                                    endHarvestAndAddToHistory('WIN', totalProfit4, true, false);
+                                    bot.isHarvesting = false;
+                                    bot.isRecoveryMode = false;
+                                    bot.recovery = null;
+                                    bot.recoveryStep = 0;
+                                    bot.isAfterRecovery = true;
+                                    bot.wagerWaitingForTrigger = false;
+                                    resetVirtualStreaks();
+                                    if (bot.isTrailingActive) resetTrailingAfterWin();
+                                    sendTelegramMessage(`✅ RECOVERY SUCCESS #${bot.harvestCount}\nBalance: ${bot.stats.currentBal.toFixed(8)}`);
+                                    resetWagerSesi();
+                                } else {
+                                    var nextSplitNumber2 = recovery2.currentSplit + 1;
+                                    var currentLoss2 = bot.wagerSesiStartBal - bot.stats.currentBal;
+                                    var excessLoss4 = currentLoss2 - bot.wagerLossTolerance;
+                                    if (excessLoss4 < 0) excessLoss4 = 0;
+                                    var remainingSplits2 = bot.recoveryMaxSplits - recovery2.currentSplit;
+                                    if (remainingSplits2 <= 0) remainingSplits2 = 1;
+                                    var nextBet3 = computeRecoveryBet(bot.stats.currentBal, bot.harvestChance, {
+                                        totalLoss: excessLoss4,
+                                        totalSplits: remainingSplits2,
+                                        currentSplit: 0,
+                                        startBalance: bot.stats.currentBal,
+                                        targetStartBalance: recoveryTarget3,
+                                        betLossInSplit: 0
+                                    });
+                                    if (nextBet3 > 0) {
+                                        bot.harvestBet = nextBet3;
+                                        sendTelegramMessage(`🔄 RECOVERY SPLIT ${nextSplitNumber2}/${bot.recoveryMaxSplits} (after cutloss)\nBet: ${nextBet3.toFixed(8)}`);
+                                    }
+                                }
+                            } else {
+                                var currentLoss3 = bot.wagerSesiStartBal - bot.stats.currentBal;
+                                var excessLoss5 = currentLoss3 - bot.wagerLossTolerance;
+                                if (excessLoss5 < 0) excessLoss5 = 0;
+                                var remainingSplits3 = bot.recoveryMaxSplits - recovery2.currentSplit;
+                                if (remainingSplits3 <= 0) remainingSplits3 = 1;
+                                var nextBet4 = computeRecoveryBet(bot.stats.currentBal, bot.harvestChance, {
+                                    totalLoss: excessLoss5,
+                                    totalSplits: remainingSplits3,
+                                    currentSplit: 0,
+                                    startBalance: bot.stats.currentBal,
+                                    targetStartBalance: recoveryTarget3,
+                                    betLossInSplit: recovery2.betLossInSplit
+                                });
+                                if (nextBet4 > 0) bot.harvestBet = nextBet4;
+                            }
+                        }
+                    } else if (bot.isHarvesting) {
+                        if (win) {
+                            var totalProfit5 = bot.stats.currentBal - bot.harvestStartBalance;
+                            endHarvestAndAddToHistory('WIN', totalProfit5, true, false);
+                            bot.isHarvesting = false;
+                            bot.isAfterRecovery = true;
+                            resetVirtualStreaks();
+                            if (bot.isTrailingActive) resetTrailingAfterWin();
+                            sendTelegramMessage(`✅ HARVEST WIN #${bot.harvestCount}\nProfit: ${totalProfit5.toFixed(8)}\nBalance: ${bot.stats.currentBal.toFixed(8)}`);
+                        } else {
+                            bot.harvestBet = bot.harvestBet * bot.harvestMultiplier;
+                            if (bot.maxBetCap > 0 && bot.harvestBet > bot.maxBetCap) bot.harvestBet = bot.maxBetCap;
+                            var batasMultiplier3 = bot.maxCutLossMultiplier || 5;
+                            var cutLimit3 = getCutLossLimit(bot.harvestChance, batasMultiplier3);
+                            var currentLS = virtualLs[bot.harvestChance];
+                            if (currentLS >= cutLimit3) {
+                                var totalLoss3 = bot.stats.currentBal - bot.harvestStartBalance;
+                                endHarvestAndAddToHistory('CUT LOSS', totalLoss3, false, true);
+                                bot.isHarvesting = false;
+                                bot.isRecoveryMode = false;
+                                bot.recoveryStep = 0;
+                                bot.recovery = null;
+                                bot.isAfterRecovery = false;
+                            }
+                        }
+                    }
+                    
+                    if (!bot.isHarvesting && !bot.isRecoveryMode) {
+                        if (bot.wagerSesiCounter >= bot.wagerSesiTarget) {
+                            resetWagerSesi();
+                        }
+                    }
+                }
+                
+                updateWagerDisplay();
+                updateStatsDisplay();
+                var currentDelay = bot.isRecoveryMode ? bot.delayRecovery : bot.delayHarvest;
+                setTimeout(runLoop, currentDelay);
+                return;
+            }
+            
+            // ===== FIRE-AND-FORGET (NORMAL, JIT, LUA, BOOSTER) =====
+            if (bot.ffEnabled) {
+                if (diceInFlight < bot.ffParallel) {
+                    sendDiceBetFireAndForget(betAmount, chanceToUse, betMode);
+                }
+                if (normalCycleStartTime === 0) normalCycleStartTime = Date.now();
+                setTimeout(runLoop, bot.ffDelay);
+                return;
+            } else {
+                // Sequential
+                var seqResult = await placeBet(betAmount, chanceToUse);
+                if (seqResult && seqResult.diceRoll) {
+                    var d = seqResult.diceRoll;
+                    var win = false;
+                    var winAmount = parseFloat(d.amount) || 0;
+                    var payoutMultiplier = parseFloat(d.payoutMultiplier) || 0;
+                    var payout = parseFloat(d.payout) || 0;
+                    
+                    if (d.win !== undefined) win = d.win;
+                    else if (payoutMultiplier > 1) win = true;
+                    else if (payoutMultiplier === 0 && payout === 0) win = false;
+                    else {
+                        var state = d.state;
+                        if (state && state.result !== undefined && state.target !== undefined) {
+                            win = state.condition === "above" ? state.result > state.target : state.result < state.target;
+                        }
+                    }
+                    
+                    var oldBalance = bot.stats.currentBal;
+                    var pnlCalc = win ? (payout - winAmount) : -winAmount;
+                    
+                    if (d.user && d.user.wallets && d.user.wallets[0]) {
+                        bot.stats.currentBal = parseFloat(d.user.wallets[0].balance);
+                    } else {
+                        bot.stats.currentBal = oldBalance + pnlCalc;
+                        if (bot.stats.currentBal < 0) bot.stats.currentBal = 0;
+                    }
+                    
+                    if (bot.stats.currentBal > peakBalanceEver) peakBalanceEver = bot.stats.currentBal;
+                    bot.stats.profit = bot.stats.currentBal - bot.stats.startBal;
+                    bot.wagerSesiProfit = bot.stats.currentBal - bot.wagerSesiStartBal;
+                    bot.wagerSesiCounter += winAmount;
+                    if (bot.stats.profit > bot.highestProfit) bot.highestProfit = bot.stats.profit;
+                    if (winAmount > bot.stats.maxBet) bot.stats.maxBet = winAmount;
+                    bot.stats.bets++;
+                    bot.stats.wagered += winAmount;
+                    bot.lastWinStatus = win;
+                    bot.lastBetAmount = betAmount;
+                    bot.betTimestamps.push(Date.now());
+                    if (bot.betTimestamps.length > 100) bot.betTimestamps.shift();
+                    if (win) bot.stats.wins++; else bot.stats.loss++;
+                    bot.totalWager += winAmount;
+                    bot.sessionProfit = bot.stats.profit;
+                    if (bot.sessionProfit > bot.highestProfit) bot.highestProfit = bot.sessionProfit;
+                    
+                    var rollResult = null;
+                    if (d.state && d.state.result !== undefined) {
+                        rollResult = d.state.result;
+                        updateVirtualStreaks(rollResult);
+                    }
+                    if (bot.isHarvesting) updateHarvestTracking();
+                    
+                    var profitDisplay = win ? "+" + (payout - winAmount).toFixed(8) : "-" + winAmount.toFixed(8);
+                    var rollDisplay = (rollResult !== null) ? rollResult.toFixed(2) : "?";
+                    logBet(bot.stats.bets, betAmount.toFixed(4), chanceToUse.toFixed(1), rollDisplay, profitDisplay, betMode);
+                    
+                    if (bot.wagerSesiCounter >= bot.wagerSesiTarget) {
+                        resetWagerSesi();
+                    }
+                }
+                updateWagerDisplay();
+                updateStatsDisplay();
+                setTimeout(runLoop, bot.ffDelay);
+                return;
+            }
+            
+        } catch (e) {
+            console.error('❌ RunLoop error:', e);
+            setTimeout(runLoop, 1000);
+        }
+    }
+
+    // ==================== UPDATE STATS ====================
+    function updateStatsDisplay() {
+        var profitPct = bot.stats.startBal > 0 ? (bot.stats.profit / bot.stats.startBal * 100) : 0;
+        var dailyProfitPct = bot.dailyStartBalance > 0 ? (bot.dailyProfit / bot.dailyStartBalance * 100) : 0;
+        var winRate = bot.stats.bets > 0 ? (bot.stats.wins / bot.stats.bets * 100) : 0;
+        var runTime = getDuration();
+        var rakeback = bot.stats.wagered * 0.00098;
+        var betSpeed = getBetSpeed();
+        var profitInIdr = bot.stats.profit * bot.fiatRates.idr;
+        var balanceInIdr = bot.stats.currentBal * bot.fiatRates.idr;
+        var maxDDPct = bot.stats.maxDrawdownPct;
+        var maxBetPct = bot.stats.startBal > 0 ? (bot.stats.maxBet / bot.stats.startBal * 100) : 0;
+        
+        var status;
+        if (bot.isBoosterMode) status = "🚀 BOOSTER " + (bot.boosterChance || bot.normalChance) + "%";
+        else if (bot.isHarvesting) status = bot.isRecoveryMode ? "🔄 R" + bot.harvestChance + "%" : "🌾 H" + bot.harvestChance + "%";
+        else if (bot.isTrailingActive) status = "🔱 T" + bot.trailingLevel + "/" + bot.gapPct + "%";
+        else status = "⚡ " + bot.normalChance + "%";
+        
+        var dailyStatus = (bot.dailyProfit >= 0 ? '+' : '') + bot.dailyProfit.toFixed(8) + " (" + (dailyProfitPct >= 0 ? '+' : '') + dailyProfitPct.toFixed(2) + "%)";
+        var timerDisplay = bot.isResetting ? "⏰ " + bot.resetCountdownRemaining + "s" : "--";
+        var sessionProgress = ((bot.stats.profit / (bot.stats.startBal * bot.targetPct / 100)) * 100);
+        if (sessionProgress > 100) sessionProgress = 100;
+        if (sessionProgress < 0) sessionProgress = 0;
+        var sessionTargetAmount = (bot.stats.startBal * bot.targetPct / 100);
+        
+        var splitDisplay = "—";
+        var cutlossDisplay = "0";
+        var lossPerSplitDisplay = "0";
+        if (bot.recovery && bot.recovery.active) {
+            splitDisplay = (bot.recovery.currentSplit + 1) + "/" + bot.recovery.totalSplits;
+            cutlossDisplay = bot.recovery.cutLossCount || 0;
+            lossPerSplitDisplay = bot.recovery.lossPerSplit ? bot.recovery.lossPerSplit.toFixed(8) : "0";
+        }
+        
+        var modeText = "";
+        if (bot.luaEnabled && bot.luaEngine && bot.luaEngine.isReady) modeText = "🐍 LUA";
+        else if (bot.isBoosterMode) modeText = "🚀 BOOSTER";
+        else if (bot.isHarvesting) modeText = bot.isRecoveryMode ? "🔄 RECOVERY" : "🌾 HARVEST";
+        else modeText = "⚡ NORMAL";
+        var ffText = bot.ffEnabled ? "🔥F&F" : "⏳SEQ";
+        
+        var elements = {
+            "st-user": bot.stakeUser,
+            "st-running-time": runTime,
+            "st-balance": bot.stats.currentBal.toFixed(2) + " " + bot.selectedCurrency.toUpperCase(),
+            "st-balance-fiat": shortFiat(balanceInIdr),
+            "st-session-num": bot.sessionNumber,
+            "st-session-target": bot.targetPct + "% (" + sessionTargetAmount.toFixed(2) + " " + bot.selectedCurrency.toUpperCase() + ")",
+            "st-session-progress": sessionProgress.toFixed(1) + "%",
+            "st-session-start": bot.sessionStartTime ? bot.sessionStartTime.toLocaleTimeString() : "-",
+            "st-sessions-done": bot.sessionsCompleted,
+            "st-profit": (bot.stats.profit >= 0 ? '+' : '') + bot.stats.profit.toFixed(2) + " (" + (profitPct >= 0 ? '+' : '') + profitPct.toFixed(2) + "%)",
+            "st-profit-fiat": shortFiat(profitInIdr),
+            "st-daily": dailyStatus,
+            "st-wagered": bot.stats.wagered.toFixed(2),
+            "st-rakeback": "+" + rakeback.toFixed(2),
+            "st-bets": bot.stats.bets + " | WR " + winRate.toFixed(0) + "%",
+            "st-speed": betSpeed.toFixed(1) + "b/s",
+            "st-maxdd": maxDDPct.toFixed(1) + "%",
+            "st-maxbet": maxBetPct.toFixed(1) + "%",
+            "st-chance": status,
+            "st-gaphits": bot.gapHits.toString(),
+            "st-timer": timerDisplay,
+            "st-rate": "1 " + bot.selectedCurrency.toUpperCase() + " = " + bot.fiatRates.idr.toFixed(2) + " IDR",
+            "st-worst-chance": bot.worstDrawdownChance > 0 ? bot.worstDrawdownChance + "%" : "-",
+            "st-worst-ls": bot.worstDrawdownLS > 0 ? bot.worstDrawdownLS + "x" : "-",
+            "st-worst-dd": bot.worstDrawdown > 0 ? bot.worstDrawdown.toFixed(1) + "%" : "-",
+            "st-worst-bet": bot.worstBet > 0 ? bot.worstBet.toFixed(2) + " " + bot.selectedCurrency.toUpperCase() : "-",
+            "st-split-progress": splitDisplay,
+            "st-cutloss-count": cutlossDisplay,
+            "st-loss-per-split": lossPerSplitDisplay,
+            "st-mode": ffText + " + " + modeText
+        };
+        
+        for (var id in elements) {
+            var el = document.getElementById(id);
+            if (el) el.textContent = elements[id];
+        }
+        
+        var sessionProgressBar = document.getElementById("st-session-progress-bar");
+        if (sessionProgressBar) sessionProgressBar.style.width = sessionProgress + "%";
+        
+        var profitEl = document.getElementById("st-profit");
+        if (profitEl) profitEl.style.color = bot.stats.profit >= 0 ? "#00A86B" : "#FF4757";
+        var profitFiatEl = document.getElementById("st-profit-fiat");
+        if (profitFiatEl) profitFiatEl.style.color = bot.stats.profit >= 0 ? "#00A86B" : "#FF4757";
+        var dailyEl = document.getElementById("st-daily");
+        if (dailyEl) dailyEl.style.color = bot.dailyProfit >= 0 ? "#00A86B" : "#FF4757";
+        
+        drawGapVisual();
+        updateBurstDisplay();
+        updateWagerDisplay();
+    }
+    
+    function shortFiat(idr) {
+        var abs = Math.abs(idr);
+        var sign = idr < 0 ? "-" : "";
+        if (abs >= 1000000) return sign + "Rp" + (abs/1000000).toFixed(1) + "M";
+        if (abs >= 1000) return sign + "Rp" + (abs/1000).toFixed(1) + "K";
+        return sign + "Rp" + abs.toFixed(0);
+    }
+    
+    async function sendSessionReport() {
+        var profitPct = bot.stats.startBal > 0 ? (bot.stats.profit / bot.stats.startBal * 100) : 0;
+        var dailyProfitPct = bot.dailyStartBalance > 0 ? (bot.dailyProfit / bot.dailyStartBalance * 100) : 0;
+        var winRate = bot.stats.bets > 0 ? (bot.stats.wins / bot.stats.bets * 100) : 0;
+        var runTime = getDuration();
+        var status = bot.isBoosterMode ? "BOOSTER " + (bot.boosterChance || bot.normalChance) + "%" : (bot.isHarvesting ? (bot.isRecoveryMode ? "RECOVERY " + bot.harvestChance + "%" : "HARVEST " + bot.harvestChance + "%") : (bot.isTrailingActive ? "TRAIL L" + bot.trailingLevel : "NORMAL " + bot.normalChance + "%"));
+        var message = "⭐ ORION ASCEND v3.2\n\"Fire & Forget Wager Farming + Lua\"\nUser: " + bot.stakeUser + "\nTime: " + runTime + "\nBalance: " + bot.stats.currentBal.toFixed(2) + " " + bot.selectedCurrency.toUpperCase() + "\nTotal Wager: " + bot.wagerTotalAccumulated.toFixed(2) + " / " + bot.wagerTotalTarget + "\nSesi Wager: " + bot.wagerSesiCounter.toFixed(2) + " / " + bot.wagerSesiTarget + "\nProfit: " + (bot.stats.profit >= 0 ? '+' : '') + bot.stats.profit.toFixed(2) + " (" + profitPct.toFixed(2) + "%)\nWager: " + bot.stats.wagered.toFixed(2) + " " + bot.selectedCurrency.toUpperCase() + "\nBets: " + bot.stats.bets + " | WR: " + winRate.toFixed(0) + "%\nStatus: " + status + "\nHarvest: " + bot.harvestCount + "\nGap Hits: " + bot.gapHits + "\n🔥 F&F: " + (bot.ffEnabled ? "ON" : "OFF") + " (Parallel " + bot.ffParallel + ")\n🐍 Lua: " + (bot.luaEnabled ? "ON" : "OFF");
+        await sendTelegramMessage(message);
+    }
+
+    // ==================== CREATE UI ====================
     function createUI() {
         if (document.getElementById("BotConsole")) document.getElementById("BotConsole").remove();
         
@@ -844,7 +2167,7 @@
             .stats-block .divider { border-top: 1px solid var(--border); margin: 5px 0; }
             .progress-bar { background: var(--border); border-radius: 4px; margin: 4px 0; height: 4px; }
             .progress-fill { background: var(--success); height: 4px; border-radius: 4px; width: 0%; }
-            .logs-container { background: var(--log-bg); border-radius: 12px; height: 350px; overflow-y: auto; padding: 8px; font-size: 9px; border: 1px solid var(--border); -webkit-overflow-scrolling: touch; font-family: monospace; }
+            .logs-container { background: var(--log-bg); border-radius: 12px; height: 200px; overflow-y: auto; padding: 8px; font-size: 9px; border: 1px solid var(--border); -webkit-overflow-scrolling: touch; font-family: monospace; }
             .token-row { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
             .token-row input { flex: 1; min-width: 120px; }
             .toggle-row { display: flex; justify-content: space-between; align-items: center; background: var(--bg-block); padding: 8px 10px; border-radius: 12px; margin-bottom: 10px; flex-wrap: wrap; gap: 8px; }
@@ -862,35 +2185,336 @@
             .status-inline { display: flex; align-items: center; gap: 8px; font-size: 10px; margin-bottom: 8px; }
             .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
             .minbet-info { font-size: 8px; color: var(--text-light); margin-top: 4px; text-align: right; }
+            .logs-container { height: 180px; }
             ::-webkit-scrollbar { width: 3px; }
             ::-webkit-scrollbar-thumb { background: var(--border); }
+            textarea { background: var(--bg); border: 1px solid var(--border); padding: 8px; border-radius: 8px; font-size: 10px; font-family: 'Consolas', monospace; color: var(--text); width: 100%; resize: vertical; }
+            .lua-console { background: var(--log-bg); border-radius: 6px; padding: 6px 10px; margin-top: 6px; font-family: monospace; font-size: 9px; max-height: 100px; overflow-y: auto; border: 1px solid var(--border); }
+            .lua-console .lua-log { color: var(--text-light); border-bottom: 1px solid rgba(255,255,255,0.05); padding: 2px 0; }
+            .lua-console .lua-log.error { color: var(--danger); }
+            .lua-console .lua-log.success { color: var(--success); }
         `;
         document.head.appendChild(style);
         
-        var html = '<div id="BotConsole"><div class="bot-header" id="botHeader"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;"><span class="title">⚔️ WAR OF WAGER v2.0</span><span class="time-running" id="st-running-time">0s</span></div><div class="header-btns"><button id="btn-theme">🌓</button><button id="btn-minimize">▲</button></div></div><div id="bot-body"><div class="tab-bar"><button class="tab-btn active" onclick="openTab.call(this, \'main\')">MAIN</button><button class="tab-btn" onclick="openTab.call(this, \'cfg\')">CFG</button><button class="tab-btn" onclick="openTab.call(this, \'mm\')">MM</button><button class="tab-btn" onclick="openTab.call(this, \'logs\')">LOGS</button></div><div id="tab-main" class="tab-content active"><div class="token-row"><input type="password" id="p-token" placeholder="API Token"><button id="p-login" class="btn-login">LOGIN</button><button id="p-refresh" class="btn-refresh">⟳</button></div><div class="toggle-row"><span>⚡ FLASH MODE</span><label class="md-switch"><input type="checkbox" id="p-demo-toggle"><span class="md-slider"></span></label></div><div class="controls-row"><div class="btn-group"><button id="p-start" class="btn btn-start">START</button><button id="p-pause" class="btn btn-pause" disabled>PAUSE</button><button id="p-stop" class="btn btn-stop" disabled>STOP</button><button id="p-reset" class="btn btn-reset">RESET</button></div><select id="p-currency"></select></div><div class="status-inline"><span class="dot" id="statusDot" style="background:#FF4757;"></span><span id="botStatus">STOP</span></div><div class="stats-block"><div class="line"><span class="label">User</span><span class="value" id="st-user">-</span></div><div class="line"><span class="label">Balance</span><span class="value" id="st-balance">0</span></div><div class="line"><span class="label">Profit</span><span class="value" id="st-profit">0</span></div><div class="line"><span class="label">Wagered</span><span class="value" id="st-wagered">0</span></div><div class="line"><span class="label">Bets</span><span class="value" id="st-bets">0</span></div><div class="line"><span class="label">W/L</span><span class="value" id="st-wins">0 / <span id="st-loss">0</span></span></div><div class="divider"></div><div class="line"><span class="label">Wager USD</span><span class="value" id="st-wager-usd">0 / 1000</span></div><div class="line"><span class="label">Mode</span><span class="value" id="st-mode">PROFIT MODE</span></div><div class="line"><span class="label">Game</span><span class="value" id="st-game">LIMBO 40%</span></div></div></div><div id="tab-cfg" class="tab-content"><div class="stats-block"><div style="font-weight:bold;margin-bottom:8px;">🎯 WAGER MODE</div><div class="grid-2"><div class="md-field"><label>Wager Chance (%)</label><input type="number" id="p-chwager" value="99.98" step="0.01" min="1" max="99.98"></div><div class="md-field"><label>Wager Divider</label><input type="number" id="p-dvwager" value="300" step="10" min="10" max="10000"></div></div></div><div class="stats-block"><div style="font-weight:bold;margin-bottom:8px;">💰 PROFIT MODE</div><div class="grid-2"><div class="md-field"><label>Profit Chance (%)</label><input type="number" id="p-chprofit" value="40" step="1" min="1" max="99"></div><div class="md-field"><label>Profit Base Bet (x balance)</label><input type="number" id="p-bbprofit" value="0.00003" step="0.000001" min="0.000001" max="0.01"></div></div></div><div class="stats-block"><div style="font-weight:bold;margin-bottom:8px;">🔄 SWITCH TRIGGER</div><div class="grid-2"><div class="md-field"><label>Profit → Wager (%)</label><input type="number" id="p-pfpump" value="1.5" step="0.1" min="0.1" max="10"></div><div class="md-field"><label>Wager → Profit (%)</label><input type="number" id="p-pfdump" value="1.0" step="0.1" min="0.1" max="10"></div></div></div></div><div id="tab-mm" class="tab-content"><div class="stats-block"><div style="font-weight:bold;margin-bottom:8px;">🎯 TARGET & STOP</div><div class="grid-2"><div class="md-field"><label>Target Wager (USD)</label><input type="number" id="p-target-wager" value="1000" step="100" min="100" max="1000000"></div><div class="md-field"><label>Stop Profit (%)</label><input type="number" id="p-balstop" value="10.1" step="0.1" min="1" max="50"></div></div><div class="grid-2"><div class="md-field"><label>Stop Loss (%)</label><input type="number" id="p-stop-loss" value="15" step="1" min="1" max="50"></div></div></div></div><div id="tab-logs" class="tab-content"><div class="logs-container" id="p-logs"><div style="text-align:center;padding:20px;color:var(--text-light);font-size:14px;font-weight:bold;">⚔️ WAR OF WAGER v2.0</div></div></div></div></div>';
+        var html = `
+        <div id="BotConsole">
+            <div class="bot-header" id="botHeader">
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                    <span class="title">⭐ ORION ASCEND v3.2</span>
+                    <span class="time-running" id="st-running-time">0s</span>
+                </div>
+                <div class="header-btns">
+                    <button id="btn-theme">🌓</button>
+                    <button id="btn-minimize">▲</button>
+                </div>
+            </div>
+            <div id="bot-body">
+                <div class="tab-bar">
+                    <button class="tab-btn active" onclick="openTab.call(this,'main')">MAIN</button>
+                    <button class="tab-btn" onclick="openTab.call(this,'cfg')">CFG</button>
+                    <button class="tab-btn" onclick="openTab.call(this,'mm')">MM</button>
+                    <button class="tab-btn" onclick="openTab.call(this,'lua')">LUA</button>
+                </div>
+                
+                <!-- MAIN TAB -->
+                <div id="tab-main" class="tab-content active">
+                    <div class="token-row">
+                        <input type="password" id="p-token" placeholder="API Token">
+                        <button id="p-login" class="btn-login">LOGIN</button>
+                        <button id="p-refresh" class="btn-refresh">⟳</button>
+                    </div>
+                    <div class="toggle-row">
+                        <span>⚡ FLASH MODE</span>
+                        <label class="md-switch"><input type="checkbox" id="p-demo-toggle"><span class="md-slider"></span></label>
+                    </div>
+                    <div class="controls-row">
+                        <div class="btn-group">
+                            <button id="p-start" class="btn btn-start">START</button>
+                            <button id="p-pause" class="btn btn-pause" disabled>PAUSE</button>
+                            <button id="p-stop" class="btn btn-stop" disabled>STOP</button>
+                            <button id="p-reset" class="btn btn-reset">RESET</button>
+                        </div>
+                        <select id="p-currency"></select>
+                    </div>
+                    <div class="status-inline">
+                        <span class="dot" id="statusDot" style="background:#FF4757;"></span>
+                        <span id="botStatus">STOP</span>
+                    </div>
+                    
+                    <div class="stats-block">
+                        <div class="line"><span class="label">👤 User</span><span class="value" id="st-user">-</span></div>
+                        <div class="line"><span class="label">💰 Balance</span><span class="value" id="st-balance">0</span></div>
+                        <div class="line"><span class="label"></span><span class="value-sub" id="st-balance-fiat">-</span></div>
+                        <div class="divider"></div>
+                        <div class="line"><span class="label">📈 Profit</span><span class="value" id="st-profit">0 (0%)</span></div>
+                        <div class="line"><span class="label"></span><span class="value-sub" id="st-profit-fiat">-</span></div>
+                        <div class="line"><span class="label">📈 Daily</span><span class="value" id="st-daily">0 (0%)</span></div>
+                        <div class="divider"></div>
+                        <div class="line"><span class="label">📋 Session #</span><span class="value" id="st-session-num">1</span></div>
+                        <div class="line"><span class="label">🎯 Target</span><span class="value" id="st-session-target">5% (0.00 USDT)</span></div>
+                        <div class="progress-bar"><div class="progress-fill" id="st-session-progress-bar"></div></div>
+                        <div class="line"><span class="label">📊 Progress</span><span class="value" id="st-session-progress">0%</span></div>
+                        <div class="line"><span class="label">⏱️ Started</span><span class="value" id="st-session-start">-</span></div>
+                        <div class="line"><span class="label">✅ Sessions Done</span><span class="value" id="st-sessions-done">0</span></div>
+                        <div class="divider"></div>
+                        <div class="line"><span class="label">💰 Wagered</span><span class="value" id="st-wagered">0</span></div>
+                        <div class="line"><span class="label">💰 Rakeback</span><span class="value" id="st-rakeback">+0</span></div>
+                        <div class="line"><span class="label">🎯 Bets | WR</span><span class="value" id="st-bets">0 | 0%</span></div>
+                        <div class="line"><span class="label">⚡ Speed</span><span class="value" id="st-speed">0 b/s</span></div>
+                        <div class="line"><span class="label">📉 Max DD</span><span class="value" id="st-maxdd">0%</span></div>
+                        <div class="line"><span class="label">💀 Max Bet</span><span class="value" id="st-maxbet">0%</span></div>
+                        <div class="divider"></div>
+                        <div class="line"><span class="label">⚡ Mode</span><span class="value" id="st-mode">🔥F&F + ⚡ NORMAL</span></div>
+                        <div class="line"><span class="label">🤖 Status</span><span class="value" id="st-chance">⚡ 99.98%</span></div>
+                        <div class="line"><span class="label">🔱 Gap Hits</span><span class="value" id="st-gaphits">0</span></div>
+                        <div class="line"><span class="label">⏰ Countdown</span><span class="value" id="st-timer">--</span></div>
+                        <div class="line"><span class="label">💱 Rate</span><span class="value" id="st-rate">-</span></div>
+                        <div class="divider"></div>
+                        <div class="line"><span class="label">📊 Split</span><span class="value" id="st-split-progress">—</span></div>
+                        <div class="line"><span class="label">✂️ Cutloss</span><span class="value" id="st-cutloss-count">0</span></div>
+                        <div class="line"><span class="label">📉 Loss/Split</span><span class="value" id="st-loss-per-split">0</span></div>
+                        <div class="divider"></div>
+                        <div class="line"><span class="label">⚠️ Worst Chance</span><span class="value" id="st-worst-chance">-</span></div>
+                        <div class="line"><span class="label">📉 Worst LS</span><span class="value" id="st-worst-ls">-</span></div>
+                        <div class="line"><span class="label">📊 Worst DD</span><span class="value" id="st-worst-dd">-</span></div>
+                        <div class="line"><span class="label">💀 Worst Bet</span><span class="value" id="st-worst-bet">-</span></div>
+                    </div>
+                    
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin:4px 0 6px 0;">
+                        <span style="font-size:9px;font-weight:bold;color:var(--text-light);">📋 BET LOGS</span>
+                        <span style="font-size:8px;color:var(--text-light);">MAX 50</span>
+                    </div>
+                    <div class="logs-container" id="p-logs"></div>
+                </div>
+                
+                <!-- CFG TAB -->
+                <div id="tab-cfg" class="tab-content">
+                    <div class="stats-block">
+                        <div style="font-weight:bold;margin-bottom:8px;">⚙️ NORMAL MODE</div>
+                        <div class="grid-2">
+                            <div class="md-field"><label>🎲 NORMAL CHANCE (%)</label><input type="number" id="p-normal-chance" value="99.98" step="0.01" min="1" max="99.98"></div>
+                            <div class="md-field"><label>💰 NORMAL BET (% balance)</label><input type="number" id="p-basebet-normal" value="0.5" step="0.001" min="0.01" max="10"></div>
+                        </div>
+                    </div>
+                    
+                    <div class="stats-block">
+                        <div style="font-weight:bold;margin-bottom:8px;">🔍 VIRTUAL RANGE</div>
+                        <div class="grid-2">
+                            <div class="md-field"><label>📉 MIN CHANCE (%)</label><input type="number" id="p-virt-min" value="15" step="0.5" min="1" max="90"></div>
+                            <div class="md-field"><label>📈 MAX CHANCE (%)</label><input type="number" id="p-virt-max" value="25" step="0.5" min="2" max="99.98"></div>
+                        </div>
+                        <div class="minbet-info" id="virt-range-info">Virtual chances: 15% - 25% (21 chances)</div>
+                    </div>
+                    
+                    <div class="stats-block">
+                        <div style="font-weight:bold;margin-bottom:8px;">⚡ JIT (BURST) MODE</div>
+                        <div class="grid-2">
+                            <div class="md-field"><label>⚡ EVERY N BET</label><input type="number" id="p-burst-every" value="20" step="1" min="0" max="100"></div>
+                            <div class="md-field"><label>🎲 MIN CHANCE</label><input type="number" id="p-burst-min" value="90" step="0.5" min="1" max="99"></div>
+                        </div>
+                        <div class="grid-2">
+                            <div class="md-field"><label>🎲 MAX CHANCE</label><input type="number" id="p-burst-max" value="98" step="0.5" min="2" max="99.98"></div>
+                            <div class="md-field"><label>💰 MULTIPLIER</label><input type="number" id="p-burst-multiplier" value="1.0" step="0.1" min="0.1" max="5"></div>
+                        </div>
+                        <div class="grid-2">
+                            <div class="md-field"><label>⚡ JIT ENABLED</label><select id="p-jit-enabled"><option value="true" selected>ENABLED</option><option value="false">DISABLED</option></select></div>
+                        </div>
+                        <div id="burstDisplay" style="background:var(--bg);padding:4px 8px;border-radius:6px;margin-top:6px;font-size:9px;">⚡ JIT: OFF</div>
+                    </div>
+                    
+                    <div class="stats-block">
+                        <div style="font-weight:bold;margin-bottom:8px;">🌾 HARVEST TRIGGER</div>
+                        <div class="md-field"><label>🎯 TRIGGER (× payout)</label><input type="number" id="p-harvest-trigger" value="3" step="0.5" min="1" max="20"></div>
+                    </div>
+                    
+                    <div class="stats-block">
+                        <div style="font-weight:bold;margin-bottom:8px;">🎯 WAGER FARMING</div>
+                        <div class="grid-2">
+                            <div class="md-field"><label>📊 TOTAL TARGET</label><input type="number" id="p-wager-total-target" value="10000" step="100" min="1" max="999999999"></div>
+                            <div class="md-field"><label>📊 SESI TARGET</label><input type="number" id="p-wager-sesi-target" value="200" step="1" min="1" max="99999"></div>
+                        </div>
+                        <div class="md-field"><label>📉 LOSS TOLERANCE</label><input type="number" id="p-wager-loss-tolerance" value="0.5" step="0.01" min="0.001" max="100"></div>
+                        <div id="wagerDisplay" style="background:var(--bg);padding:4px 8px;border-radius:6px;margin-top:6px;font-size:9px;">📊 Total Wager: 0.00 / 10000</div>
+                    </div>
+                    
+                    <div class="stats-block">
+                        <div style="font-weight:bold;margin-bottom:8px;">⚡ EXECUTION MODE</div>
+                        <div class="toggle-row" style="padding:6px 10px;margin-bottom:6px;">
+                            <span style="font-size:11px;">🔥 FIRE-AND-FORGET</span>
+                            <label class="md-switch"><input type="checkbox" id="p-ff-toggle" checked><span class="md-slider"></span></label>
+                        </div>
+                        <div class="grid-2">
+                            <div class="md-field"><label>📊 PARALLEL CAP</label><input type="number" id="p-ff-parallel" value="2" step="1" min="1" max="5"></div>
+                            <div class="md-field"><label>⏱️ DELAY (ms)</label><input type="number" id="p-ff-delay" value="10" step="1" min="0" max="100"></div>
+                        </div>
+                        <div class="toggle-row" style="padding:6px 10px;margin-top:6px;">
+                            <span style="font-size:11px;">🚀 BOOSTER MODE</span>
+                            <label class="md-switch"><input type="checkbox" id="p-booster-toggle"><span class="md-slider"></span></label>
+                        </div>
+                        <div id="booster-settings" style="display:none;margin-top:6px;padding:8px;background:var(--bg);border-radius:8px;border:1px solid var(--border);">
+                            <div class="grid-2">
+                                <div class="md-field"><label>🎲 BOOSTER CHANCES</label><input type="text" id="p-booster-chances" value="99.98,99,98"></div>
+                                <div class="md-field"><label>💰 MULTIPLIER</label><input type="number" id="p-booster-multiplier" value="1.0" step="0.1" min="0.1" max="5"></div>
+                            </div>
+                            <div class="md-field"><label>📉 LOSS TOLERANCE (Trigger)</label><input type="number" id="p-booster-tolerance" value="0.5" step="0.01" min="0.001" max="10"></div>
+                        </div>
+                    </div>
+                    
+                    <div class="stats-block">
+                        <div style="font-weight:bold;margin-bottom:8px;">🔄 RECOVERY</div>
+                        <div class="grid-2">
+                            <div class="md-field"><label>🔁 MAX SPLIT</label><input type="number" id="p-recovery-max-splits" value="8" step="1" min="1" max="50"></div>
+                            <div class="md-field"><label>✂️ CUTLOSS MULTIPLIER</label><input type="number" id="p-recovery-cutloss-multiplier" value="10" step="0.5" min="2" max="50"></div>
+                        </div>
+                        <div class="md-field"><label>📉 MIN CHANCE</label><input type="number" id="p-recovery-min-chance" value="0.01" step="0.01" min="0.01" max="10"></div>
+                    </div>
+                    
+                    <div class="stats-block">
+                        <div style="font-weight:bold;margin-bottom:8px;">🎯 RECOVERY MODE</div>
+                        <div class="grid-2">
+                            <div class="md-field"><label>TARGET</label><select id="p-recovery-target"><option value="start" selected>START BALANCE</option><option value="peak">PEAK BALANCE</option></select></div>
+                            <div class="md-field"><label>MODE</label><select id="p-recovery-mode"><option value="static" selected>STATIC</option><option value="dynamic">DYNAMIC</option></select></div>
+                        </div>
+                        <div class="grid-2">
+                            <div class="md-field"><label>BEP SPLIT (0=OFF)</label><input type="number" id="p-bep-split" value="0" step="1" min="0" max="20"></div>
+                            <div class="md-field"><label>PEAK SPLIT (0=OFF)</label><input type="number" id="p-peak-split" value="0" step="1" min="0" max="20"></div>
+                        </div>
+                    </div>
+                    
+                    <div class="stats-block">
+                        <div style="font-weight:bold;margin-bottom:8px;">✂️ CUT LOSS</div>
+                        <div class="grid-2">
+                            <div class="md-field"><label>METHOD</label><select id="p-cut-method"><option value="static" selected>STATIC</option><option value="dynamic">DYNAMIC</option><option value="drawdown">DRAWDOWN %</option></select></div>
+                            <div class="md-field"><label>BATAS MULTIPLIER</label><input type="number" id="p-cut-multiplier" value="5" step="0.5" min="1" max="20"></div>
+                        </div>
+                        <div class="grid-2">
+                            <div class="md-field"><label>DYNAMIC MIN</label><input type="number" id="p-cut-min" value="3" step="0.5" min="0.5" max="5"></div>
+                            <div class="md-field"><label>DYNAMIC MAX</label><input type="number" id="p-cut-max" value="5" step="0.5" min="1" max="10"></div>
+                        </div>
+                        <div class="md-field"><label>MAX DRAWDOWN %</label><input type="number" id="p-max-drawdown" value="50" step="0.5" min="1" max="100"></div>
+                    </div>
+                    
+                    <div class="stats-block">
+                        <div style="font-weight:bold;margin-bottom:8px;">⚙️ MISC</div>
+                        <div class="md-field"><label>💰 MIN BET (IDR)</label><input type="number" id="p-minbet-idr" value="2" step="1"></div>
+                        <div class="minbet-info" id="minbet-info">≈ 0.00000000 crypto</div>
+                        <div class="md-field"><label>💰 DIRTY BALANCE</label><input type="number" id="p-dirty-bal" value="50" step="0.1"></div>
+                    </div>
+                </div>
+                
+                <!-- MM TAB -->
+                <div id="tab-mm" class="tab-content">
+                    <div class="stats-block">
+                        <div style="font-weight:bold;margin-bottom:8px;">💰 TARGET & STOP LOSS</div>
+                        <div class="grid-2">
+                            <div class="md-field"><label>🎯 TARGET % (Session)</label><input type="number" id="p-target-pct" value="5" step="0.5"></div>
+                            <div class="md-field"><label>🛑 STOP LOSS % (Session)</label><input type="number" id="p-stop-pct" value="100" step="0.5"></div>
+                        </div>
+                        <div class="grid-2">
+                            <div class="md-field"><label>🎯 TARGET % (Daily)</label><input type="number" id="p-daily-target" value="25" step="1"></div>
+                            <div class="md-field"><label>🛑 STOP LOSS % (Daily)</label><input type="number" id="p-daily-stoploss" value="100" step="1"></div>
+                        </div>
+                        <div class="grid-2">
+                            <div class="md-field"><label>📊 SESSION TOTAL</label><input type="number" id="p-session-total" value="8" step="1"></div>
+                            <div class="md-field"><label>💰 MAX BET CAP</label><input type="number" id="p-max-cap" value="0" step="0.001"></div>
+                        </div>
+                    </div>
+                    
+                    <div class="stats-block">
+                        <div style="font-weight:bold;margin-bottom:8px;">🔱 TRAILING GAP</div>
+                        <div class="grid-2">
+                            <div class="md-field"><label>🚀 ACTIVATION %</label><input type="number" id="p-trail-activation" value="3" step="0.5"></div>
+                            <div class="md-field"><label>🎯 GAP1 ACTION</label><select id="p-gap1-action"><option value="continue" selected>CONTINUE</option><option value="stop">STOP</option></select></div>
+                        </div>
+                        <div class="grid-2">
+                            <div class="md-field"><label>📏 GAP LVL 1 %</label><input type="number" id="p-gap1" value="0.5" step="0.1"></div>
+                            <div class="md-field"><label>📏 GAP LVL 2 %</label><input type="number" id="p-gap2" value="0.25" step="0.05"></div>
+                        </div>
+                        <div class="md-field"><label>📏 GAP LVL 3+ %</label><input type="number" id="p-gap3" value="0.125" step="0.05"></div>
+                        <div id="gapVisual" style="margin-top:8px;"></div>
+                    </div>
+                    
+                    <div class="stats-block">
+                        <div style="font-weight:bold;margin-bottom:8px;">⏱️ DELAY</div>
+                        <div class="grid-2">
+                            <div class="md-field"><label>⚡ NORMAL DELAY (ms)</label><input type="number" id="p-delay-normal" value="10" step="1" min="0" max="500"></div>
+                            <div class="md-field"><label>🌾 HARVEST DELAY (ms)</label><input type="number" id="p-delay-harvest" value="100" step="1" min="0" max="500"></div>
+                        </div>
+                        <div class="md-field"><label>🔄 RECOVERY DELAY (ms)</label><input type="number" id="p-delay-recovery" value="200" step="1" min="0" max="500"></div>
+                    </div>
+                </div>
+                
+                <!-- LUA TAB -->
+                <div id="tab-lua" class="tab-content">
+                    <div class="stats-block">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                            <div style="font-weight:bold;">🐍 LUA SCRIPT ENGINE</div>
+                            <span id="lua-status-badge" style="font-size:8px;padding:2px 8px;border-radius:10px;background:var(--danger);color:white;">INACTIVE</span>
+                        </div>
+                        <div class="toggle-row">
+                            <span>🔛 Enable Lua Mode</span>
+                            <label class="md-switch"><input type="checkbox" id="p-lua-toggle"><span class="md-slider"></span></label>
+                            <span id="lua-mode-status" style="font-size:9px;color:var(--text-light);">OFF</span>
+                        </div>
+                        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;margin:8px 0;font-size:9px;">
+                            <div style="background:var(--bg);padding:4px 8px;border-radius:4px;">📞 Calls: <strong id="lua-calls">0</strong></div>
+                            <div style="background:var(--bg);padding:4px 8px;border-radius:4px;">⏱️ Time: <strong id="lua-time">0ms</strong></div>
+                            <div style="background:var(--bg);padding:4px 8px;border-radius:4px;">📦 Size: <strong id="lua-size">0</strong></div>
+                            <div style="background:var(--bg);padding:4px 8px;border-radius:4px;">🎯 Status: <strong id="lua-health">OK</strong></div>
+                        </div>
+                        <div class="md-field">
+                            <label style="display:flex;justify-content:space-between;">
+                                <span>📝 Lua Script (MyDiceBot compatible)</span>
+                                <span style="font-size:8px;color:var(--text-light);"><span id="lua-line-count">0</span> lines</span>
+                            </label>
+                            <textarea id="p-lua-script" rows="15" style="width:100%;background:var(--log-bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px;font-family:'Consolas','Monaco',monospace;font-size:10px;resize:vertical;tab-size:2;line-height:1.4;">-- Lua script here</textarea>
+                        </div>
+                        <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;">
+                            <button id="p-lua-load" class="btn btn-start" style="flex:1;min-width:60px;">▶ LOAD</button>
+                            <button id="p-lua-test" class="btn btn-pause" style="flex:1;min-width:60px;">🧪 TEST</button>
+                            <button id="p-lua-reset" class="btn btn-reset" style="flex:1;min-width:60px;">🔄 RESET</button>
+                            <button id="p-lua-format" class="btn btn-pause" style="flex:1;min-width:60px;">✨ FORMAT</button>
+                            <button id="p-lua-example" class="btn btn-pause" style="flex:1;min-width:60px;">📚 EXAMPLE</button>
+                        </div>
+                        <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;">
+                            <button id="p-lua-save" class="btn btn-start" style="flex:1;min-width:60px;">💾 SAVE</button>
+                            <button id="p-lua-load-preset" class="btn btn-pause" style="flex:1;min-width:60px;">📂 LOAD</button>
+                            <button id="p-lua-hotreload" class="btn btn-pause" style="flex:1;min-width:60px;">⚡ HOT RELOAD</button>
+                        </div>
+                        <div id="lua-error" style="margin-top:4px;font-size:9px;color:var(--danger);display:none;padding:4px 8px;background:rgba(255,107,129,0.1);border-radius:4px;"></div>
+                        <div class="lua-console" id="lua-console">
+                            <div style="color:var(--text-light);font-size:8px;">📋 Lua Console</div>
+                            <div id="lua-console-output" style="font-size:8px;">Ready...</div>
+                        </div>
+                        <div style="margin-top:6px;font-size:8px;color:var(--text-light);">
+                            🔹 Function: <code>dobet()</code> returns <code>bet, chance</code><br>
+                            🔹 Available: <code>balance, profit, wagered, bets, lastWin, math, string, table, os</code>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>`;
         
-        var container = document.getElementById('BotConsole');
-        if (!container) {
-            var div = document.createElement('div');
-            div.id = 'BotConsole';
-            div.innerHTML = html;
-            document.body.appendChild(div);
-        } else {
-            container.innerHTML = html;
-        }
+        document.body.insertAdjacentHTML('beforeend', html);
         
-        var header = document.getElementById("botHeader");
-        if (header) header.addEventListener('mousedown', dragMouseDown);
+        // ==================== EVENT HANDLERS ====================
+        // Header drag
+        document.getElementById("botHeader").addEventListener('mousedown', dragMouseDown);
         document.getElementById("btn-minimize").onclick = toggleMinimize;
         document.getElementById("btn-theme").onclick = toggleDarkMode;
         
+        // Token
         var savedToken = getAuthToken();
         if (savedToken) {
-            document.getElementById("p-token").value = savedToken;
+            var tokenEl = document.getElementById("p-token");
+            if (tokenEl) tokenEl.value = savedToken;
         }
         
+        // Login
         document.getElementById("p-login").onclick = async function() {
-            var token = document.getElementById("p-token").value.trim();
+            var tokenEl = document.getElementById("p-token");
+            if (!tokenEl) return;
+            var token = tokenEl.value.trim();
             if (!token || token.length < 30) return;
             saveToken(token);
             var success = await syncUserInfo();
@@ -898,7 +2522,7 @@
                 document.getElementById("p-start").disabled = false;
                 await updateFiatRatesOnce();
                 updateStatsDisplay();
-                sendTelegramMessage("⚔️ WAR OF WAGER v2.0\n✅ LOGIN SUCCESS\nUser: " + bot.stakeUser, true);
+                sendTelegramMessage("⭐ ORION ASCEND v3.2\n✅ LOGIN SUCCESS\nUser: " + bot.stakeUser);
             }
         };
         
@@ -909,80 +2533,170 @@
             updateStatsDisplay();
         };
         
+        // Start
         document.getElementById("p-start").onclick = async function() {
             if (bot.isPaused) {
                 bot.isPaused = false;
                 bot.isRunning = true;
                 togglePauseButton(false);
-                if (bot.onprofit) {
-                    sendProfitBet(bot.bbprofit, bot.currentGame, bot.currentChance);
-                } else {
-                    setTimeout(processWager, 100);
-                }
+                runLoop();
                 return;
             }
             if (bot.isRunning) return;
             
             fullReset();
             
-            bot.chwager = parseFloat(document.getElementById("p-chwager").value) || 99.98;
-            bot.chprofit = parseFloat(document.getElementById("p-chprofit").value) || 40;
-            bot.dvwager = parseFloat(document.getElementById("p-dvwager").value) || 300;
-            var bbprofitMultiplier = parseFloat(document.getElementById("p-bbprofit").value) || 0.00003;
-            var pfpumpPct = parseFloat(document.getElementById("p-pfpump").value) || 1.5;
-            var pfdumpPct = parseFloat(document.getElementById("p-pfdump").value) || 1.0;
-            bot.targetWagerUSD = parseFloat(document.getElementById("p-target-wager").value) || 1000;
-            var balstopPct = parseFloat(document.getElementById("p-balstop").value) || 10.1;
-            bot.stopLossPct = parseFloat(document.getElementById("p-stop-loss").value) || 15;
+            // Load config
+            bot.minBetIdr = parseFloat(document.getElementById("p-minbet-idr").value) || 2;
+            bot.riskFactor = 0.15;
+            bot.riskFluctuation = 0.3;
+            bot.minRiskLimit = 0.05;
+            bot.maxRiskLimit = 0.35;
+            bot.targetPct = parseFloat(document.getElementById("p-target-pct").value) || 5;
+            bot.stopLossPct = parseFloat(document.getElementById("p-stop-pct").value) || 100;
+            bot.dailyTargetPct = parseFloat(document.getElementById("p-daily-target").value) || 25;
+            bot.dailyStopLossPct = parseFloat(document.getElementById("p-daily-stoploss").value) || 100;
+            bot.sessionTotal = parseInt(document.getElementById("p-session-total").value) || 8;
+            bot.maxBetCap = parseFloat(document.getElementById("p-max-cap").value) || 0;
+            bot.trailingActivationPct = parseFloat(document.getElementById("p-trail-activation").value) || 3;
+            bot.gap1Action = document.getElementById("p-gap1-action").value;
+            bot.gapLevel1 = parseFloat(document.getElementById("p-gap1").value) || 0.5;
+            bot.gapLevel2 = parseFloat(document.getElementById("p-gap2").value) || 0.25;
+            bot.gapLevel3plus = parseFloat(document.getElementById("p-gap3").value) || 0.125;
+            bot.dirtyBalance = parseFloat(document.getElementById("p-dirty-bal").value) || 50;
+            bot.normalChance = parseFloat(document.getElementById("p-normal-chance").value) || 99.98;
+            bot.baseBetPercent = parseFloat(document.getElementById("p-basebet-normal").value) || 0.5;
+            bot.virtMinChance = parseFloat(document.getElementById("p-virt-min").value) || 15;
+            bot.virtMaxChance = parseFloat(document.getElementById("p-virt-max").value) || 25;
+            bot.recoveryTarget = document.getElementById("p-recovery-target").value;
+            bot.recoveryMode = document.getElementById("p-recovery-mode").value;
+            bot.bepSplit = parseInt(document.getElementById("p-bep-split").value) || 0;
+            bot.peakSplit = parseInt(document.getElementById("p-peak-split").value) || 0;
+            bot.cutMethod = document.getElementById("p-cut-method").value;
+            bot.maxCutLossMultiplier = parseFloat(document.getElementById("p-cut-multiplier").value) || 5;
+            bot.cutMinMultiplier = parseFloat(document.getElementById("p-cut-min").value) || 3;
+            bot.cutMaxMultiplier = parseFloat(document.getElementById("p-cut-max").value) || 5;
+            bot.maxDrawdownPct = parseFloat(document.getElementById("p-max-drawdown").value) || 50;
+            
+            bot.burstEveryN = parseInt(document.getElementById("p-burst-every").value) || 20;
+            bot.burstMinChance = parseFloat(document.getElementById("p-burst-min").value) || 90;
+            bot.burstMaxChance = parseFloat(document.getElementById("p-burst-max").value) || 98;
+            bot.burstMultiplier = parseFloat(document.getElementById("p-burst-multiplier").value) || 1.0;
+            bot.burstCounter = 0;
+            bot.wagerJitEnabled = document.getElementById("p-jit-enabled").value === 'true';
+            
+            bot.wagerTotalTarget = parseFloat(document.getElementById("p-wager-total-target").value) || 10000;
+            bot.wagerSesiTarget = parseFloat(document.getElementById("p-wager-sesi-target").value) || 200;
+            bot.wagerLossTolerance = parseFloat(document.getElementById("p-wager-loss-tolerance").value) || 0.5;
+            bot.wagerTotalAccumulated = 0;
+            bot.wagerSesiCounter = 0;
+            bot.wagerSesiStartBal = 0;
+            bot.wagerSesiProfit = 0;
+            bot.wagerStop = false;
+            bot.wagerWaitingForTrigger = false;
+            
+            bot.recoveryMaxSplits = parseInt(document.getElementById("p-recovery-max-splits").value) || 8;
+            bot.recoveryCutlossMultiplier = parseFloat(document.getElementById("p-recovery-cutloss-multiplier").value) || 10;
+            bot.recoveryChanceMin = parseFloat(document.getElementById("p-recovery-min-chance").value) || 0.01;
+            
+            bot.harvestTrigger = parseFloat(document.getElementById("p-harvest-trigger").value) || 3;
+            bot.harvestTrigger = Math.min(20, Math.max(1, bot.harvestTrigger));
+            
+            bot.delayNormal = parseInt(document.getElementById("p-delay-normal").value) || 10;
+            bot.delayHarvest = parseInt(document.getElementById("p-delay-harvest").value) || 100;
+            bot.delayRecovery = parseInt(document.getElementById("p-delay-recovery").value) || 200;
+            bot.delayNormal = Math.min(500, Math.max(0, bot.delayNormal));
+            bot.delayHarvest = Math.min(500, Math.max(0, bot.delayHarvest));
+            bot.delayRecovery = Math.min(500, Math.max(0, bot.delayRecovery));
+            
+            // FF
+            bot.ffEnabled = document.getElementById("p-ff-toggle").checked;
+            bot.ffParallel = parseInt(document.getElementById("p-ff-parallel").value) || 2;
+            bot.ffDelay = parseInt(document.getElementById("p-ff-delay").value) || 10;
+            
+            // Booster
+            bot.boosterEnabled = document.getElementById("p-booster-toggle").checked;
+            var boosterChancesRaw = document.getElementById("p-booster-chances").value;
+            var parsed = boosterChancesRaw.split(',').map(s => parseFloat(s.trim())).filter(n => !isNaN(n) && n > 0 && n < 100);
+            if (parsed.length > 0) BOOSTER_CHANCES = parsed;
+            bot.boosterEnabled = document.getElementById("p-booster-toggle").checked;
+            var boosterTol = parseFloat(document.getElementById("p-booster-tolerance").value);
+            if (boosterTol > 0) bot.wagerLossTolerance = boosterTol;
+            
+            await updateFiatRatesOnce();
+            if (bot.fiatRates.idr > 0) {
+                bot.minBet = bot.minBetIdr / bot.fiatRates.idr;
+                if (bot.minBet < 0.00000001) bot.minBet = 0.00000001;
+            } else bot.minBet = 0.0014;
             
             var balance = bot.isDemo ? bot.dirtyBalance : bot.realBalance;
             if (!bot.isDemo && balance === 0) return;
             
-            bot.coinPrice = await getCoinPrice(bot.selectedCurrency);
-            if (bot.coinPrice === 0) {
-                sendTelegramMessage("⚠️ WARNING: Could not fetch coin price.", true);
-            }
-            
-            // Inisialisasi
+            startBalanceValue = balance;
+            originalSessionStartBalance = balance;
+            peakBalanceEver = balance;
+            bot.wagerSesiStartBal = balance;
+            bot.dailyStartBalance = balance;
+            bot.dailyProfit = 0;
+            bot.dailyTargetReached = false;
+            bot.lastDailyReset = new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate(), 0, 0, 0).getTime();
             bot.stats = { profit: 0, wagered: 0, startBal: balance, currentBal: balance, bets: 0, wins: 0, loss: 0, startTime: Date.now(), maxDD: 0, maxBet: 0, maxDrawdownPct: 0, peakBalance: balance };
+            bot.betTimestamps = [];
             bot.startTime = Date.now();
-            bot.sessionStartBalance = balance;
-            bot.balhigh = balance;
-            bot.balstop = balance * (1 + balstopPct / 100);
-            bot.bbprofit = balance * bbprofitMultiplier;
-            bot.pfpump = balance * (pfpumpPct / 100);
-            bot.pfdump = balance * (pfdumpPct / 100);
-            bot.minBet = 0.0001;
-            bot.onprofit = true;
-            bot.profitc = 0;
-            bot.pfreset = 0;
-            bot.cprofit = 0;
-            bot.baldrop = 1;
-            bot.currentGame = "limbo";
-            bot.currentChance = bot.chprofit;
-            bot.wagerUSD = 0;
-            bot.wagerCoin = 0;
+            bot.sessionStartTime = new Date();
+            bot.isHarvesting = false;
+            bot.isRecoveryMode = false;
+            bot.isAfterRecovery = false;
+            bot.recoveryStep = 0;
+            bot.isTrailingActive = false;
+            bot.trailingLevel = 0;
+            bot.balancePeak = 0;
+            bot.level1Peak = 0;
+            bot.level2Peak = 0;
+            bot.gapPct = bot.gapLevel1;
+            bot.gapHits = 0;
+            bot.gapHitProcessed = false;
+            bot.harvestCount = 0;
+            bot.harvestBet = 0;
+            bot.lastBetAmount = 0;
+            bot.sessionProfit = 0;
+            bot.totalWager = 0;
+            bot.highestProfit = 0;
             bot.isRunning = true;
             bot.isPaused = false;
-            bot.betTimestamps = [];
-            bot.diceInFlight = 0;
-            bot.pendingDiceMeta = [];
-            bot.lastTGReport = 0;
-            bot.lastResult = "?";
+            bot.lastTGReport = Date.now();
+            bot.isResetting = false;
+            bot.resetCountdownRemaining = 0;
+            bot.worstDrawdown = 0;
+            bot.worstDrawdownChance = 0;
+            bot.worstDrawdownLS = 0;
+            bot.worstBet = 0;
+            bot.sessionNumber = 1;
+            bot.sessionsCompleted = 0;
+            bot.recovery = null;
+            bot.isBoosterMode = false;
+            bot.boosterStartProfit = 0;
+            bot.boosterBetAmount = 0;
+            bot.boosterChance = bot.normalChance;
+            boosterChanceIndex = 0;
+            diceInFlight = 0;
+            pendingDiceMeta = [];
+            
+            initVirtualChances();
+            initMemory();
             
             toggleStartStop(true);
             togglePauseButton(false);
+            document.getElementById("p-start").textContent = "START";
             
-            sendTelegramMessage("⚔️ WAR OF WAGER v2.0\n🔥 STARTED\nBalance: " + balance.toFixed(4) + " " + bot.selectedCurrency.toUpperCase() + "\nProfit Mode: " + bot.chprofit + "%\nWager Mode: " + bot.chwager + "%\nSwitch: " + pfpumpPct + "% → " + pfdumpPct + "%\nStop: " + balstopPct + "% profit", true);
+            sendTelegramMessage("⭐ ORION ASCEND v3.2\n🔥 STARTED\nBalance: " + balance.toFixed(2) + "\nNormal Chance: " + bot.normalChance + "%\nF&F: " + (bot.ffEnabled ? "ON" : "OFF") + " (Parallel " + bot.ffParallel + ")\nBooster: " + (bot.boosterEnabled ? "ON" : "OFF") + "\nLua: " + (bot.luaEnabled ? "ON" : "OFF"));
             
-            updateStatsDisplay();
+            updateBurstDisplay();
             updateWagerDisplay();
-            updateGameStatus();
-            
-            // Mulai Profit Mode (Fire & Forget)
-            sendProfitBet(bot.bbprofit, "limbo", bot.chprofit);
+            runLoop();
         };
         
+        // Pause
         document.getElementById("p-pause").onclick = function() {
             if (bot.isRunning && !bot.isPaused) {
                 bot.isPaused = true;
@@ -991,72 +2705,333 @@
             }
         };
         
+        // Stop
         document.getElementById("p-stop").onclick = async function() {
             fullReset();
-            await sendTelegramMessage("⏹️ BOT STOPPED", true);
+            await sendSessionReport();
         };
         
+        // Reset
         document.getElementById("p-reset").onclick = function() {
             if (bot.isRunning) return;
             fullReset();
         };
         
+        // Currency
         document.getElementById("p-currency").onchange = function() {
             bot.selectedCurrency = document.getElementById("p-currency").value;
             bot.fiatRateFetched = false;
             updateFiatRatesOnce();
+            drawGapVisual();
         };
         
+        // Demo
         document.getElementById("p-demo-toggle").onchange = function(e) {
             bot.isDemo = e.target.checked;
         };
         
-        setInterval(updateStatsDisplay, 1000);
-        setInterval(updateTimer, 1000);
-        
-        setInterval(function() {
-            if (bot.isRunning && bot.stats.bets > 0) {
-                sendTelegramMessage("", false);
+        // Minbet
+        document.getElementById("p-minbet-idr").onchange = function() {
+            var newIdr = parseFloat(this.value) || 2;
+            bot.minBetIdr = newIdr;
+            if (bot.fiatRates.idr > 0) {
+                var newCrypto = newIdr / bot.fiatRates.idr;
+                document.getElementById("minbet-info").innerHTML = "≈ " + newCrypto.toFixed(8) + " " + bot.selectedCurrency.toUpperCase();
+                bot.minBet = newCrypto;
             }
-        }, 60000);
+        };
         
+        // FF Toggle
+        document.getElementById("p-ff-toggle").onchange = function(e) {
+            bot.ffEnabled = e.target.checked;
+        };
+        document.getElementById("p-ff-parallel").onchange = function(e) {
+            bot.ffParallel = Math.max(1, Math.min(5, parseInt(e.target.value) || 2));
+        };
+        document.getElementById("p-ff-delay").onchange = function(e) {
+            bot.ffDelay = Math.max(0, Math.min(100, parseInt(e.target.value) || 10));
+        };
+        
+        // Booster Toggle
+        document.getElementById("p-booster-toggle").onchange = function(e) {
+            bot.boosterEnabled = e.target.checked;
+            document.getElementById("booster-settings").style.display = bot.boosterEnabled ? "block" : "none";
+            if (!bot.boosterEnabled && bot.isBoosterMode) exitBoosterMode();
+        };
+        document.getElementById("p-booster-chances").onchange = function(e) {
+            var raw = e.target.value;
+            var parsed = raw.split(',').map(s => parseFloat(s.trim())).filter(n => !isNaN(n) && n > 0 && n < 100);
+            if (parsed.length > 0) BOOSTER_CHANCES = parsed;
+        };
+        document.getElementById("p-booster-tolerance").onchange = function(e) {
+            var val = parseFloat(e.target.value);
+            if (val > 0) bot.wagerLossTolerance = val;
+        };
+        
+        // Lua Toggle
+        document.getElementById("p-lua-toggle").onchange = function(e) {
+            bot.luaEnabled = e.target.checked;
+            document.getElementById("lua-mode-status").textContent = bot.luaEnabled ? "ON" : "OFF";
+            document.getElementById("lua-status-badge").style.background = bot.luaEnabled ? "var(--success)" : "var(--danger)";
+            document.getElementById("lua-status-badge").textContent = bot.luaEnabled ? "ACTIVE" : "INACTIVE";
+            if (bot.luaEnabled && !bot.luaEngine.isReady) {
+                bot.luaEngine.init().then(() => {
+                    updateLuaStatus('✅ Lua engine ready');
+                });
+            }
+        };
+        
+        // Lua Load
+        document.getElementById("p-lua-load").onclick = function() {
+            var script = document.getElementById("p-lua-script").value;
+            if (!script.trim()) { updateLuaStatus('❌ Script empty'); return; }
+            var success = bot.luaEngine.loadScript(script);
+            if (success) {
+                bot.luaScript = script;
+                updateLuaStatus('✅ Script loaded');
+                document.getElementById("lua-error").style.display = "none";
+                updateLuaStats();
+            } else {
+                updateLuaStatus('❌ Load failed');
+                showLuaError(bot.luaEngine.getLastError());
+            }
+        };
+        
+        // Lua Test
+        document.getElementById("p-lua-test").onclick = function() {
+            if (!bot.luaEngine.isReady) { updateLuaStatus('❌ Engine not ready'); return; }
+            var result = bot.luaEngine.callDobet(100, 5, 50, 10, true);
+            if (result) {
+                updateLuaStatus('✅ Test: bet=' + result.bet.toFixed(8) + ', chance=' + result.chance.toFixed(1) + '%');
+                document.getElementById("lua-error").style.display = "none";
+                luaConsoleLog('✅ Test OK: ' + result.bet.toFixed(4) + ' @ ' + result.chance.toFixed(1) + '%');
+            } else {
+                updateLuaStatus('❌ Test failed');
+                showLuaError(bot.luaEngine.getLastError());
+            }
+        };
+        
+        // Lua Reset
+        document.getElementById("p-lua-reset").onclick = function() {
+            bot.luaEngine.reset();
+            if (bot.luaScript) bot.luaEngine.loadScript(bot.luaScript);
+            updateLuaStatus('🔄 Reset');
+            updateLuaStats();
+            luaConsoleLog('🔄 Engine reset');
+        };
+        
+        // Lua Format
+        document.getElementById("p-lua-format").onclick = function() {
+            var textarea = document.getElementById("p-lua-script");
+            var formatted = textarea.value
+                .replace(/;+$/gm, '')
+                .replace(/\s+$/gm, '')
+                .replace(/\n{3,}/g, '\n\n');
+            var indent = 0;
+            var lines = formatted.split('\n');
+            formatted = lines.map(function(line) {
+                var trimmed = line.trim();
+                if (trimmed.match(/^end$/)) indent--;
+                var result = '  '.repeat(Math.max(0, indent)) + trimmed;
+                if (trimmed.match(/^(function|if|for|while|do|then|else|elseif|repeat)/)) indent++;
+                if (trimmed.match(/^end$/)) indent = Math.max(0, indent);
+                return result;
+            }).join('\n');
+            textarea.value = formatted;
+            updateLuaStats();
+            luaConsoleLog('✨ Formatted');
+        };
+        
+        // Lua Example
+        document.getElementById("p-lua-example").onclick = function() {
+            var examples = {
+                'martingale': `-- Martingale Strategy
+local baseBet = 0.001
+local baseChance = 49.5
+local lossStreak = 0
+
+function dobet()
+    if lastWin == 0 then
+        lossStreak = lossStreak + 1
+    else
+        lossStreak = 0
+    end
+    
+    local bet = baseBet
+    local chance = baseChance
+    
+    if lossStreak > 0 then
+        bet = baseBet * (2 ^ lossStreak)
+    end
+    
+    if bet > balance * 0.1 then
+        bet = balance * 0.1
+    end
+    
+    return bet, chance
+end`,
+                'fibonacci': `-- Fibonacci Strategy
+local baseBet = 0.001
+local baseChance = 49.5
+local lossStreak = 0
+local fib = {1,1,2,3,5,8,13,21,34,55,89}
+
+function dobet()
+    if lastWin == 0 then
+        lossStreak = lossStreak + 1
+    else
+        lossStreak = 0
+    end
+    
+    local idx = math.min(lossStreak + 1, #fib)
+    local bet = baseBet * fib[idx]
+    
+    return bet, baseChance
+end`,
+                'd_alembert': `-- D'Alembert Strategy
+local baseBet = 0.001
+local baseChance = 49.5
+local lossStreak = 0
+
+function dobet()
+    if lastWin == 0 then
+        lossStreak = lossStreak + 1
+    else
+        lossStreak = math.max(0, lossStreak - 1)
+    end
+    
+    local bet = baseBet + (lossStreak * baseBet * 0.5)
+    local chance = baseChance
+    
+    if lossStreak > 5 then
+        chance = 30.0
+    end
+    
+    return bet, chance
+end`
+            };
+            var choice = prompt('Select example:\n1: Martingale\n2: Fibonacci\n3: D\'Alembert', '1');
+            var keys = ['martingale', 'fibonacci', 'd_alembert'];
+            var selected = keys[parseInt(choice) - 1] || 'martingale';
+            document.getElementById("p-lua-script").value = examples[selected];
+            updateLuaStats();
+            luaConsoleLog('📚 Loaded: ' + selected);
+        };
+        
+        // Lua Save
+        document.getElementById("p-lua-save").onclick = function() {
+            var script = document.getElementById("p-lua-script").value;
+            try {
+                localStorage.setItem('lua_script', script);
+                updateLuaStatus('💾 Saved');
+                luaConsoleLog('💾 Script saved');
+            } catch(e) {
+                updateLuaStatus('❌ Save failed');
+            }
+        };
+        
+        // Lua Load Preset
+        document.getElementById("p-lua-load-preset").onclick = function() {
+            var saved = localStorage.getItem('lua_script');
+            if (saved) {
+                document.getElementById("p-lua-script").value = saved;
+                updateLuaStatus('📂 Loaded');
+                luaConsoleLog('📂 Preset loaded');
+                updateLuaStats();
+            } else {
+                updateLuaStatus('❌ No saved script');
+            }
+        };
+        
+        // Lua Hot Reload
+        document.getElementById("p-lua-hotreload").onclick = function() {
+            var script = document.getElementById("p-lua-script").value;
+            if (!script.trim()) { updateLuaStatus('❌ Script empty'); return; }
+            var success = bot.luaEngine.loadScript(script);
+            if (success) {
+                bot.luaScript = script;
+                updateLuaStatus('⚡ Hot reloaded');
+                luaConsoleLog('⚡ Hot reloaded');
+                document.getElementById("lua-error").style.display = "none";
+                updateLuaStats();
+            } else {
+                updateLuaStatus('❌ Reload failed');
+                showLuaError(bot.luaEngine.getLastError());
+            }
+        };
+        
+        // Init Lua
+        bot.luaEngine.init().then(function() {
+            var saved = localStorage.getItem('lua_script');
+            if (saved) {
+                document.getElementById("p-lua-script").value = saved;
+                bot.luaEngine.loadScript(saved);
+                bot.luaScript = saved;
+                updateLuaStats();
+                luaConsoleLog('✅ Auto-loaded saved script');
+            }
+            updateLuaStatus('🚀 Lua ready');
+        });
+        
+        // Interval updates
+        setInterval(updateStatsDisplay, 1000);
+        setInterval(function() {
+            if (bot.fiatRates.idr > 0) {
+                var cryptoVal = bot.minBetIdr / bot.fiatRates.idr;
+                var infoEl = document.getElementById("minbet-info");
+                if (infoEl) infoEl.innerHTML = "≈ " + cryptoVal.toFixed(8) + " " + bot.selectedCurrency.toUpperCase();
+                bot.minBet = cryptoVal;
+            }
+        }, 3000);
+        
+        // Init
+        renderHarvestingEntries();
+        updateBurstDisplay();
         updateWagerDisplay();
-        updateStatsDisplay();
-        updateGameStatus();
+        drawGapVisual();
+        
+        setTimeout(showSplash, 500);
     }
 
-    // ==================== HELPER FUNCTIONS ====================
-    function fullReset() {
-        bot.isRunning = false;
-        bot.isPaused = false;
-        bot.onprofit = true;
-        bot.currentGame = "limbo";
-        bot.currentChance = 40;
-        bot.profitc = 0;
-        bot.pfreset = 0;
-        bot.cprofit = 0;
-        bot.baldrop = 1;
-        bot.balhigh = 0;
-        bot.wagerUSD = 0;
-        bot.wagerCoin = 0;
-        bot.diceInFlight = 0;
-        bot.pendingDiceMeta = [];
-        bot.stats = { profit: 0, wagered: 0, startBal: 0, currentBal: 0, bets: 0, wins: 0, loss: 0, startTime: null, maxDD: 0, maxBet: 0, maxDrawdownPct: 0, peakBalance: 0 };
-        bot.betTimestamps = [];
-        bot.startTime = null;
-        bot.lastResult = "?";
-        toggleStartStop(false);
-        togglePauseButton(false);
-        updateStatsDisplay();
-        updateWagerDisplay();
-        updateGameStatus();
-        
-        var logBox = document.getElementById("p-logs");
-        if (logBox) {
-            logBox.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-light);font-size:14px;font-weight:bold;">⚔️ WAR OF WAGER v2.0</div>';
+    // ==================== LUA UI HELPERS ====================
+    function updateLuaStatus(message) {
+        var el = document.getElementById('lua-status');
+        if (el) el.textContent = message;
+    }
+    
+    function showLuaError(error) {
+        var el = document.getElementById('lua-error');
+        if (el) {
+            el.textContent = '❌ ' + error;
+            el.style.display = 'block';
         }
     }
+    
+    function luaConsoleLog(message) {
+        var el = document.getElementById('lua-console-output');
+        if (el) {
+            var time = new Date().toLocaleTimeString();
+            el.innerHTML = '<div style="border-bottom:1px solid rgba(255,255,255,0.05);padding:2px 0;">[' + time + '] ' + message + '</div>' + el.innerHTML;
+            var entries = el.querySelectorAll('div');
+            if (entries.length > 50) entries[entries.length - 1].remove();
+        }
+    }
+    
+    function updateLuaStats() {
+        var stats = bot.luaEngine.getStats ? bot.luaEngine.getStats() : { callCount: 0, executionTime: 0, scriptLength: 0, isReady: false };
+        document.getElementById('lua-calls').textContent = stats.callCount || 0;
+        document.getElementById('lua-time').textContent = (stats.executionTime || 0).toFixed(2) + 'ms';
+        document.getElementById('lua-size').textContent = (stats.scriptLength || 0) + ' chars';
+        document.getElementById('lua-health').textContent = stats.isReady ? '✅ OK' : '❌ ERROR';
+        var lines = (bot.luaScript || '').split('\n').length;
+        document.getElementById('lua-line-count').textContent = lines || 0;
+    }
+    
+    function renderHarvestingEntries() {
+        // Keep for internal use
+    }
 
+    // ==================== UI HELPERS ====================
     function toggleMinimize() {
         bot.minimized = !bot.minimized;
         var body = document.getElementById("bot-body");
@@ -1064,7 +3039,7 @@
         if (bot.minimized) { if (body) body.style.display = "none"; if (btn) btn.textContent = "▼"; }
         else { if (body) body.style.display = "block"; if (btn) btn.textContent = "▲"; }
     }
-
+    
     function toggleDarkMode() {
         bot.darkMode = !bot.darkMode;
         var root = document.getElementById("BotConsole");
@@ -1084,6 +3059,9 @@
             root.style.setProperty('--border', '#e5e7eb');
             root.style.setProperty('--log-bg', '#f8f9fa');
         }
+        drawGapVisual();
+        updateBurstDisplay();
+        updateWagerDisplay();
     }
 
     var pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
@@ -1126,9 +3104,19 @@
         var btns = document.querySelectorAll('.tab-btn');
         for (var j = 0; j < btns.length; j++) btns[j].classList.remove('active');
         if (event && event.currentTarget) event.currentTarget.classList.add('active');
+        if (tabName === 'lua') setTimeout(updateLuaStats, 100);
     };
 
+    // ==================== START ====================
+    var checkReady = setInterval(function() {
+        if (document.body) {
+            clearInterval(checkReady);
+            createUI();
+        }
+    }, 100);
+    
     setTimeout(function() {
-        createUI();
-    }, 500);
+        clearInterval(checkReady);
+        if (!document.getElementById("BotConsole")) createUI();
+    }, 5000);
 })();
